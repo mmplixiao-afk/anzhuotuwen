@@ -269,6 +269,12 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun App() {
         val settings = remember { AppSettings(this) }
+        val appVersion = remember {
+            runCatching { packageManager.getPackageInfo(packageName, 0).versionName }
+                .getOrNull()
+                ?.let { if (it.startsWith("v", ignoreCase = true)) it else "v$it" }
+                ?: "v未知"
+        }
         val scope = rememberCoroutineScope()
         var navigation by remember { mutableStateOf(listOf("home")) }
         var selectedId by remember { mutableStateOf("") }
@@ -367,7 +373,7 @@ class MainActivity : ComponentActivity() {
                 ),
                 title = {
                 Text(when (screen) {
-                    "home" -> "史镜 · 图文创作台（v0.5.0）"
+                    "home" -> "史镜 · 图文创作台（$appVersion）"
                     "project" -> "制作此卷"
                     "script" -> "立题成文"
                     "shots" -> "拆镜成卷"
@@ -378,7 +384,7 @@ class MainActivity : ComponentActivity() {
                     "prompts" -> "提示词卷库"
                     "prompt_editor" -> "提示词版本"
                     "settings" -> "设置"
-                    else -> "史镜 · 图文创作台（v0.5.0）"
+                    else -> "史镜 · 图文创作台（$appVersion）"
                 }, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
             }, navigationIcon = {
                 if (navigation.size > 1) {
