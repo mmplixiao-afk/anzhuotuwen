@@ -40,3 +40,14 @@ jobs:
         with:
           name: HistoryVideo-Release
           path: app/build/outputs/apk/release/*.apk
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+        with:
+          files: app/build/outputs/apk/release/*.apk
+          tag_name: v${{ github.run_number }}
+          name: 历史视频生成器 v${{ github.run_number }}
+          body: "自动构建的 APK，直接从下方 Assets 下载安装即可。"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
