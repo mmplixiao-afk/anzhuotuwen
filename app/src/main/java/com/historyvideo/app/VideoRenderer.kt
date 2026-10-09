@@ -397,7 +397,7 @@ class VideoRenderer(private val store: ProjectStore) {
                 chunk.forEachIndexed { index, character ->
                     if (!hidden[offset + index]) append(character)
                 }
-            }.replace(Regex("(?U)\\s+"), " ").trim()
+            }.let(::normalizeCoverText)
             offset += chunk.length
             display
         }

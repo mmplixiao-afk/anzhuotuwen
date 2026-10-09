@@ -197,7 +197,7 @@ class GenerationService : Service() {
     }
 
     private fun generateShots(project: VideoProject, promptOverride: String = "") {
-        require(project.script.isNotBlank()) { "请先生成文案" }
+        require(project.script.isNotBlank()) { "请先输入或生成正文" }
         val prompt = configuredPrompt("shots", promptOverride)
         update(project, "shots", "running", "正在拆分分镜")
         val storyboardInput = "主题：${project.title}\n\n完整口播文案：\n${project.script}"

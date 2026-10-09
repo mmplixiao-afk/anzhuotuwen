@@ -67,8 +67,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -98,6 +98,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material3.Typography
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1099,7 +1100,7 @@ private fun ProjectOverviewScreen(project: VideoProject,
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("立题成文", style = MaterialTheme.typography.titleLarge)
-            Text(if (project.script.isBlank()) "包含题材，尚未生成正文" else "包含题材，已生成 ${project.script.length} 字正文",
+            Text(if (project.script.isBlank()) "包含题材，尚无正文" else "包含题材，正文已保存",
                 color = HistoryColors.muted)
         }
     }
@@ -1174,18 +1175,13 @@ private fun InputTile(label: String, value: String, onValueChange: (String) -> U
                     singleLine = minLines == 1
                 )
             }
-            if (maxLength != null) {
-                Text("${value.codePointCount(0, value.length)}/$maxLength 字 · 首尾空白会去除，连续空白会合并",
-                    modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End,
-                    style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-            }
         }
     }
 }
 
 @Composable
 private fun ChoiceTile(label: String, value: String, onClick: () -> Unit, enabled: Boolean = true,
-                       modifier: Modifier = Modifier.fillMaxWidth()) {
+                       modifier: Modifier = Modifier.fillMaxWidth(), dropdown: Boolean = false) {
     Card(
         onClick = onClick,
         enabled = enabled,
@@ -1195,7 +1191,11 @@ private fun ChoiceTile(label: String, value: String, onClick: () -> Unit, enable
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
-            Text(value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = HistoryColors.ink)
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text(value, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium, color = HistoryColors.ink)
+                if (dropdown) Icon(Icons.Filled.ArrowDropDown, contentDescription = null, tint = HistoryColors.muted)
+            }
         }
     }
 }
@@ -1212,32 +1212,63 @@ private fun ScriptScreen(project: VideoProject,
     var introSfxId by remember(project.id, project.introSfxId) { mutableStateOf(project.introSfxId) }
     var bgmVolume by remember(project.id, project.bgmVolume) { mutableStateOf((project.bgmVolume * 100).toInt().toString()) }
     var sfxVolume by remember(project.id, project.introSfxVolume) { mutableStateOf((project.introSfxVolume * 100).toInt().toString()) }
-    var previewId by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    var bgmMenu by remember(project.id) { mutableStateOf(false) }
+    var introSfxMenu by remember(project.id) { mutableStateOf(false) }
+    val bgmChoices = listOf("none" to "无", "sad" to "悲伤 BGM", "爽文" to "爽文 BGM")
+    val introSfxChoices = listOf("none" to "无", "gong" to "铜锣")
     var previewError by remember { mutableStateOf("") }
     var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
-    DisposableEffect(Unit) { onDispose { previewPlayer?.release() } }
-    fun preview(id: String) {
-        if (previewId == id) {
-            previewPlayer?.release(); previewPlayer = null; previewId = null
-            return
+    var previewJob by remember { mutableStateOf<Job?>(null) }
+    DisposableEffect(Unit) {
+        onDispose {
+            previewJob?.cancel()
+            previewPlayer?.release()
         }
-        previewPlayer?.release(); previewPlayer = null; previewId = null; previewError = ""
+    }
+    fun stopPreview() {
+        previewJob?.cancel(); previewJob = null
+        previewPlayer?.release(); previewPlayer = null
+    }
+    fun preview(id: String) {
+        stopPreview()
+        previewError = ""
+        if (id == "none") return
         runCatching {
             val file = store.bundledAudio(id) ?: error("找不到音频文件")
-            previewPlayer = MediaPlayer().apply {
+            val media = MediaPlayer()
+            previewPlayer = media
+            media.apply {
                 setDataSource(file.absolutePath)
-                setOnPreparedListener { it.start(); previewId = id }
+                setOnPreparedListener { prepared ->
+                    if (previewPlayer === prepared) {
+                        prepared.start()
+                        previewJob = scope.launch {
+                            delay(3000)
+                            if (previewPlayer === prepared) {
+                                previewPlayer = null
+                                prepared.release()
+                                previewJob = null
+                            }
+                        }
+                    }
+                }
                 setOnCompletionListener { completed ->
-                    completed.release(); previewPlayer = null; previewId = null
+                    if (previewPlayer === completed) stopPreview()
                 }
                 setOnErrorListener { failed, _, _ ->
-                    failed.release(); previewPlayer = null; previewId = null
-                    previewError = "音效播放失败"
+                    if (previewPlayer === failed) {
+                        stopPreview()
+                        previewError = "音频试听失败"
+                    }
                     true
                 }
                 prepareAsync()
             }
-        }.onFailure { previewError = it.message.orEmpty() }
+        }.onFailure {
+            stopPreview()
+            previewError = it.message.orEmpty()
+        }
     }
     val busy = project.status == "running"
     ProjectProgress(project)
@@ -1245,19 +1276,30 @@ private fun ScriptScreen(project: VideoProject,
     InputTile("封面文案（必填）", coverText, { coverText = it }, enabled = !busy, maxLength = 40)
     Text("声音与配乐", style = MaterialTheme.typography.titleLarge)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        ChoiceTile("背景音乐", when (bgmId) { "sad" -> "悲伤 BGM"; "爽文" -> "爽文 BGM"; else -> "无" }, onClick = {
-            bgmId = when (bgmId) { "none" -> "sad"; "sad" -> "爽文"; else -> "none" }
-        }, enabled = !busy, modifier = Modifier.weight(1f))
-        ChoiceTile("开头音效", if (introSfxId == "gong") "铜锣" else "无", onClick = {
-            introSfxId = if (introSfxId == "none") "gong" else "none"
-        }, enabled = !busy, modifier = Modifier.weight(1f))
-    }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf("sad" to "悲伤", "爽文" to "爽文", "gong" to "铜锣").forEach { (id, label) ->
-            OutlinedButton(onClick = { preview(id) }, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.PlayArrow,
-                    contentDescription = if (previewId == id) "停止" else "试听")
-                Text(label)
+        Box(Modifier.weight(1f)) {
+            ChoiceTile("背景音乐", bgmChoices.firstOrNull { it.first == bgmId }?.second ?: "无",
+                onClick = { bgmMenu = true }, enabled = !busy, dropdown = true)
+            DropdownMenu(expanded = bgmMenu, onDismissRequest = { bgmMenu = false }) {
+                bgmChoices.forEach { (id, label) ->
+                    DropdownMenuItem(text = { Text(label) }, onClick = {
+                        bgmMenu = false
+                        bgmId = id
+                        preview(id)
+                    })
+                }
+            }
+        }
+        Box(Modifier.weight(1f)) {
+            ChoiceTile("开头音效", introSfxChoices.firstOrNull { it.first == introSfxId }?.second ?: "无",
+                onClick = { introSfxMenu = true }, enabled = !busy, dropdown = true)
+            DropdownMenu(expanded = introSfxMenu, onDismissRequest = { introSfxMenu = false }) {
+                introSfxChoices.forEach { (id, label) ->
+                    DropdownMenuItem(text = { Text(label) }, onClick = {
+                        introSfxMenu = false
+                        introSfxId = id
+                        preview(id)
+                    })
+                }
             }
         }
     }
@@ -1266,12 +1308,22 @@ private fun ScriptScreen(project: VideoProject,
         InputTile("BGM 音量 %", bgmVolume, { bgmVolume = it.filter(Char::isDigit).take(3) }, enabled = !busy, modifier = Modifier.weight(1f))
         InputTile("音效音量 %", sfxVolume, { sfxVolume = it.filter(Char::isDigit).take(3) }, enabled = !busy, modifier = Modifier.weight(1f))
     }
-    fun saveInputs() {
+    fun saveInputs(saveScript: Boolean = false) {
         project.title = title.trim(); project.coverText = normalizeCoverText(coverText)
         project.coverShotId = 1
         project.bgmId = bgmId; project.introSfxId = introSfxId
         project.bgmVolume = ((bgmVolume.toFloatOrNull() ?: 18f) / 100f).coerceIn(0f, 1f)
         project.introSfxVolume = ((sfxVolume.toFloatOrNull() ?: 100f) / 100f).coerceIn(0f, 2f)
+        if (saveScript && project.script != script) {
+            project.script = script
+            project.shots.clear()
+            project.stage = "script"
+            project.status = "review"
+            project.detail = "正文已保存"
+            project.completed = 0; project.total = 0
+            project.duration = 0.0
+            project.transitionPlans.clear(); project.transitionPlanSignature = ""
+        }
         onSave(project)
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1295,21 +1347,15 @@ private fun ScriptScreen(project: VideoProject,
         }
     }
     Text(if (script.isBlank()) "正文" else "正文 · ${script.length} 字", style = MaterialTheme.typography.titleLarge)
-    if (script.isBlank()) {
-        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-            Text("尚未生成正文", modifier = Modifier.padding(16.dp), color = HistoryColors.muted)
-        }
-    } else {
-        InputTile("口播文案", script, { script = it }, enabled = !busy, minLines = 10)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = {
-                saveInputs(); project.script = script; project.shots.clear(); onSave(project)
-            }, enabled = !busy) { Text("保存文案") }
-            Button(onClick = {
-                saveInputs(); project.script = script; project.shots.clear(); onSave(project)
-                onRun(project, GenerationService.SHOTS, 0)
-            }, enabled = !busy) { Text("拆镜成卷") }
-        }
+    InputTile("口播文案", script, { script = it }, enabled = !busy, minLines = 10)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { saveInputs(saveScript = true) },
+            enabled = !busy && script.isNotBlank()) { Text("保存文案") }
+        Button(onClick = {
+            saveInputs(saveScript = true)
+            stopPreview()
+            onRun(project, GenerationService.SHOTS, 0)
+        }, enabled = !busy && script.isNotBlank()) { Text("拆镜成卷") }
     }
 }
 
@@ -1325,7 +1371,7 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
     ProjectProgress(project)
     Text("${project.shots.size} 镜", style = MaterialTheme.typography.titleLarge)
     if (project.shots.isEmpty()) {
-        Text("尚未拆镜，请先在立题成文页面生成正文。", color = HistoryColors.muted)
+        Text("尚未拆镜，请先在立题成文页面输入或生成正文。", color = HistoryColors.muted)
     } else {
         Button(onClick = { onRun(project, GenerationService.VOICE_ALL, 0) },
             enabled = !busy, modifier = Modifier.fillMaxWidth(),
