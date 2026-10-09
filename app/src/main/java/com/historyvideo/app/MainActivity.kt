@@ -1,14 +1,14 @@
 package com.historyvideo.app
 
 import android.Manifest
-import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import android.media.MediaPlayer
+import android.widget.MediaController
+import android.widget.VideoView
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.activity.ComponentActivity
@@ -112,6 +112,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.Typography
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -262,28 +263,6 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun export(project: VideoProject): String {
-        val file = store.output(project)
-        require(file.isFile) { "成片尚未生成" }
-        val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, "${project.title.take(30)}_${project.id.take(8)}.mp4")
-            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-            put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/HistoryVideo")
-            put(MediaStore.Video.Media.IS_PENDING, 1)
-        }
-        val uri = contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-            ?: error("无法创建媒体库文件")
-        try {
-            contentResolver.openOutputStream(uri)?.use { output -> file.inputStream().use { it.copyTo(output) } }
-                ?: error("无法写入媒体库")
-            contentResolver.update(uri, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
-        } catch (error: Exception) {
-            contentResolver.delete(uri, null, null)
-            throw error
-        }
-        return "已保存到相册 Movies/HistoryVideo"
-    }
-
     private fun share(project: VideoProject): String {
         val file = store.output(project)
         require(file.isFile) { "成片尚未生成" }
@@ -324,6 +303,7 @@ class MainActivity : ComponentActivity() {
         var selectedPromptType by remember { mutableStateOf("script") }
         var projects by remember { mutableStateOf(store.all()) }
         var message by remember { mutableStateOf("") }
+        var exportingAsset by remember { mutableStateOf(false) }
         var deleteTarget by remember { mutableStateOf<VideoProject?>(null) }
         var now by remember { mutableStateOf(System.currentTimeMillis()) }
         val screen = navigation.last()
@@ -379,9 +359,14 @@ class MainActivity : ComponentActivity() {
                 .onFailure { message = it.message.orEmpty() }
         }
 
-        fun exportProject(project: VideoProject) {
-            runCatching { export(project) }.onSuccess { message = it }
-                .onFailure { message = it.message.orEmpty() }
+        fun exportProject(project: VideoProject, cover: Boolean = false) {
+            if (exportingAsset) return
+            exportingAsset = true
+            scope.launch {
+                val result = runCatching { withContext(Dispatchers.IO) { AlbumExporter(store).save(project, cover) } }
+                message = result.getOrElse { "保存失败：${it.message ?: it.javaClass.simpleName}" }
+                exportingAsset = false
+            }
         }
 
         fun playShot(project: VideoProject, shot: Shot) {
@@ -432,6 +417,7 @@ class MainActivity : ComponentActivity() {
                                 "prompt_editor" -> "提示词版本"
                                 "settings" -> "设置"
                                 "cutout_models" -> "抠图模型"
+                                "result" -> "成片结果"
                                 else -> "史镜 · 图文创作台（$appVersion）"
                             }, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
                         }, navigationIcon = {
@@ -522,9 +508,9 @@ class MainActivity : ComponentActivity() {
                                     if (store.output(project).isFile) {
                                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                             TextButton(onClick = {
-                                                runCatching { export(project) }.onSuccess { message = it }
-                                                    .onFailure { message = it.message.orEmpty() }
-                                            }) { Text("保存到相册") }
+                                                selectedId = project.id
+                                                navigate("result")
+                                            }) { Text("成片与封面") }
                                             TextButton(onClick = {
                                                 runCatching { share(project) }.onSuccess { message = it }
                                                     .onFailure { message = it.message.orEmpty() }
@@ -552,8 +538,12 @@ class MainActivity : ComponentActivity() {
                         onOpenShots = { navigate("shots") },
                         onOpenEffects = { navigate("effects") },
                         onRender = { runProject(selected, GenerationService.RENDER, 0) },
-                        onExport = ::exportProject
+                        hasOutput = store.output(selected).length() > 1000,
+                        onOpenResults = { navigate("result") }
                     )
+                    "result" -> if (selected != null) CompletedResultScreen(selected, store,
+                        exporting = exportingAsset,
+                        onSaveVideo = { exportProject(selected) }, onSaveCover = { exportProject(selected, cover = true) })
                     "script" -> if (selected != null) ScriptScreen(
                         selected,
                         store,
@@ -568,7 +558,7 @@ class MainActivity : ComponentActivity() {
                         onPlay = ::playShot,
                         onPlayVoice = ::playVoice,
                         onOpenShot = { shotId -> selectedShotId = shotId; navigate("shot") },
-                        onExport = ::exportProject
+                        onExport = { exportProject(it) }
                     )
                     "shot" -> if (selected != null) {
                         selected.shots.firstOrNull { it.id == selectedShotId }?.let { shot ->
@@ -619,20 +609,6 @@ private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("史镜", style = MaterialTheme.typography.headlineLarge, color = HistoryColors.cinnabar)
         Text("一卷成章 · AI图文视频创作", style = MaterialTheme.typography.bodyMedium, color = HistoryColors.muted)
-    }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = HistoryColors.tealSoft)
-    ) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("当前账号", style = MaterialTheme.typography.labelMedium, color = HistoryColors.muted)
-                Text("优哥胡咧咧", fontWeight = FontWeight.SemiBold, color = HistoryColors.teal)
-            }
-            Text("当前", color = HistoryColors.cinnabar, fontWeight = FontWeight.Bold)
-        }
     }
     Card(
         onClick = onCurrent,
@@ -1219,7 +1195,8 @@ private fun ProjectOverviewScreen(project: VideoProject,
                                   onOpenShots: () -> Unit,
                                   onOpenEffects: () -> Unit,
                                   onRender: () -> Unit,
-                                  onExport: (VideoProject) -> Unit) {
+                                  hasOutput: Boolean,
+                                  onOpenResults: () -> Unit) {
     FlowStepBar(project)
     ProjectProgress(project)
     Text(project.title, style = MaterialTheme.typography.headlineSmall)
@@ -1259,15 +1236,100 @@ private fun ProjectOverviewScreen(project: VideoProject,
                 color = HistoryColors.muted)
         }
     }
-    if (project.status == "done") {
-        Card(onClick = { onExport(project) }, modifier = Modifier.fillMaxWidth().height(82.dp), shape = RoundedCornerShape(14.dp),
+    if (hasOutput) {
+        Card(onClick = onOpenResults, modifier = Modifier.fillMaxWidth().height(82.dp), shape = RoundedCornerShape(8.dp),
             colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("保存到相册", style = MaterialTheme.typography.titleMedium)
-                Text("导出已完成的 MP4 视频", color = HistoryColors.muted)
+                Text("成片结果", style = MaterialTheme.typography.titleMedium)
+                Text("视频与主页封面", color = HistoryColors.muted)
             }
         }
     }
+}
+
+@Composable
+private fun CompletedResultScreen(project: VideoProject, store: ProjectStore, exporting: Boolean,
+                                  onSaveVideo: () -> Unit, onSaveCover: () -> Unit) {
+    val video = store.output(project)
+    val first = project.shots.firstOrNull { it.id == 1 }?.let { store.image(project, it) }
+    val cover = store.cover(project)
+    val scope = rememberCoroutineScope()
+    var creating by remember(project.id) { mutableStateOf(false) }
+    var coverReady by remember(project.id) { mutableStateOf(false) }
+    var coverError by remember(project.id) { mutableStateOf("") }
+    var coverVersion by remember(project.id) { mutableStateOf(0) }
+    val busy = project.status == "running"
+    suspend fun prepareCover() {
+        creating = true
+        coverReady = false
+        coverError = ""
+        try {
+            withContext(Dispatchers.IO) { CompletedCover(store).generate(project) }
+            coverReady = true
+            coverVersion++
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            coverError = "封面生成失败：${error.message ?: error.javaClass.simpleName}"
+        } finally { creating = false }
+    }
+    LaunchedEffect(project.id, project.title, project.coverText, busy, video.lastModified(), video.length(),
+        first?.lastModified(), first?.length()) {
+        if (!busy && video.length() > 1000) prepareCover()
+    }
+    Text(project.title, style = MaterialTheme.typography.titleLarge)
+    Text("视频", style = MaterialTheme.typography.titleMedium)
+    if (video.length() > 1000) {
+        CompletedVideoPreview(video, project.imageSize)
+        Button(onClick = onSaveVideo, enabled = !busy && !exporting,
+            modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(8.dp)) {
+            Text(if (exporting) "正在保存" else "保存视频")
+        }
+    } else Text("成片尚未生成", color = HistoryColors.muted)
+    HorizontalDivider(color = HistoryColors.line)
+    Text("封面", style = MaterialTheme.typography.titleMedium)
+    if (creating) LinearProgressIndicator(Modifier.fillMaxWidth())
+    if (coverReady) {
+        key(coverVersion) {
+            ShotThumbnail(cover, Modifier.fillMaxWidth().aspectRatio(0.75f), previewSize = 1440)
+        }
+    }
+    if (coverError.isNotBlank()) {
+        Text(coverError, color = HistoryColors.ochre, style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(onClick = { scope.launch { prepareCover() } }, enabled = !creating && !busy,
+            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) { Text("重试生成封面") }
+    }
+    Button(onClick = onSaveCover, enabled = coverReady && !creating && !busy && !exporting,
+        modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(8.dp)) {
+        Text(if (exporting) "正在保存" else "保存封面")
+    }
+}
+
+@Composable
+private fun CompletedVideoPreview(file: File, imageSize: String) {
+    val context = LocalContext.current
+    var error by remember(file.absolutePath, file.lastModified()) { mutableStateOf("") }
+    val view = remember(file.absolutePath, file.lastModified(), file.length()) {
+        VideoView(context).apply {
+            setVideoPath(file.absolutePath)
+            setMediaController(MediaController(context).also { it.setAnchorView(this) })
+            setOnPreparedListener { seekTo(1) }
+            setOnErrorListener { _, what, extra ->
+                error = "视频预览失败：$what / $extra，仍可保存视频"
+                true
+            }
+        }
+    }
+    DisposableEffect(view) { onDispose { view.stopPlayback() } }
+    val ratio = when (imageSize.lowercase()) {
+        "16:9", "1792x1024", "1920x1080" -> 16f / 9f
+        "1:1", "1024x1024", "1440x1440" -> 1f
+        else -> 9f / 16f
+    }
+    key(view) {
+        AndroidView(factory = { view }, modifier = Modifier.fillMaxWidth().aspectRatio(ratio).background(Color.Black))
+    }
+    if (error.isNotBlank()) Text(error, color = HistoryColors.ochre, style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
@@ -1401,7 +1463,7 @@ private fun ScriptScreen(project: VideoProject,
     val busy = project.status == "running"
     ProjectProgress(project)
     InputTile("题材", title, { title = it }, enabled = !busy)
-    InputTile("封面文案（必填）", coverText, { coverText = it }, enabled = !busy, maxLength = 40)
+    InputTile("封面文案", coverText, { coverText = it }, enabled = !busy, maxLength = 40)
     Text("声音与配乐", style = MaterialTheme.typography.titleLarge)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Box(Modifier.weight(1f)) {
@@ -1626,7 +1688,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("封面", style = MaterialTheme.typography.titleLarge)
-            Text("背景固定使用第 1 镜画面；封面文案在立题成文页面填写，渲染前必填。",
+            Text("背景固定使用第 1 镜画面；封面文案在立题成文页面填写。",
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         }
     }

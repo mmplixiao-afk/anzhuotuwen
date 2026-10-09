@@ -38,6 +38,8 @@ class StoryboardRulesTest : Instrumentation() {
     private fun assertFalse(value: Boolean) = check(!value)
     private fun fail(message: String): Nothing = error(message)
 
+    fun testCompletedCoverRules() = CompletedCoverChecks.run(targetContext)
+
     private val theme = "在古代当通房丫鬟到底有多爽？"
     private val hook = "哼，你以为她只会受气？"
     private val rebuttal = listOf(

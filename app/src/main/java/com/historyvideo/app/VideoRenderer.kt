@@ -1,9 +1,13 @@
 package com.historyvideo.app
 
 import android.graphics.BitmapFactory
+import android.os.SystemClock
 import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.FFmpegKitConfig
+import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
+import com.arthenica.ffmpegkit.StatisticsCallback
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -40,14 +44,14 @@ class VideoRenderer(private val store: ProjectStore) {
     private data class CoverLayout(val lines: List<String>, val fontSize: Int, val textHeight: Double)
 
     private companion object {
-        const val SUBTITLE_FONT_SIZE = 120
+        const val SUBTITLE_FONT_SIZE = 100
         const val SUBTITLE_MIN_CHARS = 6
         const val SUBTITLE_MIN_SAFE_MARGIN = 48
         const val SUBTITLE_SAFE_MARGIN_RATIO = 0.065
         const val SUBTITLE_GLYPH_WIDTH_RATIO = 1.05
         const val COVER_TITLE_MAX_CHARS = 40
         const val COVER_TITLE_DELAY = 1.0
-        const val RENDER_STYLE_VERSION = "subtitle-16-motion-3-transition-4-cutout-2"
+        const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2"
         const val SUBTITLE_SPLIT_MARKS = "，。！？；：、,.!?;:…"
         const val SUBTITLE_CLOSING_QUOTES = "”’\"'」』）》】)]}〉〕〗〙〛"
         val spokenOnlyPhrases = listOf("他娘的", "奶奶的", "老子")
@@ -62,8 +66,12 @@ class VideoRenderer(private val store: ProjectStore) {
             ?: error("无法读取音频时长: ${path.name}")
     }
 
-    private fun run(label: String, vararg args: String) {
-        val session = FFmpegKit.executeWithArguments(arrayOf(*args))
+    private fun run(label: String, vararg args: String, onFrame: ((Int) -> Unit)? = null) {
+        val session = if (onFrame == null) FFmpegKit.executeWithArguments(arrayOf(*args)) else {
+            FFmpegSession.create(arrayOf(*args), null, null, StatisticsCallback { statistics ->
+                onFrame(statistics.videoFrameNumber)
+            }).also(FFmpegKitConfig::ffmpegExecute)
+        }
         if (!ReturnCode.isSuccess(session.returnCode)) {
             val logs = session.allLogsAsString.orEmpty()
             runCatching {
@@ -148,7 +156,8 @@ class VideoRenderer(private val store: ProjectStore) {
         )
     }
 
-    private fun motionFilter(plan: MotionPlan, frames: Int, width: Int, height: Int, preserveAlpha: Boolean = false): String {
+    private fun motionFilter(plan: MotionPlan, frames: Int, width: Int, height: Int,
+                             preserveAlpha: Boolean = false, stillImage: Boolean = false): String {
         val progress = "min(1,on/${maxOf(1, frames - 1)})"
         fun interpolate(first: Double, last: Double) =
             "(${String.format(Locale.US, "%.9f", first)}+(${String.format(Locale.US, "%.9f", last - first)})*$progress)"
@@ -160,7 +169,7 @@ class VideoRenderer(private val store: ProjectStore) {
             "zoompan=z='$zoom':" +
             "x='max(0,min(iw-iw/zoom,(iw-iw/zoom)/2-$x*iw/zoom))':" +
             "y='max(0,min(ih-ih/zoom,(ih-ih/zoom)/2+$y*ih/zoom))':" +
-            "d=1:s=${width}x${height}:fps=30,format=$outputFormat"
+            "d=${if (stillImage) frames.coerceAtLeast(1) else 1}:s=${width}x${height}:fps=30,format=$outputFormat"
     }
 
     private fun motionPlanFor(project: VideoProject, shot: Shot): MotionPlan {
@@ -669,19 +678,20 @@ class VideoRenderer(private val store: ProjectStore) {
         height: Int,
         duration: Double
     ): String {
-        val background = motionFilter(backgroundPlan, frames, width, height)
-        val foreground = motionFilter(foregroundPlan, frames, width, height, preserveAlpha = true)
+        val background = motionFilter(backgroundPlan, frames, width, height, stillImage = true)
+        val foreground = motionFilter(foregroundPlan, frames, width, height, preserveAlpha = true, stillImage = true)
         val entry = min(0.28, maxOf(1.0 / 30.0, duration / 3.0))
         val entrySeconds = String.format(Locale.US, "%.6f", entry)
         val focusSeconds = String.format(Locale.US, "%.6f", min(0.08, entry))
         // These arguments go directly to FFmpeg; escape expression commas for the filter graph.
         val focus = "A*min(1,T/$entrySeconds)+B*(1-min(1,T/$entrySeconds))".replace(",", "\\,")
+        val duringEntry = "lt(t,$entrySeconds)".replace(",", "\\,")
         val entryY = "${height * 0.18}*pow(max(0,1-t/$entrySeconds),3)".replace(",", "\\,")
         return "[0:v]$background[bg];" +
             "[1:v]$foreground,split[sharp][blur];" +
             // The Android FFmpeg package includes gblur; keep the alpha plane intact.
-            "[blur]gblur=sigma=6:steps=2:planes=7[blurred];" +
-            "[sharp][blurred]blend=all_expr=$focus," +
+            "[blur]gblur=sigma=6:steps=2:planes=7:enable=$duringEntry[blurred];" +
+            "[sharp][blurred]blend=all_expr=$focus:enable=$duringEntry," +
             "format=rgba,fade=t=in:st=0:d=$focusSeconds:alpha=1[fg];" +
             "[bg][fg]overlay=x=0:y=$entryY:" +
             "shortest=1:format=auto,format=yuv420p[v]"
@@ -921,13 +931,14 @@ class VideoRenderer(private val store: ProjectStore) {
         return mixVoicePreview(project, pending, output)
     }
 
-    fun render(project: VideoProject, progress: (Int, Int) -> Unit, stage: (String) -> Unit = {}) {
+    fun render(project: VideoProject, progress: (Int, Int) -> Unit,
+               frameProgress: (Int, Int, String) -> Unit = { _, _, _ -> }, stage: (String) -> Unit = {}) {
         require(project.shots.isNotEmpty())
         val dir = store.directory(project.id)
         val temp = File(dir, "temp").apply { mkdirs() }
         val renderStamp = File(temp, "render_options.txt")
+        val finalStamp = File(temp, "final_options.txt")
         val normalizedCover = normalizeCoverText(project.coverText)
-        require(normalizedCover.isNotBlank()) { "封面文案必填，请先填写封面文案" }
         require(codePointLength(normalizedCover) <= COVER_TITLE_MAX_CHARS) { "封面文案最多 40 个字符，请缩短后重试" }
         project.coverText = normalizedCover
         stage("正在生成视频片段")
@@ -977,79 +988,110 @@ class VideoRenderer(private val store: ProjectStore) {
                     "$sourceStamp:${it.background.length()}:${it.background.lastModified()}:${it.foreground.length()}:${it.foreground.lastModified()}"
                 } else ""
                 "${shot.id}:${shot.imageRevision}:${shot.audioRevision}:${shot.cutoutEnabled}:${shot.text.hashCode()}:${shot.subtitleChunks.joinToString("\u0000").hashCode()}:" +
-                    "${shot.motionPlan}:${shot.cutoutBackgroundPlan}:${shot.cutoutForegroundPlan}:$layers"
+                    "${shot.motionPlan}:${shot.cutoutBackgroundPlan}:${shot.cutoutForegroundPlan}:$layers:" +
+                    "${store.image(project, shot).length()}:${store.image(project, shot).lastModified()}:" +
+                    "${store.audio(project, shot).length()}:${store.audio(project, shot).lastModified()}"
             }
         ).joinToString("|")
+        if (store.output(project).length() > 1000 && finalStamp.readTextOrNull() == "$clipSignature|${project.renderRevision}") {
+            stage("素材未改变，复用已有成片")
+            return
+        }
         val savedSignature = renderStamp.readTextOrNull()
         val rebuildClips = savedSignature != clipSignature
         if (rebuildClips) temp.listFiles { file -> file.name.matches(Regex("clip_\\d{3}\\.mp4")) }
             ?.forEach { it.delete() }
+        // Only completed clips are renamed into the cache; retries can keep those clips.
+        renderStamp.writeText(clipSignature)
+        openingInputsStamp.writeText(openingInputs)
         val clips = project.shots.map { shot -> File(temp, "clip_%03d.mp4".format(shot.id)) }
+        val frameCounts = durations.map { ceil(it * 30).toInt().coerceAtLeast(1) }
+        val renderedFrames = LongArray(clips.size)
+        val totalFrames = frameCounts.sumOf { it.toLong() }
         val completed = AtomicInteger(0)
         val progressLock = Any()
+        var lastFrameReport = 0L
+        var reportingFrames = true
+        fun reportFrames(index: Int, count: Int) = synchronized(progressLock) {
+            renderedFrames[index] = maxOf(renderedFrames[index], count.coerceIn(0, frameCounts[index]).toLong())
+            val now = SystemClock.elapsedRealtime()
+            if (reportingFrames && completed.get() < clips.size && now - lastFrameReport >= 1000L) {
+                lastFrameReport = now
+                val percent = (renderedFrames.sum() * 100L / totalFrames).coerceIn(0L, 99L)
+                frameProgress(completed.get(), clips.size,
+                    "正在生成视频片段 ${completed.get()}/${clips.size} · 画面进度 $percent%")
+            }
+        }
         // Ten FFmpeg jobs use the available phone memory while keeping the
         // render queue bounded instead of launching all encoders at once.
-        runBlocking {
-            val gate = Semaphore(10)
-            clips.indices.map { index ->
-                async(Dispatchers.Default) {
-                    gate.withPermit {
-                        val shot = project.shots[index]
-                        val clip = clips[index]
-                        if (clip.length() < 1000) {
-                            val pending = File(temp, clip.name + ".tmp.mp4")
-                            val frameCount = ceil(durations[index] * 30).toInt().coerceAtLeast(1)
-                            val (width, height) = canvasSize(project)
-                            val subtitle = subtitleFilter(project, shot, temp, width, height)
-                            val cover = coverFilter(project, shot, temp, width, height, durations[index])
-                            if (shot.cutoutEnabled) {
-                                val layers = layerFiles(project, shot)
-                                val foregroundPlan = fitForegroundMotion(
-                                    shot.cutoutForegroundPlan ?: error("第 ${shot.id} 镜人物运动方案丢失"),
-                                    foregroundBounds(layers.foreground)
-                                )
-                                val cutout = cutoutFilter(
-                                    shot.cutoutBackgroundPlan ?: error("第 ${shot.id} 镜背景运动方案丢失"),
-                                    foregroundPlan, frameCount, width, height, durations[index]
-                                )
-                                val overlays = subtitle + cover
-                                val graph = if (overlays.isBlank()) cutout else
-                                    "$cutout;[v]${overlays.removePrefix(",")}[out]"
-                                val outputLabel = if (overlays.isBlank()) "[v]" else "[out]"
-                                run("第 ${shot.id} 镜生成抠图视频片段", "-y",
-                                    "-filter_complex_threads", "1",
-                                    "-loop", "1", "-framerate", "30", "-i", layers.background.absolutePath,
-                                    "-loop", "1", "-framerate", "30", "-i", layers.foreground.absolutePath,
-                                    "-filter_complex", graph, "-map", outputLabel, "-frames:v", frameCount.toString(), "-an",
-                                    "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p", pending.absolutePath)
-                            } else {
-                                if (shot.id == 1 && project.openingTemplate != "none") {
-                                    val openingBase = File(temp, "opening_template_base.mp4")
-                                    openingBase.delete()
-                                    renderOpeningTemplate(
-                                        project.openingTemplate, images, openingBase, frameCount,
-                                        project.introImageSeconds, width, height
+        try {
+            runBlocking {
+                val gate = Semaphore(10)
+                clips.indices.map { index ->
+                    async(Dispatchers.Default) {
+                        gate.withPermit {
+                            val shot = project.shots[index]
+                            val clip = clips[index]
+                            if (clip.length() < 1000) {
+                                val pending = File(temp, clip.name + ".tmp.mp4")
+                                val frameCount = frameCounts[index]
+                                val onFrame: (Int) -> Unit = { reportFrames(index, it) }
+                                val (width, height) = canvasSize(project)
+                                val subtitle = subtitleFilter(project, shot, temp, width, height)
+                                val cover = coverFilter(project, shot, temp, width, height, durations[index])
+                                if (shot.cutoutEnabled) {
+                                    val layers = layerFiles(project, shot)
+                                    val foregroundPlan = fitForegroundMotion(
+                                        shot.cutoutForegroundPlan ?: error("第 ${shot.id} 镜人物运动方案丢失"),
+                                        foregroundBounds(layers.foreground)
                                     )
-                                    val overlayFilter = motionFilter(motionPlanFor(project, shot), frameCount, width, height) + subtitle + cover
-                                    run("叠加封面文案", "-y", "-i", openingBase.absolutePath, "-vf", overlayFilter,
-                                        "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4", "-q:v", "4",
-                                        "-pix_fmt", "yuv420p", pending.absolutePath)
-                                    openingBase.delete()
+                                    val cutout = cutoutFilter(
+                                        shot.cutoutBackgroundPlan ?: error("第 ${shot.id} 镜背景运动方案丢失"),
+                                        foregroundPlan, frameCount, width, height, durations[index]
+                                    )
+                                    val overlays = subtitle + cover
+                                    val graph = if (overlays.isBlank()) cutout else
+                                        "$cutout;[v]${overlays.removePrefix(",")}[out]"
+                                    val outputLabel = if (overlays.isBlank()) "[v]" else "[out]"
+                                    run("第 ${shot.id} 镜生成抠图视频片段", "-y",
+                                        "-filter_complex_threads", "1",
+                                        "-framerate", "30", "-i", layers.background.absolutePath,
+                                        "-framerate", "30", "-i", layers.foreground.absolutePath,
+                                        "-filter_complex", graph, "-map", outputLabel, "-frames:v", frameCount.toString(), "-an",
+                                        "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p", pending.absolutePath,
+                                        onFrame = onFrame)
                                 } else {
-                                    val filter = motionFilter(motionPlanFor(project, shot), frameCount, width, height) + subtitle + cover
-                                    run("生成视频片段", "-y", "-loop", "1", "-framerate", "30", "-i", images[index].absolutePath,
-                                        "-vf", filter, "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4",
-                                        "-q:v", "4", "-pix_fmt", "yuv420p", pending.absolutePath)
+                                    if (shot.id == 1 && project.openingTemplate != "none") {
+                                        val openingBase = File(temp, "opening_template_base.mp4")
+                                        openingBase.delete()
+                                        renderOpeningTemplate(
+                                            project.openingTemplate, images, openingBase, frameCount,
+                                            project.introImageSeconds, width, height
+                                        )
+                                        val overlayFilter = motionFilter(motionPlanFor(project, shot), frameCount, width, height) + subtitle + cover
+                                        run("叠加封面文案", "-y", "-i", openingBase.absolutePath, "-vf", overlayFilter,
+                                            "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4", "-q:v", "4",
+                                            "-pix_fmt", "yuv420p", pending.absolutePath, onFrame = onFrame)
+                                        openingBase.delete()
+                                    } else {
+                                        val filter = motionFilter(motionPlanFor(project, shot), frameCount, width, height, stillImage = true) + subtitle + cover
+                                        run("生成视频片段", "-y", "-framerate", "30", "-i", images[index].absolutePath,
+                                            "-vf", filter, "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4",
+                                            "-q:v", "4", "-pix_fmt", "yuv420p", pending.absolutePath, onFrame = onFrame)
+                                    }
                                 }
+                                Files.move(pending.toPath(), clip.toPath(), StandardCopyOption.REPLACE_EXISTING)
                             }
-                            Files.move(pending.toPath(), clip.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                        }
-                        synchronized(progressLock) {
-                            progress(completed.incrementAndGet(), project.shots.size)
+                            synchronized(progressLock) {
+                                renderedFrames[index] = frameCounts[index].toLong()
+                                progress(completed.incrementAndGet(), project.shots.size)
+                            }
                         }
                     }
-                }
-            }.awaitAll()
+                }.awaitAll()
+            }
+        } finally {
+            synchronized(progressLock) { reportingFrames = false }
         }
         val audioList = File(temp, "audio_list.txt")
         audioList.writeText(parts.joinToString("") { concatLine(it) })
@@ -1067,6 +1109,7 @@ class VideoRenderer(private val store: ProjectStore) {
         project.duration = duration(store.output(project))
         renderStamp.writeText(clipSignature)
         openingInputsStamp.writeText(openingInputs)
+        finalStamp.writeText("$clipSignature|${project.renderRevision}")
     }
 }
 

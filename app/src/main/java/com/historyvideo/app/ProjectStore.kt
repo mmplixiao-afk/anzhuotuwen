@@ -281,6 +281,9 @@ class ProjectStore(context: Context) {
         "audio/%03d%s.mp3".format(shot.id, revisionSuffix(shot.audioRevision)))
     fun output(project: VideoProject) = File(directory(project.id),
         "output/final${revisionSuffix(project.renderRevision)}.mp4")
+    fun cover(project: VideoProject) = File(directory(project.id), "output/completed_cover.png")
+    fun completedInfo(project: VideoProject) = File(directory(project.id), "output/制作信息.json")
+    fun exportInfo(project: VideoProject) = File(directory(project.id), "output/album_exports.json")
 
     fun applyStoryboard(project: VideoProject, generated: List<Shot>) {
         val previous = project.shots.associateBy { it.id }
@@ -327,12 +330,22 @@ class ProjectStore(context: Context) {
     fun bundledFont(id: String): File {
         val assetName = when (id) {
             "cover" -> "STXINGKA.TTF"
-            "subtitle" -> "msyh.ttc"
+            "subtitle" -> "msyhbd.ttc"
             else -> "simhei.ttf"
         }
+        return bundledFontFile(assetName)
+    }
+
+    @Synchronized
+    internal fun bundledFontFile(assetName: String): File {
+        require(assetName in setOf("STXINGKA.TTF", "STKAITI.TTF", "simkai.ttf", "msyh.ttc", "msyhbd.ttc", "simhei.ttf"))
         val target = File(audioRoot, assetName)
         if (!target.isFile || target.length() < 1000) {
-            appContext.assets.open("fonts/$assetName").use { input -> target.outputStream().use { input.copyTo(it) } }
+            val pending = File(audioRoot, "$assetName.pending")
+            try {
+                appContext.assets.open("fonts/$assetName").use { input -> pending.outputStream().use { input.copyTo(it) } }
+                Files.move(pending.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            } finally { pending.delete() }
         }
         return target
     }

@@ -15,6 +15,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
@@ -93,7 +95,6 @@ class GenerationService : Service() {
                 }
                 if (action == FINISH || action == RENDER) {
                     val coverText = normalizeCoverText(project.coverText)
-                    require(coverText.isNotBlank()) { "封面文案必填，请先填写封面文案" }
                     require(coverText.codePointCount(0, coverText.length) <= 40) {
                         "封面文案最多 40 个字符，请缩短后重试"
                     }
@@ -342,7 +343,7 @@ class GenerationService : Service() {
         update(project, "shots", "review", "第 $shotId 段配音已更新，请重新剪辑", 1, 1)
     }
 
-    private fun render(project: VideoProject) {
+    private suspend fun render(project: VideoProject) {
         // Files are the source of truth after an app restart; status flags can
         // remain stale when a previous generation was interrupted.
         project.shots.forEach { shot ->
@@ -361,12 +362,21 @@ class GenerationService : Service() {
             }
         }
         update(project, "render", "running", "正在剪辑视频", 0, project.shots.size)
-        VideoRenderer(store).render(project, { count, total ->
+        VideoRenderer(store).render(project, progress = { count, total ->
             update(project, "render", "running", "正在生成视频片段 $count/$total", count, total)
+        }, frameProgress = { count, total, detail ->
+            update(project, "render", "running", detail, count, total)
         }) { detail ->
             update(project, "render", "running", detail, 0, 0)
         }
-        update(project, "done", "done", "视频生成完成", project.shots.size, project.shots.size)
+        currentCoroutineContext().ensureActive()
+        update(project, "render", "running", "视频已完成，正在制作主页封面", project.shots.size, project.shots.size)
+        val coverResult = runCatching { CompletedCover(store).generate(project) }
+        currentCoroutineContext().ensureActive()
+        update(project, "done", "done", coverResult.fold(
+            onSuccess = { "视频和封面生成完成" },
+            onFailure = { "视频已完成，封面生成失败：${it.message.orEmpty().take(120)}。可在成片结果页重试封面" }
+        ), project.shots.size, project.shots.size)
     }
 
     private fun notification(detail: String, active: Boolean = true): Notification {
