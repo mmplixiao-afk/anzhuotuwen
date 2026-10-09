@@ -83,6 +83,19 @@ class GenerationService : Service() {
             store.save(project)
             notifyStatus(project.detail)
             try {
+                if (action == FINISH && project.shots.any { it.cutoutEnabled }) {
+                    error("当前 Android 版本尚未集成 U²-Net/LaMa 人物分割模型。已取消完整制作，没有发起配音或生图请求；请先到‘封面与效果’清除旧的抠图选择。")
+                }
+                if (action == FINISH || action == RENDER) {
+                    val coverText = normalizeCoverText(project.coverText)
+                    require(coverText.isNotBlank()) { "封面文案必填，请先填写封面文案" }
+                    require(coverText.codePointCount(0, coverText.length) <= 40) {
+                        "封面文案最多 40 个字符，请缩短后重试"
+                    }
+                    project.coverText = coverText
+                    project.coverShotId = 1
+                    store.save(project)
+                }
                 when (action) {
                     TOPICS -> generateTopics(project, promptOverride)
                     SCRIPT -> generateScript(project, promptOverride)

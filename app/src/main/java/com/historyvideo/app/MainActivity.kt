@@ -86,6 +86,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -1141,7 +1142,7 @@ private fun ProjectOverviewScreen(project: VideoProject,
 
 @Composable
 private fun InputTile(label: String, value: String, onValueChange: (String) -> Unit,
-                      enabled: Boolean = true, minLines: Int = 1,
+                      enabled: Boolean = true, minLines: Int = 1, maxLength: Int? = null,
                       modifier: Modifier = Modifier.fillMaxWidth()) {
     Card(
         modifier = modifier.border(1.dp, HistoryColors.line, RoundedCornerShape(14.dp)),
@@ -1157,13 +1158,24 @@ private fun InputTile(label: String, value: String, onValueChange: (String) -> U
             ) {
                 BasicTextField(
                     value = value,
-                    onValueChange = onValueChange,
+                    onValueChange = { incoming ->
+                        val bounded = maxLength?.let { limit ->
+                            val count = incoming.codePointCount(0, incoming.length)
+                            if (count > limit) incoming.substring(0, incoming.offsetByCodePoints(0, limit)) else incoming
+                        } ?: incoming
+                        onValueChange(bounded)
+                    },
                     enabled = enabled,
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
                     textStyle = MaterialTheme.typography.bodyLarge,
                     minLines = minLines,
                     singleLine = minLines == 1
                 )
+            }
+            if (maxLength != null) {
+                Text("${value.codePointCount(0, value.length)}/$maxLength 字 · 首尾空白会去除，连续空白会合并",
+                    modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End,
+                    style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
             }
         }
     }
@@ -1228,7 +1240,7 @@ private fun ScriptScreen(project: VideoProject,
     val busy = project.status == "running"
     ProjectProgress(project)
     InputTile("题材", title, { title = it }, enabled = !busy)
-    InputTile("封面题字", coverText, { coverText = it }, enabled = !busy)
+    InputTile("封面文案（必填）", coverText, { coverText = it }, enabled = !busy, maxLength = 40)
     Text("声音与配乐", style = MaterialTheme.typography.titleLarge)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ChoiceTile("背景音乐", when (bgmId) { "sad" -> "悲伤 BGM"; "爽文" -> "爽文 BGM"; else -> "无" }, onClick = {
@@ -1253,7 +1265,8 @@ private fun ScriptScreen(project: VideoProject,
         InputTile("音效音量 %", sfxVolume, { sfxVolume = it.filter(Char::isDigit).take(3) }, enabled = !busy, modifier = Modifier.weight(1f))
     }
     fun saveInputs() {
-        project.title = title.trim(); project.coverText = coverText.trim()
+        project.title = title.trim(); project.coverText = normalizeCoverText(coverText)
+        project.coverShotId = 1
         project.bgmId = bgmId; project.introSfxId = introSfxId
         project.bgmVolume = ((bgmVolume.toFloatOrNull() ?: 18f) / 100f).coerceIn(0f, 1f)
         project.introSfxVolume = ((sfxVolume.toFloatOrNull() ?: 100f) / 100f).coerceIn(0f, 2f)
@@ -1367,8 +1380,8 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     var subtitle by remember(project.id, project.subtitlesEnabled) { mutableStateOf(project.subtitlesEnabled) }
     var motion by remember(project.id, project.motionMode) { mutableStateOf(project.motionMode) }
     var transition by remember(project.id, project.transitionMode) { mutableStateOf(project.transitionMode) }
-    var coverPicker by remember { mutableStateOf(false) }
-    var cutoutPicker by remember { mutableStateOf(false) }
+    var openingTemplate by remember(project.id, project.openingTemplate) { mutableStateOf(project.openingTemplate) }
+    var introImageSeconds by remember(project.id, project.introImageSeconds) { mutableStateOf(project.introImageSeconds.toString()) }
     val busy = project.status == "running"
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1381,47 +1394,92 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("画面动势", style = MaterialTheme.typography.titleLarge)
-            ChoiceTile("图片运动", mapOf("random" to "随机运动", "zoom_in" to "推近", "zoom_out" to "拉远", "pan" to "平移")[motion].orEmpty(), onClick = {
-                motion = when (motion) { "random" -> "zoom_in"; "zoom_in" -> "zoom_out"; "zoom_out" -> "pan"; else -> "random" }
+            ChoiceTile("图片运动", mapOf("random" to "逐镜随机", "zoom_in" to "推近", "zoom_out" to "拉远", "pan" to "平移", "zoom_pan" to "边推拉边平移")[motion].orEmpty(), onClick = {
+                motion = when (motion) { "random" -> "zoom_in"; "zoom_in" -> "zoom_out"; "zoom_out" -> "pan"; "pan" -> "zoom_pan"; else -> "random" }
                 project.motionMode = motion; onSave(project)
             }, enabled = !busy)
-            ChoiceTile("转场特效", mapOf("fade" to "叠化", "dissolve" to "溶解", "slideleft" to "左推", "random" to "随机", "none" to "无")[transition].orEmpty(), onClick = {
-                transition = when (transition) { "fade" -> "dissolve"; "dissolve" -> "slideleft"; "slideleft" -> "random"; "random" -> "none"; else -> "fade" }
+            ChoiceTile("转场特效", mapOf(
+                "fade" to "柔和叠化", "dissolve" to "颗粒溶解", "smoothleft" to "平滑左推", "slideleft" to "平滑左推",
+                "zoomin" to "推近切换", "fadeblack" to "黑场淡化", "random" to "逐镜随机", "none" to "无"
+            )[transition].orEmpty(), onClick = {
+                transition = when (transition) {
+                    "fade" -> "dissolve"; "dissolve" -> "smoothleft"; "smoothleft" -> "zoomin"
+                    "zoomin" -> "fadeblack"; "fadeblack" -> "random"; "random" -> "none"; else -> "fade"
+                }
                 project.transitionMode = transition; onSave(project)
             }, enabled = !busy)
+            OutlinedButton(onClick = {
+                project.shots.forEach {
+                    it.motionPlan = null
+                    it.cutoutBackgroundPlan = null
+                    it.cutoutForegroundPlan = null
+                    it.cutoutMirrorX = null
+                }
+                project.transitionPlans.clear()
+                project.transitionPlanSignature = ""
+                onSave(project)
+            }, enabled = !busy && (project.motionMode == "random" || project.transitionMode == "random")) {
+                Text("重抽运动和转场")
+            }
+            Text("普通渲染复用已保存的随机方案；按此按钮后，下次渲染重新抽取。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         }
     }
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("封面", style = MaterialTheme.typography.titleLarge)
-            if (project.shots.isNotEmpty()) {
-                ChoiceTile("封面图片", "第 ${project.coverShotId} 镜，点击选择图片", onClick = { coverPicker = true }, enabled = !busy)
-            }
-            Text("封面题字在立题成文页面设置。", style = MaterialTheme.typography.bodySmall)
+            Text("背景固定使用第 1 镜画面；封面文案在立题成文页面填写，渲染前必填。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+        }
+    }
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("开头模板", style = MaterialTheme.typography.titleLarge)
+            val templates = listOf(
+                "none" to "无",
+                "life_copy_fast_cut" to "快速切图",
+                "life_copy_expand_cut" to "展开切入",
+                "life_copy_flash_horizontal" to "横向闪切",
+                "life_copy_flash_vertical" to "纵向闪切",
+                "life_copy_staggered_mask" to "错落蒙版",
+                "life_copy_mosaic_collage" to "马赛克拼贴",
+                "life_copy_cinematic_reveal" to "电影感揭幕",
+                "life_copy_tile_build_impact" to "方块拼合冲击"
+            )
+            val templateLabel = templates.firstOrNull { it.first == openingTemplate }?.second ?: "无"
+            ChoiceTile("首镜内部动态", templateLabel, onClick = {
+                val next = (templates.indexOfFirst { it.first == openingTemplate } + 1) % templates.size
+                openingTemplate = templates[next].first
+                project.openingTemplate = openingTemplate
+                onSave(project)
+            }, enabled = !busy)
+            InputTile("每张图片节奏（秒）", introImageSeconds, { value ->
+                introImageSeconds = value.filter { it.isDigit() || it == '.' }.take(4)
+                introImageSeconds.toFloatOrNull()?.let {
+                    project.introImageSeconds = it.coerceIn(0.08f, 3f)
+                    onSave(project)
+                }
+            }, enabled = !busy)
+            Text("模板最多使用前 5 张分镜图；节奏范围 0.08–3 秒，默认 0.3 秒。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         }
     }
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("成片抠图", style = MaterialTheme.typography.titleLarge)
+            Text("真实人物分割需要 U²-Net/LaMa 模型；此 Android 版本尚未集成模型，勾选后渲染会明确提示素材缺失。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
             val selectedCount = project.shots.count { it.cutoutEnabled }
-            ChoiceTile("选择图片", "已选择 $selectedCount 张，点击选择", onClick = { cutoutPicker = true }, enabled = !busy && project.shots.isNotEmpty())
-        }
-    }
-
-    if (coverPicker) {
-        ImagePickerDialog("选择封面图片", project, multiSelect = false,
-            selected = setOf(project.coverShotId), onDismiss = { coverPicker = false }) { ids ->
-            ids.firstOrNull()?.let { project.coverShotId = it }
-            onSave(project); coverPicker = false
-        }
-    }
-    if (cutoutPicker) {
-        ImagePickerDialog("选择成片抠图图片", project, multiSelect = true,
-            selected = project.shots.filter { it.cutoutEnabled }.map { it.id }.toSet(),
-            onDismiss = { cutoutPicker = false }) { ids ->
-            project.shots.forEach { it.cutoutEnabled = it.id in ids }
-            project.cutoutEnabled = ids.isNotEmpty()
-            onSave(project); cutoutPicker = false
+            ChoiceTile(
+                "成片抠图",
+                if (selectedCount > 0) "清除旧选择（当前 $selectedCount 镜）" else "模型尚未集成，暂不可用",
+                onClick = {
+                    project.shots.forEach { it.cutoutEnabled = false }
+                    project.cutoutEnabled = false
+                    onSave(project)
+                },
+                enabled = !busy && selectedCount > 0
+            )
         }
     }
 }

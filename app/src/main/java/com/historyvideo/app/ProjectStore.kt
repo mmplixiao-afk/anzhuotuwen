@@ -8,6 +8,53 @@ import java.util.UUID
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
+data class MotionPoint(
+    val zoom: Double,
+    val x: Double,
+    val y: Double
+) {
+    fun json() = JSONObject().apply {
+        put("zoom", zoom); put("x", x); put("y", y)
+    }
+
+    companion object {
+        fun from(value: JSONObject) = MotionPoint(
+            zoom = value.optDouble("zoom", 1.0),
+            x = value.optDouble("x", 0.0),
+            y = value.optDouble("y", 0.0)
+        )
+    }
+}
+
+data class MotionPlan(
+    val mode: String,
+    val start: MotionPoint,
+    val end: MotionPoint
+) {
+    fun json() = JSONObject().apply {
+        put("mode", mode); put("start", start.json()); put("end", end.json())
+    }
+
+    companion object {
+        fun from(value: JSONObject) = MotionPlan(
+            mode = value.optString("mode", "zoom_in"),
+            start = MotionPoint.from(value.optJSONObject("start") ?: JSONObject()),
+            end = MotionPoint.from(value.optJSONObject("end") ?: JSONObject())
+        )
+    }
+}
+
+data class TransitionPlan(val type: String, val frames: Int) {
+    fun json() = JSONObject().apply { put("type", type); put("frames", frames) }
+
+    companion object {
+        fun from(value: JSONObject) = TransitionPlan(
+            type = value.optString("type", "none"),
+            frames = value.optInt("frames", 0).coerceAtLeast(0)
+        )
+    }
+}
+
 data class Shot(
     val id: Int,
     var text: String,
@@ -21,7 +68,12 @@ data class Shot(
     var imageStatus: String = "pending",
     var audioStatus: String = "pending",
     var error: String = "",
-    var cutoutEnabled: Boolean = false
+    var cutoutEnabled: Boolean = false,
+    var subtitleChunks: MutableList<String> = mutableListOf(),
+    var motionPlan: MotionPlan? = null,
+    var cutoutMirrorX: Boolean? = null,
+    var cutoutBackgroundPlan: MotionPlan? = null,
+    var cutoutForegroundPlan: MotionPlan? = null
 ) {
     fun json() = JSONObject().apply {
         put("shot_id", id); put("text", text); put("image_prompt", imagePrompt)
@@ -29,6 +81,11 @@ data class Shot(
         put("camera_motion", cameraMotion); put("sound_effect", soundEffect)
         put("transition", transition); put("image_status", imageStatus)
         put("audio_status", audioStatus); put("error", error); put("cutout_enabled", cutoutEnabled)
+        put("subtitle_chunks", JSONArray(subtitleChunks))
+        put("motion_plan", motionPlan?.json() ?: JSONObject.NULL)
+        put("cutout_mirror_x", cutoutMirrorX ?: JSONObject.NULL)
+        put("cutout_background_plan", cutoutBackgroundPlan?.json() ?: JSONObject.NULL)
+        put("cutout_foreground_plan", cutoutForegroundPlan?.json() ?: JSONObject.NULL)
     }
 
     companion object {
@@ -45,7 +102,22 @@ data class Shot(
             imageStatus = value.optString("image_status", "pending"),
             audioStatus = value.optString("audio_status", "pending"),
             error = value.optString("error"),
-            cutoutEnabled = value.optBoolean("cutout_enabled", false)
+            cutoutEnabled = value.optBoolean("cutout_enabled", false),
+            subtitleChunks = mutableListOf<String>().apply {
+                val chunks = value.optJSONArray("subtitle_chunks") ?: JSONArray()
+                for (index in 0 until chunks.length()) {
+                    val item = chunks.opt(index)
+                    val text = when (item) {
+                        is JSONObject -> item.optString("text", item.optString("subtitle"))
+                        else -> item?.toString().orEmpty()
+                    }.trim()
+                    if (text.isNotBlank()) add(text)
+                }
+            },
+            motionPlan = value.optJSONObject("motion_plan")?.let { MotionPlan.from(it) },
+            cutoutMirrorX = if (value.isNull("cutout_mirror_x")) null else value.optBoolean("cutout_mirror_x"),
+            cutoutBackgroundPlan = value.optJSONObject("cutout_background_plan")?.let { MotionPlan.from(it) },
+            cutoutForegroundPlan = value.optJSONObject("cutout_foreground_plan")?.let { MotionPlan.from(it) }
         )
     }
 }
@@ -67,9 +139,13 @@ data class VideoProject(
     var imageSize: String = "9:16",
     var subtitlesEnabled: Boolean = true,
     var motionMode: String = "random",
-    var transitionMode: String = "fade",
+    var transitionMode: String = "random",
+    var transitionPlans: MutableList<TransitionPlan> = mutableListOf(),
+    var transitionPlanSignature: String = "",
     var coverShotId: Int = 1,
     var coverText: String = "",
+    var openingTemplate: String = "none",
+    var introImageSeconds: Float = 0.3f,
     var cutoutEnabled: Boolean = false,
     var bgmId: String = "none",
     var introSfxId: String = "none",
@@ -86,7 +162,10 @@ data class VideoProject(
         put("total", total); put("duration", duration)
         put("image_size", imageSize); put("subtitles_enabled", subtitlesEnabled)
         put("motion_mode", motionMode); put("transition_mode", transitionMode)
+        put("transition_plans", JSONArray().apply { transitionPlans.forEach { put(it.json()) } })
+        put("transition_plan_signature", transitionPlanSignature)
         put("cover_shot_id", coverShotId); put("cover_text", coverText)
+        put("opening_template", openingTemplate); put("intro_image_seconds", introImageSeconds)
         put("cutout_enabled", cutoutEnabled)
         put("bgm_id", bgmId); put("intro_sfx_id", introSfxId)
         put("bgm_volume", bgmVolume); put("intro_sfx_volume", introSfxVolume)
@@ -114,9 +193,18 @@ data class VideoProject(
             imageSize = value.optString("image_size", "9:16"),
             subtitlesEnabled = value.optBoolean("subtitles_enabled", true),
             motionMode = value.optString("motion_mode", "random"),
-            transitionMode = value.optString("transition_mode", "fade"),
+            transitionMode = value.optString("transition_mode", "random"),
+            transitionPlans = mutableListOf<TransitionPlan>().apply {
+                val plans = value.optJSONArray("transition_plans") ?: JSONArray()
+                for (index in 0 until plans.length()) {
+                    plans.optJSONObject(index)?.let { add(TransitionPlan.from(it)) }
+                }
+            },
+            transitionPlanSignature = value.optString("transition_plan_signature"),
             coverShotId = value.optInt("cover_shot_id", 1),
             coverText = value.optString("cover_text"),
+            openingTemplate = value.optString("opening_template", "none"),
+            introImageSeconds = value.optDouble("intro_image_seconds", 0.3).toFloat().coerceIn(0.08f, 3f),
             cutoutEnabled = value.optBoolean("cutout_enabled", false),
             bgmId = value.optString("bgm_id", "none"),
             introSfxId = value.optString("intro_sfx_id", "none"),
@@ -189,8 +277,7 @@ class ProjectStore(context: Context) {
     fun bundledFont(id: String): File {
         val assetName = when (id) {
             "cover" -> "STXINGKA.TTF"
-            // SimHei gives the mobile captions the heavier stroke used by the desktop preview.
-            "subtitle" -> "simhei.ttf"
+            "subtitle" -> "msyh.ttc"
             else -> "simhei.ttf"
         }
         val target = File(audioRoot, assetName)
