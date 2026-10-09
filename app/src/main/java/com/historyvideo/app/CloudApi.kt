@@ -7,6 +7,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONException
 import android.graphics.BitmapFactory
 import java.io.File
 import java.net.URI
@@ -80,6 +81,7 @@ class CloudApi {
         .callTimeout(900, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()
+    private val textClient = client.newBuilder().retryOnConnectionFailure(false).build()
     private val jsonType = "application/json; charset=utf-8".toMediaType()
 
     private fun endpoint(base: String, suffix: String): String {
@@ -93,7 +95,7 @@ class CloudApi {
     }
 
     private fun post(url: String, body: JSONObject, key: String, doubao: Boolean = false,
-                     model: String = ""): String {
+                     model: String = "", requestClient: OkHttpClient = client): String {
         require(key.isNotBlank()) { "请先填写 API Key" }
         val request = Request.Builder().url(url)
             .header("Accept", "application/json")
@@ -104,7 +106,7 @@ class CloudApi {
                     header("X-Api-Request-Id", UUID.randomUUID().toString().replace("-", ""))
                 } else header("Authorization", "Bearer $key")
         }.build()
-        client.newCall(request).execute().use { response ->
+        requestClient.newCall(request).execute().use { response ->
             val responseText = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 val detail = responseText.replace(Regex("\\s+"), " ").trim().take(300)
@@ -150,7 +152,8 @@ class CloudApi {
             .put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content", "你是一个严格执行用户任务提示词的生成器。"))
                 .put(JSONObject().put("role", "user").put("content", userContent)))
-        val result = JSONObject(post(endpoint(config.baseUrl, "/v1/chat/completions"), body, config.key))
+        val result = JSONObject(post(endpoint(config.baseUrl, "/v1/chat/completions"), body, config.key,
+            requestClient = textClient))
         val content = result.getJSONArray("choices").getJSONObject(0)
             .getJSONObject("message").getString("content").trim()
         require(content.isNotBlank()) { "模型返回了空内容" }
@@ -181,8 +184,36 @@ class CloudApi {
         return topics
     }
 
-    fun shots(config: ProviderConfig, prompt: String, input: String, expectedScript: String = input): MutableList<Shot> {
-        val raw = text(config, prompt, input).removePrefix("```json").removePrefix("```")
+    fun shots(config: ProviderConfig, prompt: String, input: String, expectedScript: String = input,
+              onRetry: () -> Unit = {}): MutableList<Shot> {
+        val taskPrompt = prompt + StoryboardRules.instruction(expectedScript)
+        return checkedShots(expectedScript, onRetry) { retryInstruction ->
+            text(config, taskPrompt + retryInstruction, input)
+        }
+    }
+
+    internal fun checkedShots(expectedScript: String, onRetry: () -> Unit = {},
+                              request: (String) -> String): MutableList<Shot> {
+        var lastFailure = ""
+        for (attempt in 0..1) {
+            val retryInstruction = if (attempt == 0) "" else
+                "\n上次分镜不合格：$lastFailure。严格按上述原文边界输出，每镜生成独立画面，原文不得增删。"
+            // Only invalid model output is retried. A transport error may already be billed.
+            val content = request(retryInstruction)
+            try {
+                return parseShots(content, expectedScript)
+            } catch (error: JSONException) {
+                lastFailure = "分镜JSON不完整或字段格式无效"
+            } catch (error: IllegalArgumentException) {
+                lastFailure = error.message.orEmpty()
+            }
+            if (attempt == 0) onRetry()
+        }
+        error("分镜重试一次后仍不合格：$lastFailure。未保存错误分镜，正文和原分镜已保留")
+    }
+
+    private fun parseShots(content: String, expectedScript: String): MutableList<Shot> {
+        val raw = content.removePrefix("```json").removePrefix("```")
             .removeSuffix("```").trim()
         val start = raw.indexOf('{')
         val end = raw.lastIndexOf('}')
@@ -194,7 +225,15 @@ class CloudApi {
         val shots = mutableListOf<Shot>()
         for (index in 0 until array.length()) {
             val obj = array.getJSONObject(index)
-            val shot = Shot.from(obj)
+            val shot = Shot.from(obj).copy(
+                text = obj.getString("voiceover"),
+                visual = obj.getString("visual"),
+                imagePrompt = obj.getString("image_prompt"),
+                imageStatus = "pending", audioStatus = "pending", error = "",
+                cutoutEnabled = false, motionPlan = null, cutoutMirrorX = null,
+                cutoutBackgroundPlan = null, cutoutForegroundPlan = null,
+                imageRevision = "", audioRevision = ""
+            )
             require(shot.id == index + 1 && shot.text.isNotBlank() && shot.imagePrompt.isNotBlank()) {
                 "第 ${index + 1} 镜缺少必要字段"
             }
@@ -202,10 +241,7 @@ class CloudApi {
             require(shot.duration in 0.5..30.0) { "第 ${index + 1} 镜时长无效" }
             shots.add(shot)
         }
-        fun normalized(value: String) = value.filterNot(Char::isWhitespace)
-        require(normalized(shots.joinToString("") { it.text }) == normalized(expectedScript)) {
-            "分镜口播没有完整覆盖文案，请重新生成分镜"
-        }
+        StoryboardRules.validate(expectedScript, shots)
         return shots
     }
 

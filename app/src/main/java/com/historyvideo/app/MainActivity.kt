@@ -1220,6 +1220,7 @@ private fun ScriptScreen(project: VideoProject,
     var previewError by remember { mutableStateOf("") }
     var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var previewJob by remember { mutableStateOf<Job?>(null) }
+    var confirmSplit by remember(project.id) { mutableStateOf(false) }
     DisposableEffect(Unit) {
         onDispose {
             previewJob?.cancel()
@@ -1316,10 +1317,10 @@ private fun ScriptScreen(project: VideoProject,
         project.introSfxVolume = ((sfxVolume.toFloatOrNull() ?: 100f) / 100f).coerceIn(0f, 2f)
         if (saveScript && project.script != script) {
             project.script = script
-            project.shots.clear()
             project.stage = "script"
             project.status = "review"
-            project.detail = "正文已保存"
+            project.detail = if (project.shots.isEmpty()) "正文已保存" else "正文已保存，请重新拆分镜头"
+            project.renderRevision = java.util.UUID.randomUUID().toString()
             project.completed = 0; project.total = 0
             project.duration = 0.0
             project.transitionPlans.clear(); project.transitionPlanSignature = ""
@@ -1352,10 +1353,28 @@ private fun ScriptScreen(project: VideoProject,
         OutlinedButton(onClick = { saveInputs(saveScript = true) },
             enabled = !busy && script.isNotBlank()) { Text("保存文案") }
         Button(onClick = {
-            saveInputs(saveScript = true)
-            stopPreview()
-            onRun(project, GenerationService.SHOTS, 0)
+            if (project.shots.isNotEmpty()) confirmSplit = true else {
+                saveInputs(saveScript = true)
+                stopPreview()
+                onRun(project, GenerationService.SHOTS, 0)
+            }
         }, enabled = !busy && script.isNotBlank()) { Text("拆镜成卷") }
+    }
+    if (confirmSplit) {
+        AlertDialog(
+            onDismissRequest = { confirmSplit = false },
+            title = { Text("重新拆分镜头") },
+            text = { Text("将按当前正文重新划分镜头。变化镜头的图片和配音需要重新生成，视频需要重新渲染。拆镜失败会保留原分镜。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmSplit = false
+                    saveInputs(saveScript = true)
+                    stopPreview()
+                    onRun(project, GenerationService.SHOTS, 0)
+                }, enabled = !busy) { Text("重新拆镜") }
+            },
+            dismissButton = { TextButton(onClick = { confirmSplit = false }) { Text("取消") } }
+        )
     }
 }
 

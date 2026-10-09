@@ -83,6 +83,11 @@ class GenerationService : Service() {
             store.save(project)
             notifyStatus(project.detail)
             try {
+                if (action in setOf(FINISH, VOICE_ALL, IMAGE_ALL, RENDER, IMAGE, AUDIO)) {
+                    require(project.storyboardScript == project.script) {
+                        "正文已修改，请先重新拆分镜头，再生成对应的图片、配音和视频"
+                    }
+                }
                 if ((action == FINISH || action == RENDER) && project.shots.any { it.cutoutEnabled }) {
                     CutoutProcessor(store).requireReady()
                 }
@@ -114,16 +119,13 @@ class GenerationService : Service() {
             } catch (error: Exception) {
                 if (isActive) {
                     project.status = "failed"
-                    val detail = userFacingError(error)
+                    val detail = userFacingError(error, project.stage)
                     if (detail.contains("素材未齐全")) {
                         project.stage = "render"
                         project.completed = 0
                         project.total = 0
                     }
-                    project.detail = if (detail.contains("timeout", ignoreCase = true) ||
-                        detail.contains("timed out", ignoreCase = true)) {
-                        "文本接口响应超时，分镜输出较长，请稍后重试"
-                    } else detail.take(180).ifBlank { "任务失败" }
+                    project.detail = detail.take(180).ifBlank { "任务失败" }
                     store.save(project)
                     notifyStatus(project.detail, false)
                 }
@@ -132,10 +134,25 @@ class GenerationService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun userFacingError(error: Exception): String {
+    private fun userFacingError(error: Exception, stage: String = "images"): String {
         val detail = error.message.orEmpty()
-        val normalized = detail.lowercase()
+        val normalized = generateSequence<Throwable>(error) { it.cause }
+            .joinToString(" ") { it.message.orEmpty() }.lowercase()
+        val task = when (stage) {
+            "shots" -> "拆分镜头"
+            "script" -> "生成文案"
+            "topic" -> "生成选题"
+            "tts" -> "生成配音"
+            "images" -> "生成图片"
+            else -> "当前任务"
+        }
         return when {
+            normalized.contains("software caused connection abort") ||
+                normalized.contains("connection reset") || normalized.contains("broken pipe") ||
+                normalized.contains("unexpected end of stream") ->
+                "${task}时连接中断。正文和已有分镜已保留，请检查手机网络或代理后手动重试"
+            normalized.contains("timeout") || normalized.contains("timed out") ->
+                "${task}请求超时，请检查网络或中转站状态后手动重试"
             normalized.contains("content moderation") ||
                 normalized.contains("moderation") ||
                 normalized.contains("内容审核") ->
@@ -184,6 +201,8 @@ class GenerationService : Service() {
             api.text(settings.provider("text"), prompt, project.title, scriptTitleInstruction(project.title)))
         project.script = script
         project.shots.clear()
+        project.storyboardScript = ""
+        project.renderRevision = java.util.UUID.randomUUID().toString()
         update(project, "script", "review", "文案生成成功，请确认或修改")
     }
 
@@ -201,10 +220,13 @@ class GenerationService : Service() {
         val prompt = configuredPrompt("shots", promptOverride)
         update(project, "shots", "running", "正在拆分分镜")
         val storyboardInput = "主题：${project.title}\n\n完整口播文案：\n${project.script}"
-        project.shots = api.shots(
-            settings.provider("text"), prompt, storyboardInput, project.script
+        val shots = api.shots(
+            settings.provider("text"), prompt, storyboardInput, project.script,
+            onRetry = { update(project, "shots", "running", "分镜结果不合格，正在重试一次") }
         )
-        update(project, "shots", "review", "分镜拆分成功", project.shots.size, project.shots.size)
+        store.applyStoryboard(project, shots)
+        update(project, "shots", "review", "分镜拆分成功，请生成变化镜头的图片和配音，并重新渲染视频",
+            project.shots.size, project.shots.size)
     }
 
     private suspend fun generateImages(project: VideoProject, promptOverride: String = "") {

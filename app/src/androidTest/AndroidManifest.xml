@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <instrumentation
+        android:name="com.historyvideo.app.StoryboardRulesTest"
+        android:targetPackage="com.historyvideo.app"
+        android:functionalTest="true" />
+</manifest>

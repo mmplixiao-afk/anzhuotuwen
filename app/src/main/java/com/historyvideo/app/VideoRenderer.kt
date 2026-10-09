@@ -952,7 +952,7 @@ class VideoRenderer(private val store: ProjectStore) {
                     val sourceStamp = File(it.background.parentFile, "source.txt").readTextOrNull().orEmpty()
                     "$sourceStamp:${it.background.length()}:${it.background.lastModified()}:${it.foreground.length()}:${it.foreground.lastModified()}"
                 } else ""
-                "${shot.id}:${shot.cutoutEnabled}:${shot.text.hashCode()}:${shot.subtitleChunks.joinToString("\u0000").hashCode()}:" +
+                "${shot.id}:${shot.imageRevision}:${shot.audioRevision}:${shot.cutoutEnabled}:${shot.text.hashCode()}:${shot.subtitleChunks.joinToString("\u0000").hashCode()}:" +
                     "${shot.motionPlan}:${shot.cutoutBackgroundPlan}:${shot.cutoutForegroundPlan}:$layers"
             }
         ).joinToString("|")

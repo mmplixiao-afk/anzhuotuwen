@@ -73,7 +73,10 @@ data class Shot(
     var motionPlan: MotionPlan? = null,
     var cutoutMirrorX: Boolean? = null,
     var cutoutBackgroundPlan: MotionPlan? = null,
-    var cutoutForegroundPlan: MotionPlan? = null
+    var cutoutForegroundPlan: MotionPlan? = null,
+    var visual: String = "",
+    var imageRevision: String = "",
+    var audioRevision: String = ""
 ) {
     fun json() = JSONObject().apply {
         put("shot_id", id); put("text", text); put("image_prompt", imagePrompt)
@@ -86,6 +89,7 @@ data class Shot(
         put("cutout_mirror_x", cutoutMirrorX ?: JSONObject.NULL)
         put("cutout_background_plan", cutoutBackgroundPlan?.json() ?: JSONObject.NULL)
         put("cutout_foreground_plan", cutoutForegroundPlan?.json() ?: JSONObject.NULL)
+        put("visual", visual); put("image_revision", imageRevision); put("audio_revision", audioRevision)
     }
 
     companion object {
@@ -117,7 +121,10 @@ data class Shot(
             motionPlan = value.optJSONObject("motion_plan")?.let { MotionPlan.from(it) },
             cutoutMirrorX = if (value.isNull("cutout_mirror_x")) null else value.optBoolean("cutout_mirror_x"),
             cutoutBackgroundPlan = value.optJSONObject("cutout_background_plan")?.let { MotionPlan.from(it) },
-            cutoutForegroundPlan = value.optJSONObject("cutout_foreground_plan")?.let { MotionPlan.from(it) }
+            cutoutForegroundPlan = value.optJSONObject("cutout_foreground_plan")?.let { MotionPlan.from(it) },
+            visual = value.optString("visual"),
+            imageRevision = value.optString("image_revision"),
+            audioRevision = value.optString("audio_revision")
         )
     }
 }
@@ -151,7 +158,9 @@ data class VideoProject(
     var introSfxId: String = "none",
     var bgmVolume: Float = 0.18f,
     var introSfxVolume: Float = 1.0f,
-    var ttsVolume: Float = 1.0f
+    var ttsVolume: Float = 1.0f,
+    var storyboardScript: String = "",
+    var renderRevision: String = ""
 ) {
     fun json() = JSONObject().apply {
         put("schema_version", 1); put("id", id); put("title", title)
@@ -170,6 +179,7 @@ data class VideoProject(
         put("bgm_id", bgmId); put("intro_sfx_id", introSfxId)
         put("bgm_volume", bgmVolume); put("intro_sfx_volume", introSfxVolume)
         put("tts_volume", ttsVolume)
+        put("storyboard_script", storyboardScript); put("render_revision", renderRevision)
         put("shots", JSONArray().apply { shots.forEach { put(it.json()) } })
     }
 
@@ -210,7 +220,9 @@ data class VideoProject(
             introSfxId = value.optString("intro_sfx_id", "none"),
             bgmVolume = value.optDouble("bgm_volume", 0.18).toFloat().coerceIn(0f, 1f),
             introSfxVolume = value.optDouble("intro_sfx_volume", 1.0).toFloat().coerceIn(0f, 2f),
-            ttsVolume = value.optDouble("tts_volume", 1.0).toFloat().coerceIn(0f, 2f)
+            ttsVolume = value.optDouble("tts_volume", 1.0).toFloat().coerceIn(0f, 2f),
+            storyboardScript = value.optString("storyboard_script", value.optString("script")),
+            renderRevision = value.optString("render_revision")
         )
     }
 }
@@ -258,9 +270,45 @@ class ProjectStore(context: Context) {
     }
 
     fun delete(id: String) = synchronized(this) { directory(id).deleteRecursively() }
-    fun image(project: VideoProject, shot: Shot) = File(directory(project.id), "images/%03d.jpg".format(shot.id))
-    fun audio(project: VideoProject, shot: Shot) = File(directory(project.id), "audio/%03d.mp3".format(shot.id))
-    fun output(project: VideoProject) = File(directory(project.id), "output/final.mp4")
+    private fun revisionSuffix(revision: String): String {
+        require(revision.isEmpty() || revision.matches(Regex("[a-f0-9-]{36}")))
+        return if (revision.isEmpty()) "" else "_$revision"
+    }
+
+    fun image(project: VideoProject, shot: Shot) = File(directory(project.id),
+        "images/%03d%s.jpg".format(shot.id, revisionSuffix(shot.imageRevision)))
+    fun audio(project: VideoProject, shot: Shot) = File(directory(project.id),
+        "audio/%03d%s.mp3".format(shot.id, revisionSuffix(shot.audioRevision)))
+    fun output(project: VideoProject) = File(directory(project.id),
+        "output/final${revisionSuffix(project.renderRevision)}.mp4")
+
+    fun applyStoryboard(project: VideoProject, generated: List<Shot>) {
+        val previous = project.shots.associateBy { it.id }
+        // Separate asset revisions prevent an old numbered file being used for a new beat.
+        project.shots = generated.map { next ->
+            val old = previous[next.id]
+            val sameVoice = old != null && old.text == next.text
+            val sameImage = sameVoice && old!!.imagePrompt == next.imagePrompt
+            next.copy(
+                imageRevision = if (sameImage) old!!.imageRevision else UUID.randomUUID().toString(),
+                audioRevision = if (sameVoice) old!!.audioRevision else UUID.randomUUID().toString(),
+                imageStatus = if (sameImage && old!!.imageStatus == "done") "done" else "pending",
+                audioStatus = if (sameVoice && old!!.audioStatus == "done") "done" else "pending",
+                duration = if (sameVoice) old!!.duration else next.duration,
+                cutoutEnabled = if (sameImage) old!!.cutoutEnabled else false,
+                motionPlan = if (sameImage) old!!.motionPlan else null,
+                cutoutMirrorX = if (sameImage) old!!.cutoutMirrorX else null,
+                cutoutBackgroundPlan = if (sameImage) old!!.cutoutBackgroundPlan else null,
+                cutoutForegroundPlan = if (sameImage) old!!.cutoutForegroundPlan else null
+            )
+        }.toMutableList()
+        project.storyboardScript = project.script
+        project.renderRevision = UUID.randomUUID().toString()
+        project.duration = 0.0
+        project.coverShotId = 1
+        project.transitionPlans.clear()
+        project.transitionPlanSignature = ""
+    }
 
     fun bundledAudio(id: String): File? {
         val assetName = when (id) {
