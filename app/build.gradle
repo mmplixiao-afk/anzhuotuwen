@@ -14,8 +14,20 @@ android {
         versionName '0.5.4'
     }
 
+    // 👇 新增的签名配置块
+    signingConfigs {
+        release {
+            // 优先读取云端环境变量，本地没有时自动回退使用默认值和本地文件
+            storeFile file(System.getenv("KEYSTORE_PATH") ?: "my-release-key.jks")
+            storePassword System.getenv("KEYSTORE_PASSWORD") ?: "123456"
+            keyAlias System.getenv("KEY_ALIAS") ?: "my-key"
+            keyPassword System.getenv("KEY_PASSWORD") ?: "123456"
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig signingConfigs.release // 👈 这里是新增的引用
             minifyEnabled false
         }
     }
