@@ -20,7 +20,7 @@ import kotlin.concurrent.write
 
 internal enum class CutoutModel(val filename: String, val label: String) {
     HUMAN("u2net_human_seg.onnx", "人物分割模型"),
-    BACKGROUND("lama_fp32.onnx", "背景修补模型")
+    BACKGROUND("lama_fp32.onnx", "背景修复模型")
 }
 
 internal data class LocalCutoutModels(val human: File, val background: File) {
@@ -39,7 +39,7 @@ internal class CutoutModels(context: Context) {
     fun requireReady() {
         val missing = CutoutModel.values().filterNot(::isImported)
         require(missing.isEmpty()) {
-            "请先到‘画面与章法 → 成片抠图’导入${missing.joinToString("、") { it.label }}"
+            "请先到‘设置 → 抠图模型’导入${missing.joinToString("、") { it.label }}"
         }
     }
 

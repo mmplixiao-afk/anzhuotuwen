@@ -17,10 +17,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.BasicTextField
@@ -99,6 +101,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -427,6 +431,7 @@ class MainActivity : ComponentActivity() {
                                 "prompts" -> "提示词卷库"
                                 "prompt_editor" -> "提示词版本"
                                 "settings" -> "设置"
+                                "cutout_models" -> "抠图模型"
                                 else -> "史镜 · 图文创作台（$appVersion）"
                             }, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
                         }, navigationIcon = {
@@ -538,7 +543,9 @@ class MainActivity : ComponentActivity() {
                     "api" -> ApiSettingsScreen(settings) { message = it }
                     "prompts" -> PromptListScreen(settings, onOpen = { selectedPromptType = it; navigate("prompt_editor") })
                     "prompt_editor" -> PromptEditorScreen(settings, selectedPromptType) { message = it }
-                    "settings" -> SettingsScreen(onApi = { navigate("api") }, onPrompts = { navigate("prompts") })
+                    "settings" -> SettingsScreen(onApi = { navigate("api") }, onPrompts = { navigate("prompts") },
+                        onModels = { navigate("cutout_models") })
+                    "cutout_models" -> CutoutModelSettingsScreen(busy = projects.any { it.status == "running" })
                     "project" -> if (selected != null) ProjectOverviewScreen(
                         selected,
                         onOpenScript = { navigate("script") },
@@ -675,7 +682,7 @@ private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long
 }
 
 @Composable
-private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit) {
+private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onModels: () -> Unit) {
     Text("工作台设置", style = MaterialTheme.typography.headlineSmall)
     Card(onClick = onApi, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
@@ -691,6 +698,79 @@ private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit) {
             Text("按选题、文案、分镜和生图提示词分别编辑", color = HistoryColors.muted)
         }
     }
+    Card(onClick = onModels, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("抠图模型", style = MaterialTheme.typography.titleLarge)
+            Text("人物分割模型、背景修复模型", color = HistoryColors.muted)
+        }
+    }
+}
+
+@Composable
+private fun CutoutModelSettingsScreen(busy: Boolean) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val models = remember(context) { CutoutModels(context) }
+    var modelToImport by remember { mutableStateOf<CutoutModel?>(null) }
+    var importingModel by remember { mutableStateOf<CutoutModel?>(null) }
+    var importMessage by remember { mutableStateOf("") }
+    var importFailed by remember { mutableStateOf(false) }
+    var modelStateVersion by remember { mutableStateOf(0) }
+    val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val selectedModel = modelToImport
+        modelToImport = null
+        if (uri != null && selectedModel != null) {
+            importingModel = selectedModel
+            importFailed = false
+            importMessage = "正在导入${selectedModel.label}"
+            scope.launch {
+                try {
+                    models.importModel(selectedModel, uri) { detail ->
+                        scope.launch(Dispatchers.Main) { importMessage = detail }
+                    }
+                    importMessage = "${selectedModel.label}已导入"
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    importFailed = true
+                    importMessage = error.message ?: "模型导入失败"
+                } finally {
+                    modelStateVersion++
+                    importingModel = null
+                }
+            }
+        }
+    }
+    val imported = remember(modelStateVersion) { CutoutModel.values().filter(models::isImported).toSet() }
+    CutoutModel.values().forEach { model ->
+        val ready = model in imported
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+            colors = CardDefaults.cardColors(containerColor = HistoryColors.card),
+            border = BorderStroke(1.dp, HistoryColors.line)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(model.label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                    Text(if (ready) "已导入" else "未导入", style = MaterialTheme.typography.labelMedium,
+                        color = if (ready) HistoryColors.green else HistoryColors.muted)
+                }
+                Text(model.filename, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                OutlinedButton(onClick = {
+                    modelToImport = model
+                    modelPicker.launch(arrayOf("*/*"))
+                }, enabled = !busy && importingModel == null && modelToImport == null,
+                    modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(8.dp)) {
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (importingModel == model) "正在导入" else if (ready) "重新导入" else "导入模型")
+                }
+            }
+        }
+    }
+    if (importingModel != null) LinearProgressIndicator(Modifier.fillMaxWidth())
+    if (importMessage.isNotBlank()) Text(importMessage, style = MaterialTheme.typography.bodySmall,
+        color = if (importFailed) HistoryColors.ochre else HistoryColors.green)
+    if (busy) Text("任务结束后可导入模型", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
 }
 
 private fun elapsedLabel(startedAt: Long, now: Long): String {
@@ -713,6 +793,42 @@ private fun stageLabel(stage: String) = when (stage) {
 }
 
 @Composable
+private fun ApiInputField(label: String, value: String, onValueChange: (String) -> Unit,
+                          enabled: Boolean, secret: Boolean = false) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label, style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
+        OutlinedTextField(
+            value = value, onValueChange = onValueChange, enabled = enabled,
+            modifier = Modifier.fillMaxWidth(), singleLine = true,
+            shape = RoundedCornerShape(8.dp), textStyle = MaterialTheme.typography.bodyLarge,
+            visualTransformation = if (secret) PasswordVisualTransformation() else VisualTransformation.None,
+            colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = HistoryColors.card,
+                unfocusedContainerColor = HistoryColors.card,
+                focusedBorderColor = HistoryColors.cinnabar,
+                unfocusedBorderColor = HistoryColors.line,
+                cursorColor = HistoryColors.cinnabar
+            )
+        )
+    }
+}
+
+@Composable
+private fun ApiChoiceField(label: String, value: String, enabled: Boolean, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label, style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
+        Surface(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(8.dp), color = HistoryColors.card,
+            border = BorderStroke(1.dp, HistoryColors.line)) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(value, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                Icon(Icons.Filled.ArrowDropDown, contentDescription = null, tint = HistoryColors.muted)
+            }
+        }
+    }
+}
+
+@Composable
 private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit) {
     var selected by remember { mutableStateOf("text") }
     var speed by remember { mutableStateOf(settings.speed.toString()) }
@@ -726,19 +842,21 @@ private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit
         onDispose { mediaPlayer?.release() }
     }
 
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(HistoryColors.subcard).padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         listOf("text" to "文本接口", "image" to "图片接口", "tts" to "配音参数").forEach { (id, label) ->
-            Card(
-                onClick = { selected = id },
-                modifier = Modifier.weight(1f).height(70.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (selected == id) HistoryColors.cinnabarSoft
-                    else HistoryColors.subcard
-                )
+            Surface(
+                modifier = Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(6.dp))
+                    .selectable(selected = selected == id, enabled = !testing, role = Role.Tab, onClick = { selected = id }),
+                shape = RoundedCornerShape(6.dp),
+                color = if (selected == id) HistoryColors.card else Color.Transparent,
+                shadowElevation = if (selected == id) 1.dp else 0.dp
             ) {
-                Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
-                    Text(label, fontWeight = if (selected == id) FontWeight.Bold else FontWeight.Normal)
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(label, style = MaterialTheme.typography.labelLarge,
+                        fontWeight = if (selected == id) FontWeight.Bold else FontWeight.Medium,
+                        color = if (selected == id) HistoryColors.cinnabar else HistoryColors.muted,
+                        maxLines = 1)
                 }
             }
         }
@@ -753,38 +871,28 @@ private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit
         var imageSize by remember { mutableStateOf(initial.imageSize.ifBlank { "1024x1792" }) }
         var voiceId by remember { mutableStateOf(settings.voiceId) }
         var imageSizeMenu by remember { mutableStateOf(false) }
-        val hasSavedKey = settings.hasApiKey(selected)
+        var hasSavedKey by remember { mutableStateOf(settings.hasApiKey(selected)) }
 
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
-        ) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(when (selected) {
-                    "text" -> "文本接口"
-                    "image" -> "图片接口"
-                    else -> "配音参数"
-                }, style = MaterialTheme.typography.titleLarge)
-
+        Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 if (selected == "tts") {
-                    InputTile("配音服务", interfaceType, { interfaceType = it })
-                    InputTile("接口地址", url, { url = it })
-                    InputTile("API Key", apiKey, { apiKey = it })
-                    if (hasSavedKey) Text("手机中已保存 Key", style = MaterialTheme.typography.bodySmall, color = HistoryColors.green)
-                    InputTile("Group ID", groupId, { groupId = it })
-                    InputTile("模型 / Resource ID", model, { model = it })
-                    InputTile("音色 / 说话人 ID", voiceId, { voiceId = it })
-                    InputTile("语速 0.5～2.0", speed, { speed = it })
+                    ApiInputField("配音服务", interfaceType, { interfaceType = it }, enabled = !testing)
+                    ApiInputField("接口地址", url, { url = it }, enabled = !testing)
+                    ApiInputField("API Key", apiKey, { apiKey = it }, enabled = !testing, secret = true)
+                    if (hasSavedKey) Text("密钥已保存", style = MaterialTheme.typography.bodySmall, color = HistoryColors.green)
+                    ApiInputField("Group ID", groupId, { groupId = it }, enabled = !testing)
+                    ApiInputField("模型 / Resource ID", model, { model = it }, enabled = !testing)
+                    ApiInputField("音色 / 说话人 ID", voiceId, { voiceId = it }, enabled = !testing)
+                    ApiInputField("语速 0.5～2.0", speed, { speed = it }, enabled = !testing)
                 } else {
-                    InputTile("接口地址", url, { url = it })
-                    InputTile("接口类型", interfaceType, { interfaceType = it })
-                    InputTile("模型", model, { model = it })
-                    InputTile("密钥", apiKey, { apiKey = it })
-                    if (hasSavedKey) Text("手机中已保存 Key", style = MaterialTheme.typography.bodySmall, color = HistoryColors.green)
+                    ApiInputField("接口地址", url, { url = it }, enabled = !testing)
+                    ApiInputField("接口类型", interfaceType, { interfaceType = it }, enabled = !testing)
+                    ApiInputField("模型", model, { model = it }, enabled = !testing)
+                    ApiInputField("密钥", apiKey, { apiKey = it }, enabled = !testing, secret = true)
+                    if (hasSavedKey) Text("密钥已保存", style = MaterialTheme.typography.bodySmall, color = HistoryColors.green)
                     if (selected == "image") {
                         Box(Modifier.fillMaxWidth()) {
-                            ChoiceTile("图片尺寸", imageSizeLabel(imageSize), onClick = { imageSizeMenu = true })
+                            ApiChoiceField("图片尺寸", imageSizeLabel(imageSize), enabled = !testing,
+                                onClick = { imageSizeMenu = true })
                             DropdownMenu(expanded = imageSizeMenu, onDismissRequest = { imageSizeMenu = false }) {
                                 listOf("1024x1792" to "9:16 竖屏", "1024x1024" to "1:1 正方形", "1792x1024" to "16:9 横屏")
                                     .forEach { (value, label) ->
@@ -795,9 +903,10 @@ private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit
                                     }
                             }
                         }
-                        InputTile("生图异步数 1～10", concurrency, { concurrency = it })
+                        ApiInputField("生图异步数 1～10", concurrency, { concurrency = it }, enabled = !testing)
                     }
                 }
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = {
                     settings.saveProvider(selected, ProviderConfig(interfaceType, url, model, apiKey, groupId, imageSize))
                     if (selected == "tts") {
@@ -806,8 +915,10 @@ private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit
                     }
                     if (selected == "image") settings.concurrency = (concurrency.toIntOrNull() ?: 5).coerceIn(1, 10)
                     apiKey = ""
+                    hasSavedKey = settings.hasApiKey(selected)
                     onMessage("设置已保存")
-                }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) { Text("保存设置") }
+                }, enabled = !testing, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) { Text("保存设置") }
 
                 OutlinedButton(onClick = {
                     val saved = settings.provider(selected)
@@ -853,8 +964,10 @@ private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit
                         testing = false
                         onMessage(result)
                     }
-                }, enabled = !testing, modifier = Modifier.fillMaxWidth()) { Text(if (testing) "测试中..." else "测试连接") }
-            }
+                }, enabled = !testing, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(8.dp)) {
+                    Text(if (testing) "测试中..." else "测试连接")
+                }
+                }
         }
     }
 }
@@ -1459,34 +1572,9 @@ private fun ShotListItem(shot: Shot, imageFile: File, busy: Boolean,
 @Composable
 private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var modelToImport by remember(project.id) { mutableStateOf<CutoutModel?>(null) }
-    var importingModel by remember(project.id) { mutableStateOf<CutoutModel?>(null) }
-    var importMessage by remember(project.id) { mutableStateOf("") }
-    var modelStateVersion by remember(project.id) { mutableStateOf(0) }
     var showCutoutPicker by remember(project.id) { mutableStateOf(false) }
     val cutoutModels = remember(context) { CutoutModels(context) }
-    val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        val selectedModel = modelToImport
-        modelToImport = null
-        if (uri != null && selectedModel != null) {
-            importingModel = selectedModel
-            scope.launch {
-                try {
-                    cutoutModels.importModel(selectedModel, uri) { detail ->
-                        scope.launch(Dispatchers.Main) { importMessage = detail }
-                    }
-                    importMessage = "${selectedModel.label}已导入并通过模型检查"
-                    modelStateVersion++
-                } catch (error: Exception) {
-                    importMessage = error.message ?: "模型导入失败"
-                } finally {
-                    importingModel = null
-                }
-            }
-        }
-    }
-    val modelsReady = remember(modelStateVersion) { CutoutModel.values().all(cutoutModels::isImported) }
+    val modelsReady = remember { CutoutModel.values().all(cutoutModels::isImported) }
     var subtitle by remember(project.id, project.subtitlesEnabled) { mutableStateOf(project.subtitlesEnabled) }
     var motion by remember(project.id, project.motionMode) { mutableStateOf(project.motionMode) }
     var transition by remember(project.id, project.transitionMode) { mutableStateOf(project.transitionMode) }
@@ -1577,30 +1665,15 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("成片抠图", style = MaterialTheme.typography.titleLarge)
-            Text("请分别从手机文件中导入电脑端使用的 u2net_human_seg.onnx 和 lama_fp32.onnx。首次导入后会保存在应用私有目录。",
-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-            CutoutModel.values().forEach { model ->
-                val ready = cutoutModels.isImported(model)
-                OutlinedButton(
-                    onClick = { modelToImport = model; modelPicker.launch(arrayOf("application/octet-stream", "*/*")) },
-                    enabled = !busy && importingModel == null,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("${model.label}：${if (ready) "已导入，可重新导入" else "点击选择 ${model.filename}"}")
-                }
-            }
-            if (importingModel != null) {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-                Text(importMessage, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-            } else if (importMessage.isNotBlank()) {
-                Text(importMessage, style = MaterialTheme.typography.bodySmall, color = if (modelsReady) HistoryColors.green else HistoryColors.muted)
-            }
-            if (!modelsReady) Text("导入两份模型后即可选择需要抠图的镜头。", style = MaterialTheme.typography.bodySmall, color = HistoryColors.ochre)
+            Text(if (modelsReady) "模型已就绪，可选择需要抠图的镜头。"
+                else "请先到设置 → 抠图模型导入两份模型。",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (modelsReady) HistoryColors.green else HistoryColors.ochre)
             Text("模型只需导入一次，保存在本机应用数据中；卸载应用后需重新导入。开启的镜头会在渲染前处理并缓存。",
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
             val selectedCutoutCount = project.shots.count { it.cutoutEnabled }
             Button(onClick = { showCutoutPicker = true },
-                enabled = !busy && modelsReady && importingModel == null && project.shots.isNotEmpty(),
+                enabled = !busy && modelsReady && project.shots.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth()) {
                 Text(if (selectedCutoutCount == 0) "选择抠图图片" else "选择抠图图片 · 已选 $selectedCutoutCount 镜")
             }

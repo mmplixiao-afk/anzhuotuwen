@@ -65,10 +65,21 @@ class VideoRenderer(private val store: ProjectStore) {
     private fun run(label: String, vararg args: String) {
         val session = FFmpegKit.executeWithArguments(arrayOf(*args))
         if (!ReturnCode.isSuccess(session.returnCode)) {
-            val lines = session.allLogsAsString.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
+            val logs = session.allLogsAsString.orEmpty()
+            runCatching {
+                val output = File(args.last())
+                val directory = output.parentFile
+                if (directory?.isDirectory == true) {
+                    File(directory, "${output.nameWithoutExtension}.ffmpeg-error.log").writeText(
+                        "$label\nExit code: ${session.returnCode?.value}\nArguments:\n${args.joinToString("\n")}\n\n$logs"
+                    )
+                }
+            }
+            val lines = logs.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
             val diagnostic = lines.lastOrNull { it.contains("No such filter", ignoreCase = true) }
-                ?: lines.lastOrNull { line ->
-                    listOf("Error applying", "Unable to parse", "Error when evaluating", "Failed to configure",
+                ?: lines.firstOrNull { line ->
+                    listOf("No option name", "Option not found", "Undefined constant", "Missing '", "Trailing garbage",
+                        "Unable to parse", "Error when evaluating", "Error applying", "Failed to configure",
                         "Invalid value", "Invalid size", "Invalid pixel", "Invalid chroma", "Invalid luma")
                         .any { line.contains(it, ignoreCase = true) }
                 }
@@ -663,12 +674,15 @@ class VideoRenderer(private val store: ProjectStore) {
         val entry = min(0.28, maxOf(1.0 / 30.0, duration / 3.0))
         val entrySeconds = String.format(Locale.US, "%.6f", entry)
         val focusSeconds = String.format(Locale.US, "%.6f", min(0.08, entry))
+        // These arguments go directly to FFmpeg; escape expression commas for the filter graph.
+        val focus = "A*min(1,T/$entrySeconds)+B*(1-min(1,T/$entrySeconds))".replace(",", "\\,")
+        val entryY = "${height * 0.18}*pow(max(0,1-t/$entrySeconds),3)".replace(",", "\\,")
         return "[0:v]$background[bg];" +
             "[1:v]$foreground,split[sharp][blur];" +
-            "[blur]boxblur=0:0:12:1[blurred];" +
-            "[sharp][blurred]blend=all_expr='A*min(1,T/$entrySeconds)+B*(1-min(1,T/$entrySeconds))'," +
+            "[blur]boxblur=luma_radius=0:luma_power=0:chroma_radius=12:chroma_power=1[blurred];" +
+            "[sharp][blurred]blend=all_expr=$focus," +
             "format=rgba,fade=t=in:st=0:d=$focusSeconds:alpha=1[fg];" +
-            "[bg][fg]overlay=x=0:y='${height * 0.18}*pow(max(0,1-t/$entrySeconds),3)':" +
+            "[bg][fg]overlay=x=0:y=$entryY:" +
             "shortest=1:format=auto,format=yuv420p[v]"
     }
 
