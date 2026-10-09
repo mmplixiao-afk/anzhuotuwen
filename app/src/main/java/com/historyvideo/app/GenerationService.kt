@@ -64,6 +64,7 @@ class GenerationService : Service() {
         if (job?.isActive == true) return START_NOT_STICKY
         val id = intent?.getStringExtra(EXTRA_PROJECT) ?: return START_NOT_STICKY
         val promptOverride = intent.getStringExtra(EXTRA_PROMPT).orEmpty()
+        val shotImagePrompt = intent.getStringExtra(EXTRA_SHOT_IMAGE_PROMPT)
         activeProject = id
         activeProjectId = id
         val notification = notification("正在准备视频任务")
@@ -94,7 +95,7 @@ class GenerationService : Service() {
                     VOICE_ALL -> generateAudio(project)
                     IMAGE_ALL -> generateImages(project, promptOverride)
                     RENDER -> render(project)
-                    IMAGE -> regenerateImage(project, intent.getIntExtra(EXTRA_SHOT, 0), promptOverride)
+                    IMAGE -> regenerateImage(project, intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
                     AUDIO -> regenerateAudio(project, intent.getIntExtra(EXTRA_SHOT, 0))
                 }
             } catch (error: Exception) {
@@ -125,7 +126,7 @@ class GenerationService : Service() {
             normalized.contains("content moderation") ||
                 normalized.contains("moderation") ||
                 normalized.contains("内容审核") ->
-                "图片提示词未通过内容审核，请进入对应分镜详情修改生图提示词后重试"
+                "生图请求未通过内容审核，请检查本镜提示词及设置中的通用生图提示词后重试"
             else -> detail
         }
     }
@@ -267,16 +268,28 @@ class GenerationService : Service() {
         update(project, "tts", "review", "配音生成完成，请继续生成图片", project.shots.size, project.shots.size)
     }
 
-    private fun regenerateImage(project: VideoProject, shotId: Int, promptOverride: String = "") {
+    private fun regenerateImage(project: VideoProject, shotId: Int, promptOverride: String = "",
+                                shotPromptOverride: String? = null) {
         val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
         val imagePrompt = configuredPrompt("image", promptOverride)
+        val shotPrompt = (shotPromptOverride ?: shot.imagePrompt).trim()
+        require(shotPrompt.isNotBlank()) { "请先填写本镜生图提示词" }
+        shot.imagePrompt = shotPrompt
+        shot.imageStatus = "running"
+        shot.error = ""
         update(project, "images", "running", "正在重生成第 $shotId 张图片", 0, 1)
         val target = store.image(project, shot)
         val replacement = File(target.parentFile, target.name + ".new")
-        api.image(settings.provider("image"), "$imagePrompt\n${shot.imagePrompt}", replacement)
-        Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        File(store.directory(project.id), "temp/clip_%03d.mp4".format(shot.id)).delete()
-        shot.imageStatus = "done"; shot.error = ""
+        try {
+            api.image(settings.provider("image"), "$imagePrompt\n$shotPrompt", replacement)
+            Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            File(store.directory(project.id), "temp/clip_%03d.mp4".format(shot.id)).delete()
+            shot.imageStatus = "done"
+        } catch (error: Exception) {
+            shot.imageStatus = "failed"
+            shot.error = userFacingError(error).take(180)
+            throw error
+        }
         update(project, "shots", "review", "图片已更新，可继续制作", 1, 1)
     }
 
@@ -354,6 +367,7 @@ class GenerationService : Service() {
         const val EXTRA_PROJECT = "project_id"
         const val EXTRA_SHOT = "shot_id"
         const val EXTRA_PROMPT = "prompt_override"
+        const val EXTRA_SHOT_IMAGE_PROMPT = "shot_image_prompt"
         const val SCRIPT = "script"
         const val TOPICS = "topics"
         const val SHOTS = "shots"

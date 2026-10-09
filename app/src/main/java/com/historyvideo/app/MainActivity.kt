@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.media.MediaPlayer
 import androidx.core.content.FileProvider
+import androidx.core.view.WindowCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
@@ -25,10 +26,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -130,6 +138,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureStatusBar()
         store = ProjectStore(this)
         store.all().filter { it.status == "running" && it.id != GenerationService.activeProjectId }
             .forEach { project ->
@@ -165,6 +174,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @Suppress("DEPRECATION")
+    private fun configureStatusBar() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT < 35) {
+            window.statusBarColor = android.graphics.Color.WHITE
+        }
+        WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = true
+    }
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -178,6 +196,10 @@ class MainActivity : ComponentActivity() {
             .putExtra(GenerationService.EXTRA_PROJECT, project.id)
             .putExtra(GenerationService.EXTRA_SHOT, shotId)
             .putExtra(GenerationService.EXTRA_PROMPT, prompt)
+        if (action == GenerationService.IMAGE) {
+            val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
+            intent.putExtra(GenerationService.EXTRA_SHOT_IMAGE_PROMPT, shot.imagePrompt)
+        }
         startForegroundService(intent)
     }
 
@@ -363,45 +385,51 @@ class MainActivity : ComponentActivity() {
 
         Scaffold(
             containerColor = HistoryColors.paper,
+            contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
             topBar = {
-            TopAppBar(
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = HistoryColors.paper,
-                    titleContentColor = HistoryColors.ink,
-                    navigationIconContentColor = HistoryColors.cinnabar,
-                    actionIconContentColor = HistoryColors.cinnabar
-                ),
-                title = {
-                Text(when (screen) {
-                    "home" -> "史镜 · 图文创作台（$appVersion）"
-                    "project" -> "制作此卷"
-                    "script" -> "立题成文"
-                    "shots" -> "拆镜成卷"
-                    "shot" -> "镜头详情"
-                    "effects" -> "画面与章法"
-                    "history" -> "旧作存档"
-                    "api" -> "模型与接口"
-                    "prompts" -> "提示词卷库"
-                    "prompt_editor" -> "提示词版本"
-                    "settings" -> "设置"
-                    else -> "史镜 · 图文创作台（$appVersion）"
-                }, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
-            }, navigationIcon = {
-                if (navigation.size > 1) {
-                    IconButton(onClick = { goBack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
-                    }
+                Column {
+                    // Paint behind the transparent status bar on Android 15 and newer.
+                    Spacer(Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.statusBars).background(Color.White))
+                    TopAppBar(
+                        windowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = HistoryColors.paper,
+                            titleContentColor = HistoryColors.ink,
+                            navigationIconContentColor = HistoryColors.cinnabar,
+                            actionIconContentColor = HistoryColors.cinnabar
+                        ),
+                        title = {
+                            Text(when (screen) {
+                                "home" -> "史镜 · 图文创作台（$appVersion）"
+                                "project" -> "制作此卷"
+                                "script" -> "立题成文"
+                                "shots" -> "拆镜成卷"
+                                "shot" -> "镜头详情"
+                                "effects" -> "画面与章法"
+                                "history" -> "旧作存档"
+                                "api" -> "模型与接口"
+                                "prompts" -> "提示词卷库"
+                                "prompt_editor" -> "提示词版本"
+                                "settings" -> "设置"
+                                else -> "史镜 · 图文创作台（$appVersion）"
+                            }, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+                        }, navigationIcon = {
+                            if (navigation.size > 1) {
+                                IconButton(onClick = { goBack() }) {
+                                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                                }
+                            }
+                        }, actions = {
+                            if (screen == "home") {
+                                IconButton(onClick = { navigate("settings") }) {
+                                    Icon(Icons.Filled.Settings, contentDescription = "设置")
+                                }
+                            }
+                        })
                 }
-            }, actions = {
-                if (screen == "home") {
-                    IconButton(onClick = { navigate("settings") }) {
-                        Icon(Icons.Filled.Settings, contentDescription = "设置")
-                    }
-                }
-            })
         }) { inset ->
             Column(
-                Modifier.fillMaxSize().padding(inset).verticalScroll(rememberScrollState()).padding(16.dp),
+                Modifier.fillMaxSize().padding(inset).consumeWindowInsets(inset).verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (message.isNotBlank()) {
@@ -941,11 +969,11 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                 val promptChanged = shot.imagePrompt != prompt
                 shot.text = text; shot.imagePrompt = prompt
                 if (textChanged) shot.audioStatus = "pending"
-                if (promptChanged) shot.imageStatus = "pending"
+                if (promptChanged) { shot.imageStatus = "pending"; shot.error = "" }
                 onSave(project)
             }, enabled = !busy) { Text("保存本段") }
             OutlinedButton(onClick = {
-                shot.imagePrompt = prompt; onSave(project)
+                shot.imagePrompt = prompt; shot.error = ""; onSave(project)
                 onRun(project, GenerationService.IMAGE, shot.id)
             }, enabled = !busy) { Text("重生图片") }
         }
