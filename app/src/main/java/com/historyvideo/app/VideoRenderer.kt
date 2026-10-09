@@ -47,7 +47,7 @@ class VideoRenderer(private val store: ProjectStore) {
         const val SUBTITLE_GLYPH_WIDTH_RATIO = 1.05
         const val COVER_TITLE_MAX_CHARS = 40
         const val COVER_TITLE_DELAY = 1.0
-        const val RENDER_STYLE_VERSION = "subtitle-16-motion-3-transition-4-cutout-1"
+        const val RENDER_STYLE_VERSION = "subtitle-16-motion-3-transition-4-cutout-2"
         const val SUBTITLE_SPLIT_MARKS = "，。！？；：、,.!?;:…"
         const val SUBTITLE_CLOSING_QUOTES = "”’\"'」』）》】)]}〉〕〗〙〛"
         val spokenOnlyPhrases = listOf("他娘的", "奶奶的", "老子")
@@ -679,7 +679,8 @@ class VideoRenderer(private val store: ProjectStore) {
         val entryY = "${height * 0.18}*pow(max(0,1-t/$entrySeconds),3)".replace(",", "\\,")
         return "[0:v]$background[bg];" +
             "[1:v]$foreground,split[sharp][blur];" +
-            "[blur]boxblur=luma_radius=0:luma_power=0:chroma_radius=12:chroma_power=1[blurred];" +
+            // The Android FFmpeg package includes gblur; keep the alpha plane intact.
+            "[blur]gblur=sigma=6:steps=2:planes=7[blurred];" +
             "[sharp][blurred]blend=all_expr=$focus," +
             "format=rgba,fade=t=in:st=0:d=$focusSeconds:alpha=1[fg];" +
             "[bg][fg]overlay=x=0:y=$entryY:" +
