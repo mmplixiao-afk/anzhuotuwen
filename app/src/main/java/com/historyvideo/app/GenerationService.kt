@@ -125,7 +125,7 @@ class GenerationService : Service() {
                         project.completed = 0
                         project.total = 0
                     }
-                    project.detail = detail.take(180).ifBlank { "任务失败" }
+                    project.detail = detail.take(if (detail.contains("退出码")) 320 else 180).ifBlank { "任务失败" }
                     store.save(project)
                     notifyStatus(project.detail, false)
                 }

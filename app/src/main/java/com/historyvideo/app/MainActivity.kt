@@ -20,10 +20,12 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -34,12 +36,17 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsTopHeight
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -80,6 +87,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.key
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.asImageBitmap
@@ -89,9 +98,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.window.Dialog
@@ -1005,19 +1017,21 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
 }
 
 @Composable
-private fun ShotThumbnail(file: File, modifier: Modifier = Modifier.width(128.dp).height(160.dp), rotation: Float = 0f) {
+private fun ShotThumbnail(file: File, modifier: Modifier = Modifier.width(128.dp).height(160.dp),
+                          rotation: Float = 0f, previewSize: Int = 640) {
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
         initialValue = null,
         file.absolutePath,
         file.lastModified(),
-        file.length()
+        file.length(),
+        previewSize
     ) {
         value = withContext(Dispatchers.IO) {
             if (!file.isFile) null else runCatching {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeFile(file.absolutePath, bounds)
                 if (bounds.outWidth <= 0 || bounds.outHeight <= 0) null else {
-                    val sample = maxOf(1, maxOf(bounds.outWidth / 480, bounds.outHeight / 640))
+                    val sample = maxOf(1, maxOf(bounds.outWidth / (previewSize * 3 / 4), bounds.outHeight / previewSize))
                     val options = BitmapFactory.Options().apply { inSampleSize = sample }
                     BitmapFactory.decodeFile(file.absolutePath, options)?.asImageBitmap()
                 }
@@ -1450,6 +1464,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     var importingModel by remember(project.id) { mutableStateOf<CutoutModel?>(null) }
     var importMessage by remember(project.id) { mutableStateOf("") }
     var modelStateVersion by remember(project.id) { mutableStateOf(0) }
+    var showCutoutPicker by remember(project.id) { mutableStateOf(false) }
     val cutoutModels = remember(context) { CutoutModels(context) }
     val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val selectedModel = modelToImport
@@ -1584,6 +1599,11 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
             Text("模型只需导入一次，保存在本机应用数据中；卸载应用后需重新导入。开启的镜头会在渲染前处理并缓存。",
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
             val selectedCutoutCount = project.shots.count { it.cutoutEnabled }
+            Button(onClick = { showCutoutPicker = true },
+                enabled = !busy && modelsReady && importingModel == null && project.shots.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()) {
+                Text(if (selectedCutoutCount == 0) "选择抠图图片" else "选择抠图图片 · 已选 $selectedCutoutCount 镜")
+            }
             if (selectedCutoutCount > 0) {
                 OutlinedButton(onClick = {
                     project.shots.forEach { it.cutoutEnabled = false }
@@ -1593,81 +1613,124 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                     Text("清除全部镜头的抠图选择（$selectedCutoutCount 镜）")
                 }
             }
-            project.shots.forEach { shot ->
-                val imageReady = storeImageReady(context, project, shot)
-                ChoiceTile(
-                    "镜头 ${shot.id.toString().padStart(2, '0')} 成片抠图",
-                    when {
-                        !imageReady -> "请先生成本镜图片"
-                        shot.cutoutEnabled -> "已开启，渲染时识别人物并修补背景"
-                        !modelsReady -> "请先导入两份模型"
-                        else -> "关闭，点击开启"
-                    },
-                    onClick = {
-                        shot.cutoutEnabled = !shot.cutoutEnabled
-                        project.cutoutEnabled = project.shots.any { it.cutoutEnabled }
-                        onSave(project)
-                    },
-                    enabled = !busy && modelsReady && imageReady
-                )
-            }
         }
     }
+    if (showCutoutPicker) {
+        ImagePickerDialog("选择抠图图片", project, multiSelect = true,
+            selected = project.shots.filter { it.cutoutEnabled }.map { it.id }.toSet(),
+            onDismiss = { showCutoutPicker = false },
+            onConfirm = { selected ->
+                project.shots.forEach { it.cutoutEnabled = it.id in selected }
+                project.cutoutEnabled = project.shots.any { it.cutoutEnabled }
+                onSave(project)
+                showCutoutPicker = false
+            })
+    }
 }
-
-private fun storeImageReady(context: android.content.Context, project: VideoProject, shot: Shot): Boolean =
-    ProjectStore(context).image(project, shot).let { it.isFile && it.length() > 1000 }
 
 @Composable
 private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect: Boolean,
                              selected: Set<Int>, onDismiss: () -> Unit,
                              onConfirm: (Set<Int>) -> Unit) {
-    var checked by remember(title, selected) { mutableStateOf(selected) }
-    Dialog(onDismissRequest = onDismiss) {
+    val context = LocalContext.current
+    val store = remember(context) { ProjectStore(context) }
+    var checked by remember(project.id, title, selected) { mutableStateOf(selected.toSet()) }
+    var previewId by remember(project.id) { mutableStateOf<Int?>(null) }
+    fun select(shotId: Int, value: Boolean) {
+        checked = if (value) {
+            if (multiSelect) checked + shotId else setOf(shotId)
+        } else checked - shotId
+    }
+    fun back() {
+        if (previewId != null) previewId = null else onDismiss()
+    }
+    val preview = project.shots.firstOrNull { it.id == previewId }
+    Dialog(onDismissRequest = ::back, properties = DialogProperties(
+        usePlatformDefaultWidth = false, decorFitsSystemWindows = false
+    )) {
         Surface(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            shape = RoundedCornerShape(20.dp),
-            color = HistoryColors.card,
-            tonalElevation = 8.dp
+            modifier = Modifier.fillMaxSize(),
+            color = Color.White
         ) {
-          Column(Modifier.fillMaxWidth().padding(16.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            project.shots.forEach { shot ->
-                val isChecked = shot.id in checked
-                val imageFile = ProjectStore(LocalContext.current).image(project, shot)
-                val available = imageFile.isFile && imageFile.length() > 1000
-                Row(Modifier.fillMaxWidth().clickable(enabled = available) {
-                    checked = if (multiSelect) {
-                        if (isChecked) checked - shot.id else checked + shot.id
-                    } else setOf(shot.id)
-                }.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ShotThumbnail(imageFile, Modifier.width(76.dp).height(96.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("镜头 ${shot.id.toString().padStart(2, '0')}", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            when {
-                                !available -> "请先生成图片"
-                                isChecked -> "✓ 已选择"
-                                else -> "点击选择"
-                            },
-                            color = when {
-                                !available -> HistoryColors.muted
-                                isChecked -> HistoryColors.cinnabar
-                                else -> HistoryColors.ink
-                            }
-                        )
+            Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = ::back) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = HistoryColors.ink)
                     }
-                    Text(if (isChecked) "✓" else "○", style = MaterialTheme.typography.titleLarge,
-                        color = if (isChecked) HistoryColors.cinnabar else HistoryColors.line)
+                    Text(if (preview == null) title else "镜头 ${preview.id}",
+                        modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (preview == null) {
+                        TextButton(onClick = { checked = emptySet() }, enabled = checked.isNotEmpty()) { Text("清空") }
+                    } else {
+                        ImageSelectionCheck(preview.id in checked, enabled = true,
+                            onCheckedChange = { select(preview.id, it) })
+                    }
                 }
-                HorizontalDivider()
+                HorizontalDivider(color = HistoryColors.line)
+                if (preview != null) {
+                    Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFFF2F2F2)),
+                        contentAlignment = Alignment.Center) {
+                        ShotThumbnail(store.image(project, preview), Modifier.fillMaxSize(), previewSize = 1920)
+                    }
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2), modifier = Modifier.fillMaxWidth().weight(1f),
+                        contentPadding = PaddingValues(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        items(project.shots, key = { it.id }) { shot ->
+                            val imageFile = store.image(project, shot)
+                            val available = imageFile.isFile && imageFile.length() > 1000
+                            val isChecked = shot.id in checked
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Box(Modifier.fillMaxWidth().aspectRatio(0.75f)
+                                    .clip(RoundedCornerShape(8.dp)).background(Color(0xFFF2F2F2))
+                                    .border(if (isChecked) 2.dp else 1.dp,
+                                        if (isChecked) HistoryColors.green else Color(0xFFE5E5E5), RoundedCornerShape(8.dp))) {
+                                    if (available) {
+                                        ShotThumbnail(imageFile, Modifier.fillMaxSize().clickable { previewId = shot.id })
+                                    } else {
+                                        Text("尚未生成图片", Modifier.align(Alignment.Center).padding(8.dp),
+                                            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                                    }
+                                    ImageSelectionCheck(isChecked, enabled = available || isChecked,
+                                        onCheckedChange = { select(shot.id, it) },
+                                        modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
+                                }
+                                Text("镜头 ${shot.id}", style = MaterialTheme.typography.bodyMedium,
+                                    color = HistoryColors.ink, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+                HorizontalDivider(color = HistoryColors.line)
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("已选 ${checked.size} 镜", modifier = Modifier.weight(1f), color = HistoryColors.muted)
+                    Button(onClick = { onConfirm(checked) }, enabled = project.status != "running",
+                        colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.green),
+                        shape = RoundedCornerShape(8.dp)) {
+                        Text(if (checked.isEmpty()) "完成" else "完成（${checked.size}）")
+                    }
+                }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onDismiss) { Text("取消") }
-                Button(onClick = { onConfirm(checked) }) { Text("确定") }
-            }
-          }
+        }
+    }
+}
+
+@Composable
+private fun ImageSelectionCheck(checked: Boolean, enabled: Boolean,
+                                onCheckedChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    Box(modifier.size(44.dp).toggleable(value = checked, enabled = enabled,
+        role = Role.Checkbox, onValueChange = onCheckedChange), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(30.dp).background(if (checked) HistoryColors.green else Color.White, CircleShape)
+            .border(2.dp, if (checked) HistoryColors.green else if (enabled) Color(0xFF888888) else Color(0xFFCCCCCC), CircleShape),
+            contentAlignment = Alignment.Center) {
+            if (checked) Icon(Icons.Filled.Check, contentDescription = "已选择", tint = Color.White,
+                modifier = Modifier.size(22.dp))
         }
     }
 }

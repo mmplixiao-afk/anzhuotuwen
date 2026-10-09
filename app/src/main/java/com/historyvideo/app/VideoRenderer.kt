@@ -68,10 +68,19 @@ class VideoRenderer(private val store: ProjectStore) {
             val lines = session.allLogsAsString.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
             val diagnostic = lines.lastOrNull { it.contains("No such filter", ignoreCase = true) }
                 ?: lines.lastOrNull { line ->
+                    listOf("Error applying", "Unable to parse", "Error when evaluating", "Failed to configure",
+                        "Invalid value", "Invalid size", "Invalid pixel", "Invalid chroma", "Invalid luma")
+                        .any { line.contains(it, ignoreCase = true) }
+                }
+                ?: lines.lastOrNull { line ->
                     listOf("error", "failed", "invalid", "not found", "out of memory")
                         .any { word -> line.contains(word, ignoreCase = true) }
+                        && !line.equals("Invalid argument", ignoreCase = true)
+                        && !line.equals("Conversion failed!", ignoreCase = true)
+                        && !line.contains("Error reinitializing filters", ignoreCase = true)
+                        && !line.contains("Error initializing complex filters", ignoreCase = true)
                 } ?: lines.lastOrNull()
-            error("${label}失败，退出码 ${session.returnCode?.value}：${diagnostic?.take(160) ?: "无 FFmpeg 日志"}")
+            error("${label}失败，退出码 ${session.returnCode?.value}：${diagnostic?.take(240) ?: "无 FFmpeg 日志"}")
         }
     }
 
@@ -993,6 +1002,7 @@ class VideoRenderer(private val store: ProjectStore) {
                                     "$cutout;[v]${overlays.removePrefix(",")}[out]"
                                 val outputLabel = if (overlays.isBlank()) "[v]" else "[out]"
                                 run("第 ${shot.id} 镜生成抠图视频片段", "-y",
+                                    "-filter_complex_threads", "1",
                                     "-loop", "1", "-framerate", "30", "-i", layers.background.absolutePath,
                                     "-loop", "1", "-framerate", "30", "-i", layers.foreground.absolutePath,
                                     "-filter_complex", graph, "-map", outputLabel, "-frames:v", frameCount.toString(), "-an",
