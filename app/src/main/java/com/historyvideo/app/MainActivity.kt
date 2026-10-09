@@ -14,6 +14,8 @@ import androidx.core.view.WindowCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -1377,6 +1379,34 @@ private fun ShotListItem(shot: Shot, imageFile: File, busy: Boolean,
 
 @Composable
 private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var modelToImport by remember(project.id) { mutableStateOf<CutoutModel?>(null) }
+    var importingModel by remember(project.id) { mutableStateOf<CutoutModel?>(null) }
+    var importMessage by remember(project.id) { mutableStateOf("") }
+    var modelStateVersion by remember(project.id) { mutableStateOf(0) }
+    val cutoutModels = remember(context) { CutoutModels(context) }
+    val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val selectedModel = modelToImport
+        modelToImport = null
+        if (uri != null && selectedModel != null) {
+            importingModel = selectedModel
+            scope.launch {
+                try {
+                    cutoutModels.importModel(selectedModel, uri) { detail ->
+                        scope.launch(Dispatchers.Main) { importMessage = detail }
+                    }
+                    importMessage = "${selectedModel.label}已导入并通过模型检查"
+                    modelStateVersion++
+                } catch (error: Exception) {
+                    importMessage = error.message ?: "模型导入失败"
+                } finally {
+                    importingModel = null
+                }
+            }
+        }
+    }
+    val modelsReady = remember(modelStateVersion) { CutoutModel.values().all(cutoutModels::isImported) }
     var subtitle by remember(project.id, project.subtitlesEnabled) { mutableStateOf(project.subtitlesEnabled) }
     var motion by remember(project.id, project.motionMode) { mutableStateOf(project.motionMode) }
     var transition by remember(project.id, project.transitionMode) { mutableStateOf(project.transitionMode) }
@@ -1467,22 +1497,61 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("成片抠图", style = MaterialTheme.typography.titleLarge)
-            Text("真实人物分割需要 U²-Net/LaMa 模型；此 Android 版本尚未集成模型，勾选后渲染会明确提示素材缺失。",
+            Text("请分别从手机文件中导入电脑端使用的 u2net_human_seg.onnx 和 lama_fp32.onnx。首次导入后会保存在应用私有目录。",
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-            val selectedCount = project.shots.count { it.cutoutEnabled }
-            ChoiceTile(
-                "成片抠图",
-                if (selectedCount > 0) "清除旧选择（当前 $selectedCount 镜）" else "模型尚未集成，暂不可用",
-                onClick = {
+            CutoutModel.values().forEach { model ->
+                val ready = cutoutModels.isImported(model)
+                OutlinedButton(
+                    onClick = { modelToImport = model; modelPicker.launch(arrayOf("application/octet-stream", "*/*")) },
+                    enabled = !busy && importingModel == null,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("${model.label}：${if (ready) "已导入，可重新导入" else "点击选择 ${model.filename}"}")
+                }
+            }
+            if (importingModel != null) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(importMessage, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            } else if (importMessage.isNotBlank()) {
+                Text(importMessage, style = MaterialTheme.typography.bodySmall, color = if (modelsReady) HistoryColors.green else HistoryColors.muted)
+            }
+            if (!modelsReady) Text("导入两份模型后即可选择需要抠图的镜头。", style = MaterialTheme.typography.bodySmall, color = HistoryColors.ochre)
+            Text("模型只需导入一次，保存在本机应用数据中；卸载应用后需重新导入。开启的镜头会在渲染前处理并缓存。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            val selectedCutoutCount = project.shots.count { it.cutoutEnabled }
+            if (selectedCutoutCount > 0) {
+                OutlinedButton(onClick = {
                     project.shots.forEach { it.cutoutEnabled = false }
                     project.cutoutEnabled = false
                     onSave(project)
-                },
-                enabled = !busy && selectedCount > 0
-            )
+                }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                    Text("清除全部镜头的抠图选择（$selectedCutoutCount 镜）")
+                }
+            }
+            project.shots.forEach { shot ->
+                val imageReady = storeImageReady(context, project, shot)
+                ChoiceTile(
+                    "镜头 ${shot.id.toString().padStart(2, '0')} 成片抠图",
+                    when {
+                        !imageReady -> "请先生成本镜图片"
+                        shot.cutoutEnabled -> "已开启，渲染时识别人物并修补背景"
+                        !modelsReady -> "请先导入两份模型"
+                        else -> "关闭，点击开启"
+                    },
+                    onClick = {
+                        shot.cutoutEnabled = !shot.cutoutEnabled
+                        project.cutoutEnabled = project.shots.any { it.cutoutEnabled }
+                        onSave(project)
+                    },
+                    enabled = !busy && modelsReady && imageReady
+                )
+            }
         }
     }
 }
+
+private fun storeImageReady(context: android.content.Context, project: VideoProject, shot: Shot): Boolean =
+    ProjectStore(context).image(project, shot).let { it.isFile && it.length() > 1000 }
 
 @Composable
 private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect: Boolean,

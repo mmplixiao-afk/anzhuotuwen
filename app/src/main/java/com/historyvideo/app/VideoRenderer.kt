@@ -47,7 +47,7 @@ class VideoRenderer(private val store: ProjectStore) {
         const val SUBTITLE_GLYPH_WIDTH_RATIO = 1.05
         const val COVER_TITLE_MAX_CHARS = 40
         const val COVER_TITLE_DELAY = 1.0
-        const val RENDER_STYLE_VERSION = "subtitle-16-motion-3-transition-4"
+        const val RENDER_STYLE_VERSION = "subtitle-16-motion-3-transition-4-cutout-1"
         const val SUBTITLE_SPLIT_MARKS = "，。！？；：、,.!?;:…"
         const val SUBTITLE_CLOSING_QUOTES = "”’\"'」』）》】)]}〉〕〗〙〛"
         val spokenOnlyPhrases = listOf("他娘的", "奶奶的", "老子")
@@ -568,7 +568,7 @@ class VideoRenderer(private val store: ProjectStore) {
         val background = File(directory, "background.png")
         val foreground = File(directory, "foreground.png")
         require(background.isFile && background.length() > 1000 && foreground.isFile && foreground.length() > 1000) {
-            "第 ${shot.id} 镜已勾选成片抠图，但没有人物分层素材。此 Android 版本尚未集成人像分割模型 U²-Net/LaMa，不能用模糊背景代替抠图；请先取消此镜抠图。"
+            "第 ${shot.id} 镜人物分层素材尚未生成；请确认两份模型已导入后重试。"
         }
         return LayerFiles(background, foreground)
     }
@@ -927,9 +927,15 @@ class VideoRenderer(private val store: ProjectStore) {
         if (openingInputsStamp.readTextOrNull() != openingInputs) {
             File(temp, "clip_001.mp4").delete()
         }
+        val cutoutProcessor = CutoutProcessor(store)
+        val cutoutShots = project.shots.filter { it.cutoutEnabled }
+        val cutoutIndexes = cutoutShots.mapIndexed { index, shot -> shot.id to index + 1 }.toMap()
         project.shots.forEach { shot ->
             motionPlanFor(project, shot)
             if (shot.cutoutEnabled) {
+                val index = cutoutIndexes[shot.id] ?: 1
+                stage("正在处理抠图镜头 $index/${cutoutShots.size}：识别第 ${shot.id} 镜人物并修补背景")
+                cutoutProcessor.prepare(project, shot, canvasSize(project))
                 layerFiles(project, shot)
                 ensureCutoutPlans(shot)
             }
@@ -943,7 +949,8 @@ class VideoRenderer(private val store: ProjectStore) {
             project.bgmId, project.introSfxId, project.bgmVolume, project.introSfxVolume, project.ttsVolume,
             project.shots.joinToString(",") { shot ->
                 val layers = if (shot.cutoutEnabled) layerFiles(project, shot).let {
-                    "${it.background.length()}:${it.background.lastModified()}:${it.foreground.length()}:${it.foreground.lastModified()}"
+                    val sourceStamp = File(it.background.parentFile, "source.txt").readTextOrNull().orEmpty()
+                    "$sourceStamp:${it.background.length()}:${it.background.lastModified()}:${it.foreground.length()}:${it.foreground.lastModified()}"
                 } else ""
                 "${shot.id}:${shot.cutoutEnabled}:${shot.text.hashCode()}:${shot.subtitleChunks.joinToString("\u0000").hashCode()}:" +
                     "${shot.motionPlan}:${shot.cutoutBackgroundPlan}:${shot.cutoutForegroundPlan}:$layers"

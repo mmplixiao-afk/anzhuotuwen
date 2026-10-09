@@ -83,8 +83,8 @@ class GenerationService : Service() {
             store.save(project)
             notifyStatus(project.detail)
             try {
-                if (action == FINISH && project.shots.any { it.cutoutEnabled }) {
-                    error("当前 Android 版本尚未集成 U²-Net/LaMa 人物分割模型。已取消完整制作，没有发起配音或生图请求；请先到‘封面与效果’清除旧的抠图选择。")
+                if ((action == FINISH || action == RENDER) && project.shots.any { it.cutoutEnabled }) {
+                    CutoutProcessor(store).requireReady()
                 }
                 if (action == FINISH || action == RENDER) {
                     val coverText = normalizeCoverText(project.coverText)

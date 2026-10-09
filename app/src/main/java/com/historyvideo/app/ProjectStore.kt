@@ -220,6 +220,8 @@ class ProjectStore(context: Context) {
     private val root = File(context.filesDir, "projects").apply { mkdirs() }
     private val audioRoot = File(context.filesDir, "audio_assets").apply { mkdirs() }
 
+    internal fun context(): Context = appContext
+
     fun directory(id: String): File {
         require(id.matches(Regex("[a-f0-9-]{36}")))
         return File(root, id)
