@@ -19,7 +19,6 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.ceil
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -51,7 +50,7 @@ class VideoRenderer(private val store: ProjectStore) {
         const val SUBTITLE_GLYPH_WIDTH_RATIO = 1.05
         const val COVER_TITLE_MAX_CHARS = 40
         const val COVER_TITLE_DELAY = 1.0
-        const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2-cover-1"
+        const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2-cover-1-timing-2"
         const val SUBTITLE_SPLIT_MARKS = "，。！？；：、,.!?;:…"
         const val SUBTITLE_CLOSING_QUOTES = "”’\"'」』）》】)]}〉〕〗〙〛"
         val spokenOnlyPhrases = listOf("他娘的", "奶奶的", "老子")
@@ -179,8 +178,7 @@ class VideoRenderer(private val store: ProjectStore) {
         return newMotionPlan(requested).also { shot.motionPlan = it }
     }
 
-    private fun transitionPlansFor(project: VideoProject, durations: List<Double>): List<TransitionPlan> {
-        val frameCounts = durations.map { ceil(it * 30.0).toInt().coerceAtLeast(1) }
+    private fun transitionPlansFor(project: VideoProject, durations: List<Double>, frameCounts: List<Int>): List<TransitionPlan> {
         val signature = "$RENDER_STYLE_VERSION|${project.transitionMode}|${frameCounts.joinToString(",")}" 
         if (project.transitionPlanSignature == signature && project.transitionPlans.size == maxOf(0, durations.size - 1)) {
             return project.transitionPlans
@@ -790,7 +788,7 @@ class VideoRenderer(private val store: ProjectStore) {
 
     private fun mergeVideos(
         clips: List<File>,
-        durations: List<Double>,
+        frameCounts: List<Int>,
         transitionPlans: List<TransitionPlan>,
         output: File,
         temp: File
@@ -799,7 +797,6 @@ class VideoRenderer(private val store: ProjectStore) {
             concatVideos(clips, output, temp)
             return
         }
-        val frameCounts = durations.map { ceil(it * 30.0).toInt().coerceAtLeast(1) }
         val filters = StringBuilder()
         val incoming = MutableList<String?>(clips.size) { null }
         val body = MutableList(clips.size) { "" }
@@ -959,6 +956,7 @@ class VideoRenderer(private val store: ProjectStore) {
         val durations = parts.mapIndexed { index, audio ->
             duration(audio).also { project.shots[index].duration = it }
         }
+        val frameCounts = VideoTimeline.frameCounts(durations)
         val openingInputs = if (project.openingTemplate == "none") "" else images.take(5).joinToString("|") {
             "${it.length()}:${it.lastModified()}"
         }
@@ -979,10 +977,10 @@ class VideoRenderer(private val store: ProjectStore) {
                 ensureCutoutPlans(shot)
             }
         }
-        val transitionPlans = transitionPlansFor(project, durations)
+        val transitionPlans = transitionPlansFor(project, durations, frameCounts)
         store.save(project)
         val clipSignature = listOf(
-            RENDER_STYLE_VERSION, project.imageSize, project.subtitlesEnabled, project.motionMode,
+            RENDER_STYLE_VERSION, frameCounts.joinToString(","), project.imageSize, project.subtitlesEnabled, project.motionMode,
             project.transitionMode, transitionPlans.joinToString(",") { "${it.type}:${it.frames}" },
             project.coverShotId, project.coverText, project.openingTemplate, project.introImageSeconds,
             project.bgmId, project.introSfxId, project.bgmVolume, project.introSfxVolume, project.ttsVolume,
@@ -1010,7 +1008,6 @@ class VideoRenderer(private val store: ProjectStore) {
         renderStamp.writeText(clipSignature)
         openingInputsStamp.writeText(openingInputs)
         val clips = project.shots.map { shot -> File(temp, "clip_%03d.mp4".format(shot.id)) }
-        val frameCounts = durations.map { ceil(it * 30).toInt().coerceAtLeast(1) }
         val renderedFrames = LongArray(clips.size)
         val totalFrames = frameCounts.sumOf { it.toLong() }
         val completed = AtomicInteger(0)
@@ -1104,7 +1101,7 @@ class VideoRenderer(private val store: ProjectStore) {
         val video = File(temp, "video.mp4")
         val voice = File(temp, "voice.m4a")
         stage("正在合并画面")
-        mergeVideos(clips, durations, transitionPlans, video, temp)
+        mergeVideos(clips, frameCounts, transitionPlans, video, temp)
         stage("正在合并配音")
         run("合并配音", "-y", "-f", "concat", "-safe", "0", "-i", audioList.absolutePath, "-vn", "-c:a", "aac", "-b:a", "192k", voice.absolutePath)
         val pending = File(dir, "output/final.pending.mp4")

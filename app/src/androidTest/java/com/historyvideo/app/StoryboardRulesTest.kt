@@ -40,6 +40,7 @@ class StoryboardRulesTest : Instrumentation() {
 
     fun testCompletedCoverRules() = CompletedCoverChecks.run(targetContext)
     fun testProjectCostRules() = ProjectCostChecks.run(targetContext)
+    fun testVideoTimelineRules() = VideoTimelineChecks.run()
 
     private val theme = "在古代当通房丫鬟到底有多爽？"
     private val hook = "哼，你以为她只会受气？"
