@@ -82,6 +82,13 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -101,6 +108,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
@@ -114,7 +122,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Surface
@@ -123,6 +133,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.Typography
+import androidx.compose.material3.Shapes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -134,33 +145,37 @@ import java.util.Date
 import kotlin.math.abs
 
 private object HistoryColors {
-    val paper = Color(0xFFF4EFE6)
-    val card = Color(0xFFFBF8F1)
-    val subcard = Color(0xFFEDE5D8)
-    val ink = Color(0xFF24201C)
-    val muted = Color(0xFF746A60)
-    val line = Color(0xFFD8CDBD)
-    val cinnabar = Color(0xFFA94235)
-    val cinnabarSoft = Color(0xFFF1DAD4)
-    val teal = Color(0xFF465B59)
-    val tealSoft = Color(0xFFDCE7E2)
-    val copper = Color(0xFFB18A56)
-    val green = Color(0xFF4F6B57)
-    val ochre = Color(0xFFA66A3F)
+    val paper = Color(0xFFFAF8F4)
+    val card = Color.White
+    val subcard = Color(0xFFF3F1ED)
+    val ink = Color(0xFF202124)
+    val muted = Color(0xFF737579)
+    val line = Color(0xFFE7E3DD)
+    val cinnabar = Color(0xFFC32621)
+    val cinnabarSoft = Color(0xFFFCECE8)
+    val teal = Color(0xFF405956)
+    val tealSoft = Color(0xFFEAF2EF)
+    val copper = cinnabar
+    val green = Color(0xFF287551)
+    val ochre = Color(0xFF9D6729)
 }
 
-private val HistoryTypography = Typography(
-    headlineLarge = TextStyle(fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold),
-    headlineMedium = TextStyle(fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold),
-    headlineSmall = TextStyle(fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold),
-    titleLarge = TextStyle(fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold),
-    titleMedium = TextStyle(fontWeight = FontWeight.SemiBold),
-    bodyLarge = TextStyle(color = HistoryColors.ink),
-    bodyMedium = TextStyle(color = HistoryColors.ink),
-    bodySmall = TextStyle(color = HistoryColors.muted),
-    labelLarge = TextStyle(fontWeight = FontWeight.SemiBold),
-    labelMedium = TextStyle(fontWeight = FontWeight.Medium)
-)
+private val HistoryTypography = Typography().let { base ->
+    base.copy(
+        headlineLarge = base.headlineLarge.copy(fontSize = 28.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.sp),
+        headlineMedium = base.headlineMedium.copy(fontSize = 24.sp, lineHeight = 32.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.sp),
+        headlineSmall = base.headlineSmall.copy(fontSize = 22.sp, lineHeight = 30.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.sp),
+        titleLarge = base.titleLarge.copy(fontSize = 20.sp, lineHeight = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.sp),
+        titleMedium = base.titleMedium.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.sp),
+        titleSmall = base.titleSmall.copy(letterSpacing = 0.sp),
+        bodyLarge = base.bodyLarge.copy(color = HistoryColors.ink, letterSpacing = 0.sp),
+        bodyMedium = base.bodyMedium.copy(color = HistoryColors.ink, letterSpacing = 0.sp),
+        bodySmall = base.bodySmall.copy(color = HistoryColors.muted, letterSpacing = 0.sp),
+        labelLarge = base.labelLarge.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.sp),
+        labelMedium = base.labelMedium.copy(fontWeight = FontWeight.Medium, letterSpacing = 0.sp),
+        labelSmall = base.labelSmall.copy(letterSpacing = 0.sp)
+    )
+}
 
 class MainActivity : ComponentActivity() {
     private lateinit var store: ProjectStore
@@ -198,7 +213,9 @@ class MainActivity : ComponentActivity() {
                 outline = HistoryColors.line,
                 error = HistoryColors.ochre
             )
-            MaterialTheme(colorScheme = historyScheme, typography = HistoryTypography) {
+            MaterialTheme(colorScheme = historyScheme, typography = HistoryTypography,
+                shapes = Shapes(extraSmall = RoundedCornerShape(4.dp), small = RoundedCornerShape(6.dp),
+                    medium = RoundedCornerShape(8.dp), large = RoundedCornerShape(8.dp), extraLarge = RoundedCornerShape(8.dp))) {
                 Surface(color = HistoryColors.paper) { App() }
             }
         }
@@ -313,6 +330,7 @@ class MainActivity : ComponentActivity() {
         var selectedId by rememberSaveable { mutableStateOf("") }
         var selectedShotId by rememberSaveable { mutableStateOf(0) }
         var selectedPromptType by rememberSaveable { mutableStateOf("script") }
+        var historySearch by rememberSaveable { mutableStateOf(false) }
         val pageStates = rememberSaveableStateHolder()
         var projects by remember { mutableStateOf(store.all()) }
         var message by remember { mutableStateOf("") }
@@ -321,7 +339,7 @@ class MainActivity : ComponentActivity() {
         var now by remember { mutableStateOf(System.currentTimeMillis()) }
         val screen = navigation.last()
         val pageKey = when (screen) {
-            "project", "script", "shots", "effects", "result" -> "$screen:$selectedId"
+            "project", "script", "shots", "effects", "result", "costs" -> "$screen:$selectedId"
             "shot" -> "$screen:$selectedId:$selectedShotId"
             "prompt_editor" -> "$screen:$selectedPromptType"
             else -> screen
@@ -332,6 +350,12 @@ class MainActivity : ComponentActivity() {
             keyboard?.hide()
             navigation = navigation + to
             message = ""
+        }
+
+        fun newProject() {
+            val project = store.create("")
+            selectedId = project.id
+            navigate("project")
         }
 
         fun goBack() {
@@ -442,8 +466,10 @@ class MainActivity : ComponentActivity() {
                                 "settings" -> "设置"
                                 "cutout_models" -> "抠图模型"
                                 "result" -> "成片结果"
+                                "costs" -> "费用明细"
                                 else -> "史镜 · 图文创作台（$appVersion）"
-                            }, fontFamily = FontFamily.Serif, fontWeight = FontWeight.Bold)
+                            }, style = MaterialTheme.typography.titleLarge,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }, navigationIcon = {
                             if (navigation.size > 1) {
                                 IconButton(onClick = { goBack() }) {
@@ -454,6 +480,35 @@ class MainActivity : ComponentActivity() {
                             if (screen == "home") {
                                 IconButton(onClick = { navigate("settings") }) {
                                     Icon(Icons.Filled.Settings, contentDescription = "设置")
+                                }
+                            }
+                            if (screen == "history") {
+                                IconButton(onClick = { historySearch = !historySearch }) {
+                                    Icon(if (historySearch) Icons.Filled.Close else Icons.Filled.Search,
+                                        contentDescription = if (historySearch) "关闭搜索" else "搜索项目")
+                                }
+                                Button(onClick = ::newProject, shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.padding(end = 12.dp)) {
+                                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("新建")
+                                }
+                            }
+                            if (screen == "project" && selected != null) {
+                                OutlinedButton(onClick = { saveProject(selected); message = "草稿已保存" },
+                                    enabled = selected.status != "running", shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.padding(end = 12.dp)) { Text("保存草稿") }
+                            }
+                            if (screen == "shot" && selected != null) {
+                                val shotIndex = selected.shots.indexOfFirst { it.id == selectedShotId }
+                                IconButton(onClick = { selectedShotId = selected.shots[shotIndex - 1].id },
+                                    enabled = selected.status != "running" && shotIndex > 0) {
+                                    Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "上一镜头")
+                                }
+                                Text("${shotIndex + 1}/${selected.shots.size}", style = MaterialTheme.typography.labelMedium)
+                                IconButton(onClick = { selectedShotId = selected.shots[shotIndex + 1].id },
+                                    enabled = selected.status != "running" && shotIndex >= 0 && shotIndex < selected.shots.lastIndex) {
+                                    Icon(Icons.Filled.KeyboardArrowRight, contentDescription = "下一镜头")
                                 }
                             }
                         })
@@ -469,7 +524,7 @@ class MainActivity : ComponentActivity() {
                 if (message.isNotBlank()) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(8.dp),
                         colors = CardDefaults.cardColors(containerColor = HistoryColors.tealSoft)
                     ) {
                         Text(message, modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -479,11 +534,7 @@ class MainActivity : ComponentActivity() {
                 when (screen) {
                     "home" -> {
                         HomeScreen(currentProject, runningProject, now,
-                            onNew = {
-                                val project = store.create("")
-                                selectedId = project.id
-                                navigate("project")
-                            }, onHistory = { navigate("history") }, onCurrent = {
+                            onNew = ::newProject, onHistory = { navigate("history") }, onCurrent = {
                                 currentProject?.let {
                                     selectedId = it.id
                                     navigate("project")
@@ -492,68 +543,18 @@ class MainActivity : ComponentActivity() {
                     }
 
                     "history" -> {
-                        Text("旧作存档", style = MaterialTheme.typography.headlineSmall)
-                        val historyProjects = projects.filter { it.title.isNotBlank() }
-                        if (historyProjects.isEmpty()) {
-                            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-                                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text("尚无旧作", style = MaterialTheme.typography.titleLarge)
-                                    Text("新建一卷，开始你的第一条视频", color = HistoryColors.muted)
-                                }
-                            }
-                        }
-                        historyProjects.forEach { project ->
-                            key(project.id) {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
-                            ) {
-                                Column(
-                                    Modifier.padding(18.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Text(project.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                                    Text(
-                                        "${DateFormat.getDateTimeInstance().format(Date(project.createdAt))}  ·  ${project.status}  ·  ${project.duration.toInt()}秒",
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                    ProjectCostSummary(project, store, framed = false)
-                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                        Button(onClick = {
-                                            selectedId = project.id
-                                            navigate("project")
-                                        }) { Text("继续制作") }
-                                        Button(
-                                            onClick = { deleteTarget = project },
-                                            enabled = project.status != "running",
-                                            colors = ButtonDefaults.buttonColors(
-                                                containerColor = HistoryColors.subcard,
-                                                contentColor = HistoryColors.muted
-                                            )
-                                        ) { Text("删除") }
-                                    }
-                                    if (store.output(project).isFile) {
-                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                            TextButton(onClick = {
-                                                selectedId = project.id
-                                                navigate("result")
-                                            }) { Text("成片与封面") }
-                                            TextButton(onClick = {
-                                                runCatching { share(project) }.onSuccess { message = it }
-                                                    .onFailure { message = it.message.orEmpty() }
-                                            }) { Text("分享") }
-                                            TextButton(onClick = {
-                                                runCatching { playVideo(project) }.onSuccess { message = it }
-                                                    .onFailure { message = it.message.orEmpty() }
-                                            }) { Text("播放") }
-                                        }
-                                    }
-                                }
-                            }
-                            }
-                        }
+                        HistoryScreen(projects.filter { it.title.isNotBlank() }, store, historySearch,
+                            onContinue = { selectedId = it.id; navigate("project") },
+                            onCosts = { selectedId = it.id; navigate("costs") },
+                            onResults = { selectedId = it.id; navigate("result") },
+                            onDelete = { deleteTarget = it },
+                            onPlay = { project ->
+                                runCatching { playVideo(project) }.onSuccess { message = it }
+                                    .onFailure { message = it.message.orEmpty() }
+                            }, onShare = { project ->
+                                runCatching { share(project) }.onSuccess { message = it }
+                                    .onFailure { message = it.message.orEmpty() }
+                            })
                     }
 
                     "api" -> ApiSettingsScreen(settings) { message = it }
@@ -570,8 +571,11 @@ class MainActivity : ComponentActivity() {
                         onOpenEffects = { navigate("effects") },
                         onRender = { runProject(selected, GenerationService.RENDER, 0) },
                         hasOutput = store.output(selected).length() > 1000,
-                        onOpenResults = { navigate("result") }
+                        onOpenResults = { navigate("result") },
+                        onOpenCosts = { navigate("costs") },
+                        onCancel = { startService(Intent(this@MainActivity, GenerationService::class.java).setAction(GenerationService.CANCEL)) }
                     )
+                    "costs" -> if (selected != null) ProjectCostDetailsScreen(selected, store)
                     "result" -> if (selected != null) CompletedResultScreen(selected, store,
                         exporting = exportingAsset,
                         onSaveVideo = { exportProject(selected) }, onSaveCover = { exportProject(selected, cover = true) },
@@ -635,25 +639,141 @@ private fun imageSizeLabel(value: String) = when (value) {
     else -> "9:16 竖屏"
 }
 
+private fun projectStatusLabel(status: String) = when (status) {
+    "done" -> "已完成"
+    "running" -> "进行中"
+    "review" -> "待确认"
+    "paused" -> "已暂停"
+    "failed" -> "失败"
+    else -> "草稿"
+}
+
+private fun videoDurationLabel(duration: Double): String {
+    val seconds = duration.toInt().coerceAtLeast(0)
+    return "${seconds / 60}分${seconds % 60}秒"
+}
+
+@Composable
+private fun HistoryScreen(projects: List<VideoProject>, store: ProjectStore, searchVisible: Boolean,
+                          onContinue: (VideoProject) -> Unit, onCosts: (VideoProject) -> Unit,
+                          onResults: (VideoProject) -> Unit, onDelete: (VideoProject) -> Unit,
+                          onPlay: (VideoProject) -> Unit, onShare: (VideoProject) -> Unit) {
+    var filter by rememberSaveable { mutableStateOf("all") }
+    var query by rememberSaveable { mutableStateOf("") }
+    if (searchVisible) {
+        OutlinedTextField(query, { query = it }, singleLine = true, label = { Text("搜索项目") },
+            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp))
+    }
+    Row(Modifier.fillMaxWidth()) {
+        listOf("all" to "全部", "done" to "已完成", "working" to "制作中", "draft" to "草稿").forEach { (id, label) ->
+            Column(Modifier.weight(1f).selectable(filter == id, role = Role.Tab, onClick = { filter = id }),
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(label, modifier = Modifier.padding(vertical = 12.dp), style = MaterialTheme.typography.labelLarge,
+                    color = if (filter == id) HistoryColors.cinnabar else HistoryColors.muted)
+                Box(Modifier.width(28.dp).height(3.dp).background(
+                    if (filter == id) HistoryColors.cinnabar else Color.Transparent, RoundedCornerShape(2.dp)))
+            }
+        }
+    }
+    val visible = projects.filter { project ->
+        (!searchVisible || project.title.contains(query.trim(), ignoreCase = true)) && when (filter) {
+            "done" -> project.status == "done"
+            "draft" -> project.status == "draft"
+            "working" -> project.status != "done" && project.status != "draft"
+            else -> true
+        }
+    }
+    if (visible.isEmpty()) {
+        Text(if (projects.isEmpty()) "尚无旧作" else "暂无符合条件的项目",
+            modifier = Modifier.fillMaxWidth().padding(vertical = 36.dp), textAlign = TextAlign.Center,
+            color = HistoryColors.muted)
+    }
+    visible.forEach { project ->
+        key(project.id) {
+            var more by remember { mutableStateOf(false) }
+            val video = store.output(project)
+            val hasVideo = video.length() > 1000
+            val cover = store.cover(project)
+            val thumbnail = if (cover.isFile) cover else project.shots.firstOrNull()?.let { store.image(project, it) }
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Box(Modifier.width(88.dp).height(110.dp).clip(RoundedCornerShape(8.dp))
+                            .background(HistoryColors.subcard).clickable { if (hasVideo) onResults(project) else onContinue(project) }) {
+                            if (thumbnail != null) ShotThumbnail(thumbnail, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            else Icon(painterResource(R.drawable.ic_image), contentDescription = null,
+                                modifier = Modifier.align(Alignment.Center), tint = HistoryColors.muted)
+                            if (hasVideo) Text(videoDurationLabel(project.duration), modifier = Modifier.align(Alignment.BottomEnd)
+                                .background(Color.Black.copy(alpha = 0.72f), RoundedCornerShape(topStart = 6.dp))
+                                .padding(horizontal = 5.dp, vertical = 3.dp),
+                                color = Color.White, style = MaterialTheme.typography.labelSmall)
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Row(verticalAlignment = Alignment.Top) {
+                                Text(project.title, modifier = Modifier.weight(1f), maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                                Box {
+                                    IconButton(onClick = { more = true }, modifier = Modifier.size(40.dp)) {
+                                        Icon(Icons.Filled.MoreVert, contentDescription = "更多操作", tint = HistoryColors.muted)
+                                    }
+                                    DropdownMenu(more, onDismissRequest = { more = false }) {
+                                        DropdownMenuItem(text = { Text("费用明细") }, onClick = { more = false; onCosts(project) })
+                                        DropdownMenuItem(text = { Text("成片与封面") }, enabled = hasVideo,
+                                            onClick = { more = false; onResults(project) })
+                                        DropdownMenuItem(text = { Text("删除项目", color = HistoryColors.cinnabar) },
+                                            enabled = project.status != "running", onClick = { more = false; onDelete(project) })
+                                    }
+                                }
+                            }
+                            Text(DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(project.createdAt)),
+                                style = MaterialTheme.typography.labelSmall, color = HistoryColors.muted)
+                            Text(projectStatusLabel(project.status), style = MaterialTheme.typography.labelMedium,
+                                color = if (project.status == "done") HistoryColors.green else if (project.status == "running")
+                                    HistoryColors.cinnabar else HistoryColors.muted)
+                            Text("${videoDurationLabel(project.duration)} · ${project.shots.size} 镜 · ${video.length() / 1_048_576} MB",
+                                style = MaterialTheme.typography.labelSmall, color = HistoryColors.muted)
+                        }
+                    }
+                    ProjectCostSummary(project, store, framed = false, compact = true, onOpenDetails = { onCosts(project) })
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button(onClick = { onContinue(project) }, modifier = Modifier.weight(1.4f),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp), shape = RoundedCornerShape(8.dp)) {
+                            Text("继续制作", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(onClick = { onPlay(project) }, enabled = hasVideo, modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(4.dp), shape = RoundedCornerShape(8.dp)) {
+                            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text("播放", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+                        OutlinedButton(onClick = { onShare(project) }, enabled = hasVideo, modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(4.dp), shape = RoundedCornerShape(8.dp)) {
+                            Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text("分享", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long,
                        onNew: () -> Unit, onHistory: () -> Unit, onCurrent: () -> Unit) {
     val task = running?.detail ?: current?.detail?.ifBlank { null } ?: "空闲"
     val elapsed = running?.taskStartedAt?.takeIf { it > 0L }?.let { " · 已执行 ${elapsedLabel(it, now)}" }.orEmpty()
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("史镜", style = MaterialTheme.typography.headlineLarge, color = HistoryColors.cinnabar)
-        Text("一卷成章 · AI图文视频创作", style = MaterialTheme.typography.bodyMedium, color = HistoryColors.muted)
-    }
     Card(
         onClick = onCurrent,
         enabled = current != null,
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
     ) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("当前项目 · 卷宗", style = MaterialTheme.typography.titleMedium, color = HistoryColors.cinnabar)
+                Text("当前项目", style = MaterialTheme.typography.titleLarge, color = HistoryColors.ink)
                 Text(if (running != null) "制片中" else "待继续",
                     color = if (running != null) HistoryColors.copper else HistoryColors.teal,
                     fontWeight = FontWeight.Bold)
@@ -670,7 +790,7 @@ private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long
     }
     Text("快速入口", style = MaterialTheme.typography.titleLarge, color = HistoryColors.ink)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Card(onClick = onNew, modifier = Modifier.weight(1f).height(132.dp), shape = RoundedCornerShape(14.dp),
+        Card(onClick = onNew, modifier = Modifier.weight(1f).height(132.dp), shape = RoundedCornerShape(8.dp),
             colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(Icons.Filled.Add, contentDescription = null, tint = HistoryColors.cinnabar)
@@ -678,30 +798,28 @@ private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long
                 Text("从题材、文案到成片", color = HistoryColors.muted)
             }
         }
-        Card(onClick = onHistory, modifier = Modifier.weight(1f).height(132.dp), shape = RoundedCornerShape(14.dp),
+        Card(onClick = onHistory, modifier = Modifier.weight(1f).height(132.dp), shape = RoundedCornerShape(8.dp),
             colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("档", color = HistoryColors.teal, fontFamily = FontFamily.Serif,
-                    fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                Icon(painterResource(R.drawable.ic_image), contentDescription = null, tint = HistoryColors.muted)
                 Text("旧作存档", style = MaterialTheme.typography.titleLarge)
                 Text("继续编辑已有项目", color = HistoryColors.muted)
             }
         }
     }
-    Text("模型与接口、提示词卷库都在右上角设置中。", style = MaterialTheme.typography.bodySmall)
 }
 
 @Composable
 private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onModels: () -> Unit) {
     Text("工作台设置", style = MaterialTheme.typography.headlineSmall)
-    Card(onClick = onApi, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
+    Card(onClick = onApi, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("模型与接口", style = MaterialTheme.typography.titleLarge)
             Text("文本、图片、豆包语音接口和密钥", color = HistoryColors.muted)
         }
     }
-    Card(onClick = onPrompts, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
+    Card(onClick = onPrompts, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("提示词卷库", style = MaterialTheme.typography.titleLarge)
@@ -1004,7 +1122,7 @@ private fun PromptListScreen(settings: AppSettings, onOpen: (String) -> Unit) {
             "shots" -> "分镜提示词"
             else -> "生图提示词"
         }
-        Card(onClick = { onOpen(type) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
+        Card(onClick = { onOpen(type) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
             colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(label, style = MaterialTheme.typography.titleLarge)
@@ -1026,8 +1144,8 @@ private fun PromptEditorScreen(settings: AppSettings, type: String, onMessage: (
     var prompt by rememberSaveable(type) { mutableStateOf(settings.prompt(type)) }
     Text(label, style = MaterialTheme.typography.headlineSmall)
     Text("生成时会直接使用这里保存的内容。", style = MaterialTheme.typography.bodySmall)
-    Card(modifier = Modifier.fillMaxWidth().border(1.dp, HistoryColors.line, RoundedCornerShape(14.dp)),
-        shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+    Card(modifier = Modifier.fillMaxWidth().border(1.dp, HistoryColors.line, RoundedCornerShape(8.dp)),
+        shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         OutlinedTextField(prompt, { prompt = it }, modifier = Modifier.fillMaxWidth().padding(6.dp), minLines = 6, maxLines = 12,
             colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = HistoryColors.cinnabar,
@@ -1085,6 +1203,16 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
     var showImage by remember { mutableStateOf(false) }
     var rotation by remember { mutableStateOf(0f) }
     val imageFile = store.image(project, shot)
+    val clipboard = LocalClipboardManager.current
+    val shotIndex = project.shots.indexOfFirst { it.id == shot.id }
+    fun saveInputs() {
+        val textChanged = shot.text != text
+        val promptChanged = shot.imagePrompt != prompt
+        shot.text = text; shot.imagePrompt = prompt
+        if (textChanged) shot.audioStatus = "pending"
+        if (promptChanged) { shot.imageStatus = "pending"; shot.error = "" }
+        onSave(project)
+    }
     Column(
         modifier = Modifier.fillMaxWidth().pointerInput(shot.id, busy) {
             var dragDistance = 0f
@@ -1100,38 +1228,86 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
         },
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        ShotThumbnail(
-            imageFile,
-            Modifier.fillMaxWidth().height(280.dp).pointerInput(imageFile.lastModified(), imageFile.length()) {
+        Box(Modifier.fillMaxWidth().height(320.dp).clip(RoundedCornerShape(8.dp)).background(HistoryColors.subcard)) {
+            ShotThumbnail(imageFile, Modifier.fillMaxSize().pointerInput(imageFile.lastModified(), imageFile.length()) {
                 detectTapGestures(onDoubleTap = { showImage = true })
+            })
+            IconButton(onClick = { showImage = true }, enabled = imageFile.isFile,
+                modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                    .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(8.dp))) {
+                Icon(painterResource(R.drawable.ic_fullscreen), contentDescription = "全屏看图", tint = Color.White)
             }
-        )
-            Text("镜头 ${shot.id.toString().padStart(2, '0')}", style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
-        Text("${shot.shotType} · ${"%.1f".format(shot.duration)} 秒", style = MaterialTheme.typography.bodySmall)
-        OutlinedTextField(text, { text = it }, label = { Text("配音文字") },
-            modifier = Modifier.fillMaxWidth(), minLines = 4, maxLines = 10, enabled = !busy)
-        OutlinedTextField(prompt, { prompt = it }, label = { Text("生图提示词") },
-            modifier = Modifier.fillMaxWidth(), minLines = 4, maxLines = 10, enabled = !busy)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                val textChanged = shot.text != text
-                val promptChanged = shot.imagePrompt != prompt
-                shot.text = text; shot.imagePrompt = prompt
-                if (textChanged) shot.audioStatus = "pending"
-                if (promptChanged) { shot.imageStatus = "pending"; shot.error = "" }
-                onSave(project)
-            }, enabled = !busy) { Text("保存本段") }
-            OutlinedButton(onClick = {
-                shot.imagePrompt = prompt; shot.error = ""; onSave(project)
-                onRun(project, GenerationService.IMAGE, shot.id)
-            }, enabled = !busy) { Text("重生图片") }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = {
-                shot.text = text; onSave(project)
-                onRun(project, GenerationService.AUDIO, shot.id)
-            }, enabled = !busy) { Text("重配此段") }
-            OutlinedButton(onClick = { onPlay(project, shot) }, enabled = !busy) { Text("试听此段") }
+        Row(Modifier.fillMaxWidth().background(HistoryColors.card, RoundedCornerShape(8.dp)).padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("镜头 ${shot.id.toString().padStart(2, '0')}", modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
+            Text("时长 ${"%.1f".format(shot.duration)} 秒", style = MaterialTheme.typography.labelMedium, color = HistoryColors.muted)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(painterResource(R.drawable.ic_voice), contentDescription = null, modifier = Modifier.size(20.dp))
+            Text("配音文字", style = MaterialTheme.typography.titleMedium)
+        }
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+            colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                BasicTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 8,
+                    enabled = !busy, textStyle = MaterialTheme.typography.bodyLarge)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = { saveInputs(); onRun(project, GenerationService.AUDIO, shot.id) },
+                        enabled = !busy, shape = RoundedCornerShape(8.dp)) {
+                        Icon(painterResource(R.drawable.ic_voice), contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp)); Text("重配此段")
+                    }
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { clipboard.setText(AnnotatedString(text)) }) {
+                        Icon(painterResource(R.drawable.ic_copy), contentDescription = "复制配音文字", tint = HistoryColors.muted)
+                    }
+                    IconButton(onClick = { onPlay(project, shot) }, enabled = !busy,
+                        modifier = Modifier.background(HistoryColors.cinnabarSoft, CircleShape)) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = "试听此段", tint = HistoryColors.cinnabar)
+                    }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(painterResource(R.drawable.ic_image), contentDescription = null, modifier = Modifier.size(20.dp))
+            Text("生图提示词", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+            IconButton(onClick = { clipboard.setText(AnnotatedString(prompt)) }) {
+                Icon(painterResource(R.drawable.ic_copy), contentDescription = "复制生图提示词", tint = HistoryColors.muted)
+            }
+        }
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+            colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                BasicTextField(prompt, { prompt = it }, modifier = Modifier.fillMaxWidth(), minLines = 4, maxLines = 12,
+                    enabled = !busy, textStyle = MaterialTheme.typography.bodyLarge)
+                OutlinedButton(onClick = {
+                    saveInputs(); shot.error = ""; onSave(project)
+                    onRun(project, GenerationService.IMAGE, shot.id)
+                }, enabled = !busy, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
+                    Icon(painterResource(R.drawable.ic_image), contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp)); Text("生成新图片")
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { onNavigate(project.shots[shotIndex - 1].id) },
+                enabled = !busy && shotIndex > 0, modifier = Modifier.weight(1f), contentPadding = PaddingValues(6.dp),
+                shape = RoundedCornerShape(8.dp)) {
+                Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = null, modifier = Modifier.size(18.dp))
+                Text("上一镜", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            }
+            Button(onClick = ::saveInputs, enabled = !busy, modifier = Modifier.weight(1.3f),
+                contentPadding = PaddingValues(6.dp), shape = RoundedCornerShape(8.dp)) { Text("保存本段", maxLines = 1) }
+            OutlinedButton(onClick = { onNavigate(project.shots[shotIndex + 1].id) },
+                enabled = !busy && shotIndex >= 0 && shotIndex < project.shots.lastIndex,
+                modifier = Modifier.weight(1f), contentPadding = PaddingValues(6.dp), shape = RoundedCornerShape(8.dp)) {
+                Text("下一镜", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
         }
     }
     if (showImage) {
@@ -1151,7 +1327,7 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
 
 @Composable
 private fun ShotThumbnail(file: File, modifier: Modifier = Modifier.width(128.dp).height(160.dp),
-                          rotation: Float = 0f, previewSize: Int = 640) {
+                          rotation: Float = 0f, previewSize: Int = 640, contentScale: ContentScale = ContentScale.Fit) {
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
         initialValue = null,
         file.absolutePath,
@@ -1173,19 +1349,22 @@ private fun ShotThumbnail(file: File, modifier: Modifier = Modifier.width(128.dp
     }
     val loadedBitmap = bitmap
     if (loadedBitmap != null) {
-        Image(loadedBitmap, "", modifier.graphicsLayer { rotationZ = rotation }, contentScale = ContentScale.Fit)
+        Image(loadedBitmap, "", modifier.graphicsLayer { rotationZ = rotation }, contentScale = contentScale)
     } else {
-        Box(modifier) { Text("暂无图片") }
+        Box(modifier, contentAlignment = Alignment.Center) { Text("暂无图片", color = HistoryColors.muted) }
     }
 }
 
 @Composable
 private fun ProjectProgress(project: VideoProject) {
     val busy = project.status == "running"
-    Text("当前阶段：${project.detail.ifBlank { "输入题材" }}", color = HistoryColors.muted)
-    if (busy && project.total > 0) {
+    Text(project.detail.ifBlank { "输入题材" }, color = HistoryColors.muted)
+    if (project.total > 0 && (busy || project.status == "done")) {
         val progress = (project.completed.toFloat() / project.total.toFloat()).coerceIn(0f, 1f)
-        Text("${stageLabel(project.stage)}进度：${project.completed}/${project.total}", fontWeight = FontWeight.SemiBold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("${project.completed}/${project.total}", style = MaterialTheme.typography.labelMedium)
+            Text("${(progress * 100).toInt()}%", color = HistoryColors.cinnabar, fontWeight = FontWeight.Bold)
+        }
         LinearProgressIndicator(
             progress = { progress },
             modifier = Modifier.fillMaxWidth(),
@@ -1212,18 +1391,18 @@ private fun FlowStepBar(project: VideoProject) {
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         steps.forEachIndexed { index, label ->
-            val done = index < current
+            val done = index < current || project.status == "done"
             val active = index == current
             Column(Modifier.weight(1f), horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Box(
-                    modifier = Modifier.width(32.dp).height(26.dp)
+                    modifier = Modifier.size(32.dp)
                         .background(if (done) HistoryColors.green else if (active) HistoryColors.cinnabar else HistoryColors.subcard,
-                            RoundedCornerShape(13.dp)),
+                            CircleShape),
                     contentAlignment = androidx.compose.ui.Alignment.Center
                 ) {
                     if (done) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White)
-                    else Text("0${index + 1}", color = if (active) Color.White else HistoryColors.muted,
+                    else Text("${index + 1}", color = if (active) Color.White else HistoryColors.muted,
                         style = MaterialTheme.typography.labelSmall)
                 }
                 Text(label, maxLines = 1, style = MaterialTheme.typography.labelSmall,
@@ -1234,54 +1413,70 @@ private fun FlowStepBar(project: VideoProject) {
 }
 
 @Composable
-private fun ProjectCostSummary(project: VideoProject, store: ProjectStore, framed: Boolean = true) {
+private fun projectCostState(project: VideoProject, store: ProjectStore): Result<ProjectCostSnapshot>? {
     val ledger = remember(store) { ProjectCosts(store) }
     val file = ledger.file(project.id)
     val loaded by produceState<Result<ProjectCostSnapshot>?>(ledger.cached(project.id)?.let { Result.success(it) },
         project.id, file.lastModified(), file.length()) {
         value = withContext(Dispatchers.IO) { runCatching { ledger.read(project.id) } }
     }
-    var showDetails by rememberSaveable(project.id) { mutableStateOf(false) }
+    return loaded
+}
+
+@Composable
+private fun CostNotes(snapshot: ProjectCostSnapshot) {
+    if (snapshot.unknownCalls > 0) Text("${snapshot.unknownCalls} 次调用用量未知，费用待核实",
+        style = MaterialTheme.typography.bodySmall, color = HistoryColors.ochre)
+    if (snapshot.hasEarlierUntrackedCalls) Text("旧版调用未记录，以上为更新后的累计费用",
+        style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+}
+
+@Composable
+private fun ProjectCostSummary(project: VideoProject, store: ProjectStore, framed: Boolean = true,
+                               compact: Boolean = false, onOpenDetails: (() -> Unit)? = null) {
+    val loaded = projectCostState(project, store)
     val body: @Composable () -> Unit = {
         val snapshot = loaded?.getOrNull()
         if (snapshot != null) {
             val title = if (snapshot.unknownCalls > 0 || snapshot.hasEarlierUntrackedCalls) "已记录成本" else "累计成本"
-            Text("$title ${costMoney(snapshot.subtotal())}", style = MaterialTheme.typography.titleMedium,
-                color = HistoryColors.cinnabar)
-            val labels = listOf("text" to "文案", "image" to "生图", "voice" to "配音")
-            labels.forEach { (category, label) ->
-                val entries = snapshot.entries.filter { it.category == category }
-                val units = when (category) {
-                    "image" -> "${entries.size} 张"
-                    "voice" -> "${entries.size} 次 · ${entries.sumOf { it.quantity }} 字符"
-                    else -> "${entries.size} 次调用"
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("$label · $units", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-                    Text(costMoney(snapshot.subtotal(category)), style = MaterialTheme.typography.bodySmall)
-                }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(if (compact) "$title ${costMoney(snapshot.subtotal())}" else "费用统计 · $title",
+                    modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
+                    color = if (compact) HistoryColors.cinnabar else HistoryColors.ink)
+                if (onOpenDetails != null) TextButton(onClick = onOpenDetails,
+                    contentPadding = PaddingValues(horizontal = 4.dp)) { Text("费用明细", style = MaterialTheme.typography.labelSmall) }
             }
-            if (snapshot.unknownCalls > 0) Text("${snapshot.unknownCalls} 次调用用量未知，费用待核实",
-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.ochre)
-            if (snapshot.hasEarlierUntrackedCalls) Text("旧版调用未记录，以上为更新后的累计费用",
-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-            if (snapshot.entries.isNotEmpty()) {
-                TextButton(onClick = { showDetails = !showDetails }) { Text(if (showDetails) "收起明细" else "费用明细") }
-                if (showDetails) snapshot.entries.asReversed().forEach { entry ->
-                    HorizontalDivider(color = HistoryColors.line)
-                    Text(entry.label, style = MaterialTheme.typography.labelLarge)
-                    Text(DateFormat.getDateTimeInstance().format(Date(entry.createdAt)), style = MaterialTheme.typography.labelSmall,
-                        color = HistoryColors.muted)
-                    val detail = when (entry.category) {
-                        "text" -> "输入 ${entry.inputTokens?.toString() ?: "未知"} Token · 输出 ${entry.outputTokens?.toString() ?: "未知"} Token\n${entry.rate}"
-                        "image" -> "${entry.quantity} 张 × ¥${entry.rate}/张"
-                        else -> "${entry.quantity} 字符 × ¥${entry.rate}/万字符"
+            if (!compact) {
+                val labels = listOf("text" to "文案", "image" to "生图", "voice" to "配音", "total" to "合计")
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    labels.forEach { (category, label) ->
+                        val entries = snapshot.entries.filter { it.category == category }
+                        Column(Modifier.weight(1f).background(if (category == "total") HistoryColors.cinnabarSoft else HistoryColors.paper,
+                            RoundedCornerShape(6.dp)).padding(horizontal = 4.dp, vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (category != "total") Icon(painterResource(when (category) {
+                                "text" -> R.drawable.ic_copy
+                                "image" -> R.drawable.ic_image
+                                else -> R.drawable.ic_voice
+                            }), contentDescription = null, modifier = Modifier.size(20.dp), tint = HistoryColors.ink)
+                            else Spacer(Modifier.height(20.dp))
+                            Text(label, style = MaterialTheme.typography.labelMedium,
+                                color = if (category == "total") HistoryColors.cinnabar else HistoryColors.muted)
+                            Text(costMoney(snapshot.subtotal(if (category == "total") null else category)),
+                                style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold,
+                                color = if (category == "total") HistoryColors.cinnabar else HistoryColors.ink,
+                                maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(when (category) {
+                                "image" -> "${entries.size} 张"
+                                "voice" -> "${entries.size} 次\n${entries.sumOf { it.quantity }} 字符"
+                                "text" -> "${entries.size} 次调用"
+                                else -> "累计"
+                            }, style = MaterialTheme.typography.labelSmall, color = HistoryColors.muted, textAlign = TextAlign.Center)
+                        }
                     }
-                    Text(detail, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-                    Text(entry.amount?.toBigDecimalOrNull()?.let(::costMoney) ?: "费用待核实",
-                        style = MaterialTheme.typography.bodyMedium)
                 }
             }
+            CostNotes(snapshot)
         } else if (loaded?.isFailure == true) {
             Text("成本记录读取失败：${loaded?.exceptionOrNull()?.message.orEmpty()}", color = HistoryColors.ochre)
         } else Text("正在读取成本", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
@@ -1295,6 +1490,38 @@ private fun ProjectCostSummary(project: VideoProject, store: ProjectStore, frame
 }
 
 @Composable
+private fun ProjectCostDetailsScreen(project: VideoProject, store: ProjectStore) {
+    Text(project.title.ifBlank { "未命名项目" }, style = MaterialTheme.typography.titleLarge)
+    ProjectCostSummary(project, store)
+    val loaded = projectCostState(project, store)
+    val snapshot = loaded?.getOrNull()
+    if (snapshot != null) {
+        if (snapshot.entries.isEmpty()) Text("暂无费用记录", modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+            textAlign = TextAlign.Center, color = HistoryColors.muted)
+        snapshot.entries.asReversed().forEach { entry ->
+            key(entry.id) {
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+                    colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(entry.label, style = MaterialTheme.typography.titleMedium)
+                        Text(DateFormat.getDateTimeInstance().format(Date(entry.createdAt)),
+                            style = MaterialTheme.typography.labelSmall, color = HistoryColors.muted)
+                        val detail = when (entry.category) {
+                            "text" -> "输入 ${entry.inputTokens?.toString() ?: "未知"} Token · 输出 ${entry.outputTokens?.toString() ?: "未知"} Token\n${entry.rate}"
+                            "image" -> "${entry.quantity} 张 × ¥${entry.rate}/张"
+                            else -> "${entry.quantity} 字符 × ¥${entry.rate}/万字符"
+                        }
+                        Text(detail, style = MaterialTheme.typography.bodySmall)
+                        Text(entry.amount?.toBigDecimalOrNull()?.let(::costMoney) ?: "费用待核实",
+                            style = MaterialTheme.typography.titleMedium, color = HistoryColors.cinnabar)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ProjectOverviewScreen(project: VideoProject,
                                   store: ProjectStore,
                                   onOpenScript: () -> Unit,
@@ -1302,47 +1529,69 @@ private fun ProjectOverviewScreen(project: VideoProject,
                                   onOpenEffects: () -> Unit,
                                   onRender: () -> Unit,
                                   hasOutput: Boolean,
-                                  onOpenResults: () -> Unit) {
+                                  onOpenResults: () -> Unit,
+                                  onOpenCosts: () -> Unit,
+                                  onCancel: () -> Unit) {
+    val busy = project.status == "running"
+    val firstImage = project.shots.firstOrNull()?.let { store.image(project, it) }
+    var confirmCancel by remember { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth().height(126.dp).clip(RoundedCornerShape(8.dp)).background(HistoryColors.ink)) {
+        if (firstImage != null && firstImage.isFile) ShotThumbnail(firstImage, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
+        Column(Modifier.align(Alignment.CenterStart).padding(16.dp).padding(end = 62.dp)) {
+            Text(project.title.ifBlank { "未命名项目" }, color = Color.White, style = MaterialTheme.typography.titleLarge,
+                maxLines = 3, overflow = TextOverflow.Ellipsis)
+        }
+        IconButton(onClick = onOpenScript, enabled = !busy, modifier = Modifier.align(Alignment.BottomEnd)) {
+            Icon(Icons.Filled.Edit, contentDescription = "编辑题材", tint = Color.White)
+        }
+    }
     FlowStepBar(project)
-    ProjectProgress(project)
-    Text(project.title, style = MaterialTheme.typography.headlineSmall)
-    ProjectCostSummary(project, store)
-    Card(onClick = onOpenScript, modifier = Modifier.fillMaxWidth().height(102.dp), shape = RoundedCornerShape(14.dp),
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("立题成文", style = MaterialTheme.typography.titleLarge)
-            Text(if (project.script.isBlank()) "包含题材，尚无正文" else "包含题材，正文已保存",
-                color = HistoryColors.muted)
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(if (project.stage == "render" || project.status == "done") "合成进度" else "制作进度",
+                style = MaterialTheme.typography.titleMedium)
+            ProjectProgress(project)
+            if (hasOutput) TextButton(onClick = onOpenResults) { Text("查看视频与封面") }
         }
     }
-    Card(onClick = onOpenShots, modifier = Modifier.fillMaxWidth().height(102.dp), shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("拆镜成卷", style = MaterialTheme.typography.titleLarge)
-            Text(if (project.shots.isEmpty()) "尚未拆分镜头" else "${project.shots.size} 个镜头，等待画面与配音",
-                color = HistoryColors.muted)
+    ProjectCostSummary(project, store, onOpenDetails = onOpenCosts)
+    Text("本卷内容", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
+    val items = listOf(
+        Triple("立题成文", if (project.script.isBlank()) "题材、正文与封面文案" else "正文已保存", onOpenScript),
+        Triple("拆镜成卷", "${project.shots.size} 个镜头 · 图片与配音", onOpenShots),
+        Triple("画面与章法", "字幕、动势、转场、封面与抠图", onOpenEffects)
+    )
+    items.forEachIndexed { index, (title, detail, action) ->
+        Row(Modifier.fillMaxWidth().clickable(onClick = action).padding(vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            val ready = when (index) {
+                0 -> project.script.isNotBlank()
+                1 -> project.shots.isNotEmpty()
+                else -> project.shots.isNotEmpty()
+            }
+            Box(Modifier.size(26.dp).background(if (ready) HistoryColors.green else HistoryColors.subcard, CircleShape),
+                contentAlignment = Alignment.Center) {
+                if (ready) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                else Text("${index + 1}", style = MaterialTheme.typography.labelSmall)
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = MaterialTheme.typography.titleSmall)
+                Text(detail, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            }
+            Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, tint = HistoryColors.muted)
         }
+        if (index < items.lastIndex) HorizontalDivider(color = HistoryColors.line)
     }
-    Card(onClick = onOpenEffects, modifier = Modifier.fillMaxWidth().height(102.dp), shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("画面与章法", style = MaterialTheme.typography.titleLarge)
-            Text("字幕、画面动势、转场、封面和成片抠图", color = HistoryColors.muted)
-        }
+    Button(onClick = onRender, enabled = !busy && project.shots.isNotEmpty(),
+        modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(8.dp)) {
+        Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(if (busy) "正在制作中…" else if (hasOutput) "重新渲染视频" else "渲染视频")
     }
-    Card(
-        onClick = onRender,
-        enabled = project.status != "running" && project.shots.isNotEmpty(),
-        modifier = Modifier.fillMaxWidth().height(102.dp),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = HistoryColors.cinnabarSoft)
-    ) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("合卷成片", style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
-            Text(if (project.status == "running") "当前任务处理中" else "将配音、图片、字幕和效果合成为视频",
-                color = HistoryColors.muted)
-        }
-    }
+    if (busy) OutlinedButton(onClick = { confirmCancel = true }, modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp)) { Text("暂停制作") }
     if (hasOutput) {
         Card(onClick = onOpenResults, modifier = Modifier.fillMaxWidth().height(82.dp), shape = RoundedCornerShape(8.dp),
             colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
@@ -1352,6 +1601,10 @@ private fun ProjectOverviewScreen(project: VideoProject,
             }
         }
     }
+    if (confirmCancel) AlertDialog(onDismissRequest = { confirmCancel = false },
+        title = { Text("暂停当前任务？") }, text = { Text("已生成的素材会保留，可以稍后继续制作。") },
+        confirmButton = { TextButton(onClick = { confirmCancel = false; onCancel() }) { Text("暂停") } },
+        dismissButton = { TextButton(onClick = { confirmCancel = false }) { Text("继续制作") } })
 }
 
 @Composable
@@ -1484,18 +1737,13 @@ private fun InputTile(label: String, value: String, onValueChange: (String) -> U
                       enabled: Boolean = true, minLines: Int = 1, maxLength: Int? = null,
                       modifier: Modifier = Modifier.fillMaxWidth()) {
     Card(
-        modifier = modifier.border(1.dp, HistoryColors.line, RoundedCornerShape(14.dp)),
-        shape = RoundedCornerShape(14.dp),
+        modifier = modifier.border(1.dp, HistoryColors.line, RoundedCornerShape(8.dp)),
+        shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(label, style = MaterialTheme.typography.titleMedium, color = HistoryColors.ink)
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(10.dp),
-                colors = CardDefaults.cardColors(containerColor = HistoryColors.subcard)
-            ) {
-                BasicTextField(
+            BasicTextField(
                     value = value,
                     onValueChange = { incoming ->
                         val bounded = maxLength?.let { limit ->
@@ -1505,13 +1753,12 @@ private fun InputTile(label: String, value: String, onValueChange: (String) -> U
                         onValueChange(bounded)
                     },
                     enabled = enabled,
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    modifier = Modifier.fillMaxWidth().background(HistoryColors.subcard, RoundedCornerShape(6.dp)).padding(12.dp),
                     textStyle = MaterialTheme.typography.bodyLarge,
                     minLines = minLines,
                     maxLines = if (minLines == 1) 1 else maxOf(minLines, 12),
                     singleLine = minLines == 1
-                )
-            }
+            )
         }
     }
 }
@@ -1519,12 +1766,12 @@ private fun InputTile(label: String, value: String, onValueChange: (String) -> U
 @Composable
 private fun ChoiceTile(label: String, value: String, onClick: () -> Unit, enabled: Boolean = true,
                        modifier: Modifier = Modifier.fillMaxWidth(), dropdown: Boolean = false) {
-    Card(
+    Surface(
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.border(1.dp, HistoryColors.line, RoundedCornerShape(12.dp)),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = HistoryColors.subcard
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(label, style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
@@ -1723,11 +1970,33 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
                         onOpenShot: (Int) -> Unit,
                         onExport: (VideoProject) -> Unit) {
     val busy = project.status == "running"
+    var missingImagesOnly by rememberSaveable(project.id) { mutableStateOf(false) }
+    val missingImageIds = project.shots.filter { shot ->
+        val image = store.image(project, shot)
+        shot.imageStatus != "done" || !image.isFile || image.length() <= 1000
+    }.map { it.id }.toSet()
+    val visibleShots = if (missingImagesOnly) project.shots.filter { it.id in missingImageIds } else project.shots
     ProjectProgress(project)
     Text("${project.shots.size} 镜", style = MaterialTheme.typography.titleLarge)
     if (project.shots.isEmpty()) {
         Text("尚未拆镜，请先在立题成文页面输入或生成正文。", color = HistoryColors.muted)
     } else {
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(HistoryColors.subcard).padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf(false to "全部镜头 · ${project.shots.size}", true to "未生成图片 · ${missingImageIds.size}")
+                .forEach { (missingOnly, label) ->
+                    val selected = missingImagesOnly == missingOnly
+                    Surface(modifier = Modifier.weight(1f).height(48.dp)
+                        .selectable(selected = selected, role = Role.Tab, onClick = { missingImagesOnly = missingOnly }),
+                        shape = RoundedCornerShape(6.dp), color = if (selected) HistoryColors.card else Color.Transparent) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                color = if (selected) HistoryColors.cinnabar else HistoryColors.muted)
+                        }
+                    }
+                }
+        }
         Button(onClick = { onRun(project, GenerationService.VOICE_ALL, 0) },
             enabled = !busy, modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) { Text("生成配音") }
@@ -1739,7 +2008,11 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
             enabled = !busy && voiceReady, modifier = Modifier.fillMaxWidth()) {
             Text(if (voiceReady) "试听配音完成版" else "配音完成后可试听完整版本")
         }
-        project.shots.forEach { shot ->
+        if (missingImagesOnly && visibleShots.isEmpty()) {
+            Text("所有镜头图片均已生成", modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                textAlign = TextAlign.Center, color = HistoryColors.muted)
+        }
+        visibleShots.forEach { shot ->
             key(project.id, shot.id) {
                 ShotListItem(shot, store.image(project, shot), busy,
                     onClick = { onOpenShot(shot.id) }, onPlay = { onPlay(project, shot) })
@@ -1756,21 +2029,26 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
 @Composable
 private fun ShotListItem(shot: Shot, imageFile: File, busy: Boolean,
                          onClick: () -> Unit, onPlay: () -> Unit) {
+    val imageReady = shot.imageStatus == "done" && imageFile.isFile && imageFile.length() > 1000
     Card(
         onClick = onClick,
         enabled = !busy,
-        modifier = Modifier.fillMaxWidth().border(1.dp, HistoryColors.line, RoundedCornerShape(14.dp)),
-        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth().border(1.dp, HistoryColors.line, RoundedCornerShape(8.dp)),
+        shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
     ) {
         Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.width(82.dp).height(104.dp).background(HistoryColors.subcard, RoundedCornerShape(10.dp))) {
+            Box(Modifier.width(82.dp).height(104.dp).background(HistoryColors.subcard, RoundedCornerShape(8.dp))) {
                 ShotThumbnail(imageFile, Modifier.fillMaxSize())
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("镜头 ${shot.id.toString().padStart(2, '0')}", style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
                 Text(shot.text.take(70), maxLines = 2, style = MaterialTheme.typography.bodySmall)
-                Text(if (shot.imageStatus == "done") "画面已生成" else "画面待生成", color = if (shot.imageStatus == "done") HistoryColors.green else HistoryColors.muted,
+                Text(when {
+                    shot.imageStatus == "failed" -> "图片生成失败"
+                    imageReady -> "画面已生成"
+                    else -> "画面待生成"
+                }, color = if (imageReady) HistoryColors.green else if (shot.imageStatus == "failed") HistoryColors.cinnabar else HistoryColors.muted,
                     style = MaterialTheme.typography.labelSmall)
                 TextButton(onClick = onPlay, enabled = !busy) { Text("试听此段") }
             }
@@ -1796,7 +2074,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     val transitionChoices = listOf("random" to "逐镜随机", "none" to "无", "fade" to "柔和叠化",
         "dissolve" to "颗粒溶解", "smoothleft" to "平滑左推", "zoomin" to "推近切换", "fadeblack" to "黑场淡化")
     val busy = project.status == "running"
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("字幕", style = MaterialTheme.typography.titleLarge)
             ChoiceTile("当前状态", if (subtitle) "开启" else "关闭", onClick = {
@@ -1804,7 +2082,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
             }, enabled = !busy)
         }
     }
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("画面动势", style = MaterialTheme.typography.titleLarge)
             Box(Modifier.fillMaxWidth()) {
@@ -1842,7 +2120,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
             }
         }
     }
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("封面", style = MaterialTheme.typography.titleLarge)
             val coverShot = project.shots.firstOrNull { it.id == project.coverShotId }
@@ -1854,7 +2132,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
             }
         }
     }
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("开头模板", style = MaterialTheme.typography.titleLarge)
             val templates = listOf(
@@ -1886,7 +2164,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         }
     }
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("成片抠图", style = MaterialTheme.typography.titleLarge)
             val selectedCutoutCount = project.shots.count { it.cutoutEnabled }
