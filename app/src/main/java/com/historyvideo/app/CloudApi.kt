@@ -132,7 +132,8 @@ class CloudApi {
         }
     }
 
-    fun text(config: ProviderConfig, system: String, input: String, outputInstruction: String = ""): String {
+    fun text(config: ProviderConfig, system: String, input: String, outputInstruction: String = "",
+             onUsage: (TextUsage) -> Unit = {}): String {
         require(config.model.isNotBlank()) { "请设置文本模型 ID" }
         val taskPrompt = system.trim()
         require(taskPrompt.isNotBlank()) { "提示词不能为空" }
@@ -152,16 +153,22 @@ class CloudApi {
             .put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content", "你是一个严格执行用户任务提示词的生成器。"))
                 .put(JSONObject().put("role", "user").put("content", userContent)))
-        val result = JSONObject(post(endpoint(config.baseUrl, "/v1/chat/completions"), body, config.key,
-            requestClient = textClient))
+        val url = endpoint(config.baseUrl, "/v1/chat/completions")
+        require(config.key.isNotBlank()) { "请先填写 API Key" }
+        val requestId = UUID.randomUUID().toString()
+        onUsage(TextUsage(null, null, requestId))
+        val response = post(url, body, config.key, requestClient = textClient)
+        val result = JSONObject(response)
+        onUsage(TextUsage.from(result).copy(requestId = requestId))
         val content = result.getJSONArray("choices").getJSONObject(0)
             .getJSONObject("message").getString("content").trim()
         require(content.isNotBlank()) { "模型返回了空内容" }
         return content
     }
 
-    fun topics(config: ProviderConfig, prompt: String, direction: String): MutableList<String> {
-        val raw = text(config, prompt, direction).removePrefix("```json").removePrefix("```")
+    fun topics(config: ProviderConfig, prompt: String, direction: String,
+               onUsage: (TextUsage) -> Unit = {}): MutableList<String> {
+        val raw = text(config, prompt, direction, onUsage = onUsage).removePrefix("```json").removePrefix("```")
             .removeSuffix("```").trim()
         val start = raw.indexOf('{')
         val end = raw.lastIndexOf('}')
@@ -185,10 +192,10 @@ class CloudApi {
     }
 
     fun shots(config: ProviderConfig, prompt: String, input: String, expectedScript: String = input,
-              onRetry: () -> Unit = {}): MutableList<Shot> {
+              onRetry: () -> Unit = {}, onUsage: (TextUsage) -> Unit = {}): MutableList<Shot> {
         val taskPrompt = prompt + StoryboardRules.instruction(expectedScript)
         return checkedShots(expectedScript, onRetry) { retryInstruction ->
-            text(config, taskPrompt + retryInstruction, input)
+            text(config, taskPrompt + retryInstruction, input, onUsage = onUsage)
         }
     }
 
@@ -245,7 +252,7 @@ class CloudApi {
         return shots
     }
 
-    fun image(config: ProviderConfig, prompt: String, out: File) {
+    fun image(config: ProviderConfig, prompt: String, out: File, onGenerated: () -> Unit = {}) {
         require(config.model.isNotBlank()) { "请设置生图模型 ID" }
         val requestSize = cangyuanImageSize(config)
         val instruction = imageRatioInstruction(config.imageSize)
@@ -265,6 +272,8 @@ class CloudApi {
             ?: error("生图接口没有返回 data")
         require(items.length() > 0) { "生图接口返回了空图片列表" }
         val item = items.getJSONObject(0)
+        require(item.optString("b64_json").isNotBlank() || item.optString("url").isNotBlank()) { "生图接口没有返回图片" }
+        onGenerated()
         val bytes = when {
             item.optString("b64_json").isNotBlank() ->
                 Base64.decode(item.getString("b64_json"), Base64.DEFAULT)
@@ -351,7 +360,8 @@ class CloudApi {
         }
     }
 
-    fun doubao(config: ProviderConfig, voiceId: String, speed: Float, spoken: String, out: File) {
+    fun doubao(config: ProviderConfig, voiceId: String, speed: Float, spoken: String, out: File,
+               onGenerated: () -> Unit = {}) {
         val url = config.baseUrl.ifBlank { "https://openspeech.bytedance.com/api/v3/tts/unidirectional" }
         require(url.startsWith("https://")) { "TTS URL 必须使用 HTTPS" }
         val additions = JSONObject()
@@ -377,14 +387,16 @@ class CloudApi {
             .put("req_params", requestParams)
         val response = post(url, body, config.key, true,
             config.model.ifBlank { "volc.service_type.10029" })
+        val parts = parseDoubaoResponse(response)
+        val errorCode = parts.codes.firstOrNull { it != 0 && it != 20000000 }
+        if (errorCode != null) {
+            val detail = parts.messages.firstOrNull().orEmpty()
+            error("豆包 TTS 返回错误 $errorCode${detail.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
+        }
+        require(parts.audioChunks.isNotEmpty()) { "TTS 返回了空音频" }
+        onGenerated()
         val pending = File(out.parentFile, out.name + ".tmp")
         pending.outputStream().use { stream ->
-            val parts = parseDoubaoResponse(response)
-            val errorCode = parts.codes.firstOrNull { it != 0 && it != 20000000 }
-            if (errorCode != null) {
-                val detail = parts.messages.firstOrNull().orEmpty()
-                error("豆包 TTS 返回错误 $errorCode${detail.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
-            }
             for (data in parts.audioChunks) {
                 val normalized = data.replace("\\/", "/")
                 stream.write(Base64.decode(normalized, Base64.DEFAULT))

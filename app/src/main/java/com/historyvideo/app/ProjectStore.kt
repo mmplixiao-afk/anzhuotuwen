@@ -242,6 +242,7 @@ class ProjectStore(context: Context) {
     fun create(title: String): VideoProject = synchronized(this) {
         val project = VideoProject(UUID.randomUUID().toString(), title.trim())
         save(project)
+        ProjectCosts(this).initialize(project.id)
         project
     }
 

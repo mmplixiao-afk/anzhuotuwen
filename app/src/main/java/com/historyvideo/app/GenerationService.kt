@@ -99,7 +99,6 @@ class GenerationService : Service() {
                         "封面文案最多 40 个字符，请缩短后重试"
                     }
                     project.coverText = coverText
-                    project.coverShotId = 1
                     store.save(project)
                 }
                 when (action) {
@@ -199,7 +198,8 @@ class GenerationService : Service() {
         val prompt = configuredPrompt("script", promptOverride)
         update(project, "script", "running", "正在生成文案")
         val script = ensureScriptStartsWithTitle(project.title,
-            api.text(settings.provider("text"), prompt, project.title, scriptTitleInstruction(project.title)))
+            api.text(settings.provider("text"), prompt, project.title, scriptTitleInstruction(project.title),
+                onUsage = { ProjectCosts(store).add(project.id, CostEntry.text("生成正文", it)) }))
         project.script = script
         project.shots.clear()
         project.storyboardScript = ""
@@ -211,7 +211,8 @@ class GenerationService : Service() {
         val prompt = configuredPrompt("topic", promptOverride)
         update(project, "topic", "running", "正在生成候选题材")
         project.topicCandidates = api.topics(
-            settings.provider("text"), prompt, project.title
+            settings.provider("text"), prompt, project.title,
+            onUsage = { ProjectCosts(store).add(project.id, CostEntry.text("生成选题", it)) }
         )
         update(project, "topic", "review", "选题生成成功，请选择题材")
     }
@@ -223,7 +224,8 @@ class GenerationService : Service() {
         val storyboardInput = "主题：${project.title}\n\n完整口播文案：\n${project.script}"
         val shots = api.shots(
             settings.provider("text"), prompt, storyboardInput, project.script,
-            onRetry = { update(project, "shots", "running", "分镜结果不合格，正在重试一次") }
+            onRetry = { update(project, "shots", "running", "分镜结果不合格，正在重试一次") },
+            onUsage = { ProjectCosts(store).add(project.id, CostEntry.text("拆分镜头", it)) }
         )
         store.applyStoryboard(project, shots)
         update(project, "shots", "review", "分镜拆分成功，请生成变化镜头的图片和配音，并重新渲染视频",
@@ -234,6 +236,7 @@ class GenerationService : Service() {
         require(project.shots.isNotEmpty()) { "请先确认分镜" }
         val imagePrompt = configuredPrompt("image", promptOverride)
         val imageProvider = settings.provider("image")
+        val imageUnitPrice = settings.imageUnitPrice
         project.imageSize = imageProvider.imageSize
         val semaphore = Semaphore(settings.concurrency.coerceIn(1, 10))
         update(project, "images", "running", "正在生成图片", 0, project.shots.size)
@@ -247,7 +250,9 @@ class GenerationService : Service() {
                         for (attempt in 0..2) {
                             if (!isActive) return@async
                             try {
-                                api.image(imageProvider, "$imagePrompt\n${shot.imagePrompt}", target)
+                                api.image(imageProvider, "$imagePrompt\n${shot.imagePrompt}", target,
+                                    onGenerated = { ProjectCosts(store).add(project.id,
+                                        CostEntry.image("第 ${shot.id} 镜生图", imageUnitPrice)) })
                                 last = null
                                 regenerated = true
                                 break
@@ -293,7 +298,8 @@ class GenerationService : Service() {
             update(project, "tts", "running", "正在配音 ${index + 1}/${project.shots.size}", index, project.shots.size)
             if (target.length() < 1000 || shot.audioStatus != "done") {
                 val replacement = File(target.parentFile, target.name + ".new.mp3")
-                api.doubao(tts, settings.voiceId, settings.speed, shot.text, replacement)
+                api.doubao(tts, settings.voiceId, settings.speed, shot.text, replacement,
+                    onGenerated = { ProjectCosts(store).add(project.id, CostEntry.voice("第 ${shot.id} 镜配音", shot.text)) })
                 Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
                 File(store.directory(project.id), "temp/clip_%03d.mp4".format(shot.id)).delete()
             }
@@ -316,8 +322,10 @@ class GenerationService : Service() {
         update(project, "images", "running", "正在重生成第 $shotId 张图片", 0, 1)
         val target = store.image(project, shot)
         val replacement = File(target.parentFile, target.name + ".new")
+        val imageUnitPrice = settings.imageUnitPrice
         try {
-            api.image(settings.provider("image"), "$imagePrompt\n$shotPrompt", replacement)
+            api.image(settings.provider("image"), "$imagePrompt\n$shotPrompt", replacement,
+                onGenerated = { ProjectCosts(store).add(project.id, CostEntry.image("第 $shotId 镜重生图片", imageUnitPrice)) })
             Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
             File(store.directory(project.id), "temp/clip_%03d.mp4".format(shot.id)).delete()
             shot.imageStatus = "done"
@@ -334,7 +342,8 @@ class GenerationService : Service() {
         val target = store.audio(project, shot)
         val replacement = File(target.parentFile, target.name + ".new.mp3")
         update(project, "tts", "running", "正在重生成第 $shotId 段配音", 0, 1)
-        api.doubao(settings.provider("tts"), settings.voiceId, settings.speed, shot.text, replacement)
+        api.doubao(settings.provider("tts"), settings.voiceId, settings.speed, shot.text, replacement,
+            onGenerated = { ProjectCosts(store).add(project.id, CostEntry.voice("第 $shotId 镜重配音", shot.text)) })
         val newDuration = VideoRenderer(store).duration(replacement)
         Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
         shot.duration = newDuration

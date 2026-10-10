@@ -51,7 +51,7 @@ class VideoRenderer(private val store: ProjectStore) {
         const val SUBTITLE_GLYPH_WIDTH_RATIO = 1.05
         const val COVER_TITLE_MAX_CHARS = 40
         const val COVER_TITLE_DELAY = 1.0
-        const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2"
+        const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2-cover-1"
         const val SUBTITLE_SPLIT_MARKS = "，。！？；：、,.!?;:…"
         const val SUBTITLE_CLOSING_QUOTES = "”’\"'」』）》】)]}〉〕〗〙〛"
         val spokenOnlyPhrases = listOf("他娘的", "奶奶的", "老子")
@@ -942,7 +942,11 @@ class VideoRenderer(private val store: ProjectStore) {
         require(codePointLength(normalizedCover) <= COVER_TITLE_MAX_CHARS) { "封面文案最多 40 个字符，请缩短后重试" }
         project.coverText = normalizedCover
         stage("正在生成视频片段")
-        val images = project.shots.map { shot ->
+        val coverShot = project.shots.firstOrNull { it.id == project.coverShotId }
+            ?: project.shots.first()
+        // Only the video's opening picture uses the selected cover. The standalone PNG uses shot 1.
+        val visualShots = project.shots.map { if (it.id == 1) coverShot else it }
+        val images = visualShots.map { shot ->
             store.image(project, shot).also { image ->
                 require(image.length() > 1000) { "第 ${shot.id} 镜缺少图片" }
             }
@@ -963,9 +967,9 @@ class VideoRenderer(private val store: ProjectStore) {
             File(temp, "clip_001.mp4").delete()
         }
         val cutoutProcessor = CutoutProcessor(store)
-        val cutoutShots = project.shots.filter { it.cutoutEnabled }
+        val cutoutShots = visualShots.distinctBy { it.id }.filter { it.cutoutEnabled }
         val cutoutIndexes = cutoutShots.mapIndexed { index, shot -> shot.id to index + 1 }.toMap()
-        project.shots.forEach { shot ->
+        visualShots.distinctBy { it.id }.forEach { shot ->
             motionPlanFor(project, shot)
             if (shot.cutoutEnabled) {
                 val index = cutoutIndexes[shot.id] ?: 1
@@ -982,16 +986,17 @@ class VideoRenderer(private val store: ProjectStore) {
             project.transitionMode, transitionPlans.joinToString(",") { "${it.type}:${it.frames}" },
             project.coverShotId, project.coverText, project.openingTemplate, project.introImageSeconds,
             project.bgmId, project.introSfxId, project.bgmVolume, project.introSfxVolume, project.ttsVolume,
-            project.shots.joinToString(",") { shot ->
-                val layers = if (shot.cutoutEnabled) layerFiles(project, shot).let {
+            project.shots.mapIndexed { index, shot ->
+                val visualShot = visualShots[index]
+                val layers = if (visualShot.cutoutEnabled) layerFiles(project, visualShot).let {
                     val sourceStamp = File(it.background.parentFile, "source.txt").readTextOrNull().orEmpty()
                     "$sourceStamp:${it.background.length()}:${it.background.lastModified()}:${it.foreground.length()}:${it.foreground.lastModified()}"
                 } else ""
                 "${shot.id}:${shot.imageRevision}:${shot.audioRevision}:${shot.cutoutEnabled}:${shot.text.hashCode()}:${shot.subtitleChunks.joinToString("\u0000").hashCode()}:" +
-                    "${shot.motionPlan}:${shot.cutoutBackgroundPlan}:${shot.cutoutForegroundPlan}:$layers:" +
-                    "${store.image(project, shot).length()}:${store.image(project, shot).lastModified()}:" +
+                    "${visualShot.id}:${visualShot.cutoutEnabled}:${visualShot.motionPlan}:${visualShot.cutoutBackgroundPlan}:${visualShot.cutoutForegroundPlan}:$layers:" +
+                    "${images[index].length()}:${images[index].lastModified()}:" +
                     "${store.audio(project, shot).length()}:${store.audio(project, shot).lastModified()}"
-            }
+            }.joinToString(",")
         ).joinToString("|")
         if (store.output(project).length() > 1000 && finalStamp.readTextOrNull() == "$clipSignature|${project.renderRevision}") {
             stage("素材未改变，复用已有成片")
@@ -1031,6 +1036,7 @@ class VideoRenderer(private val store: ProjectStore) {
                     async(Dispatchers.Default) {
                         gate.withPermit {
                             val shot = project.shots[index]
+                            val visualShot = visualShots[index]
                             val clip = clips[index]
                             if (clip.length() < 1000) {
                                 val pending = File(temp, clip.name + ".tmp.mp4")
@@ -1039,14 +1045,14 @@ class VideoRenderer(private val store: ProjectStore) {
                                 val (width, height) = canvasSize(project)
                                 val subtitle = subtitleFilter(project, shot, temp, width, height)
                                 val cover = coverFilter(project, shot, temp, width, height, durations[index])
-                                if (shot.cutoutEnabled) {
-                                    val layers = layerFiles(project, shot)
+                                if (visualShot.cutoutEnabled) {
+                                    val layers = layerFiles(project, visualShot)
                                     val foregroundPlan = fitForegroundMotion(
-                                        shot.cutoutForegroundPlan ?: error("第 ${shot.id} 镜人物运动方案丢失"),
+                                        visualShot.cutoutForegroundPlan ?: error("第 ${shot.id} 镜人物运动方案丢失"),
                                         foregroundBounds(layers.foreground)
                                     )
                                     val cutout = cutoutFilter(
-                                        shot.cutoutBackgroundPlan ?: error("第 ${shot.id} 镜背景运动方案丢失"),
+                                        visualShot.cutoutBackgroundPlan ?: error("第 ${shot.id} 镜背景运动方案丢失"),
                                         foregroundPlan, frameCount, width, height, durations[index]
                                     )
                                     val overlays = subtitle + cover
@@ -1068,13 +1074,13 @@ class VideoRenderer(private val store: ProjectStore) {
                                             project.openingTemplate, images, openingBase, frameCount,
                                             project.introImageSeconds, width, height
                                         )
-                                        val overlayFilter = motionFilter(motionPlanFor(project, shot), frameCount, width, height) + subtitle + cover
+                                        val overlayFilter = motionFilter(motionPlanFor(project, visualShot), frameCount, width, height) + subtitle + cover
                                         run("叠加封面文案", "-y", "-i", openingBase.absolutePath, "-vf", overlayFilter,
                                             "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4", "-q:v", "4",
                                             "-pix_fmt", "yuv420p", pending.absolutePath, onFrame = onFrame)
                                         openingBase.delete()
                                     } else {
-                                        val filter = motionFilter(motionPlanFor(project, shot), frameCount, width, height, stillImage = true) + subtitle + cover
+                                        val filter = motionFilter(motionPlanFor(project, visualShot), frameCount, width, height, stillImage = true) + subtitle + cover
                                         run("生成视频片段", "-y", "-framerate", "30", "-i", images[index].absolutePath,
                                             "-vf", filter, "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4",
                                             "-q:v", "4", "-pix_fmt", "yuv420p", pending.absolutePath, onFrame = onFrame)

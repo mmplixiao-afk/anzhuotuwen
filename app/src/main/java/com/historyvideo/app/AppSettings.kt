@@ -96,6 +96,15 @@ class AppSettings(context: Context) {
     var concurrency: Int
         get() = prefs.getInt("concurrency", 5)
         set(value) { prefs.edit().putInt("concurrency", value).apply() }
+    var imageUnitPrice: String
+        get() = prefs.getString("image_unit_price", "0.017").orEmpty()
+        set(value) {
+            val price = value.toBigDecimalOrNull()
+            require(price != null && price >= java.math.BigDecimal.ZERO && price.scale() <= 6) {
+                "图片单价需为非负数字，最多 6 位小数"
+            }
+            check(prefs.edit().putString("image_unit_price", price.toPlainString()).commit()) { "图片单价保存失败" }
+        }
 
     companion object {
         val types = listOf("topic", "script", "shots", "image")

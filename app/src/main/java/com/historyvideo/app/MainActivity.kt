@@ -7,8 +7,8 @@ import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import android.media.MediaPlayer
-import android.widget.MediaController
 import android.widget.VideoView
+import android.view.WindowManager
 import androidx.core.content.FileProvider
 import androidx.core.view.WindowCompat
 import androidx.activity.ComponentActivity
@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.only
@@ -49,6 +50,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -64,6 +66,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -78,6 +81,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -88,11 +92,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -198,6 +207,7 @@ class MainActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     private fun configureStatusBar() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         if (Build.VERSION.SDK_INT < 35) {
             window.statusBarColor = android.graphics.Color.WHITE
         }
@@ -297,24 +307,38 @@ class MainActivity : ComponentActivity() {
                 ?: "v未知"
         }
         val scope = rememberCoroutineScope()
-        var navigation by remember { mutableStateOf(listOf("home")) }
-        var selectedId by remember { mutableStateOf("") }
-        var selectedShotId by remember { mutableStateOf(0) }
-        var selectedPromptType by remember { mutableStateOf("script") }
+        val focusManager = LocalFocusManager.current
+        val keyboard = LocalSoftwareKeyboardController.current
+        var navigation by rememberSaveable { mutableStateOf(listOf("home")) }
+        var selectedId by rememberSaveable { mutableStateOf("") }
+        var selectedShotId by rememberSaveable { mutableStateOf(0) }
+        var selectedPromptType by rememberSaveable { mutableStateOf("script") }
+        val pageStates = rememberSaveableStateHolder()
         var projects by remember { mutableStateOf(store.all()) }
         var message by remember { mutableStateOf("") }
         var exportingAsset by remember { mutableStateOf(false) }
         var deleteTarget by remember { mutableStateOf<VideoProject?>(null) }
         var now by remember { mutableStateOf(System.currentTimeMillis()) }
         val screen = navigation.last()
+        val pageKey = when (screen) {
+            "project", "script", "shots", "effects", "result" -> "$screen:$selectedId"
+            "shot" -> "$screen:$selectedId:$selectedShotId"
+            "prompt_editor" -> "$screen:$selectedPromptType"
+            else -> screen
+        }
 
         fun navigate(to: String) {
+            focusManager.clearFocus(force = true)
+            keyboard?.hide()
             navigation = navigation + to
             message = ""
         }
 
         fun goBack() {
             if (navigation.size > 1) {
+                focusManager.clearFocus(force = true)
+                keyboard?.hide()
+                player?.release(); player = null
                 navigation = navigation.dropLast(1)
                 message = ""
             }
@@ -435,8 +459,11 @@ class MainActivity : ComponentActivity() {
                         })
                 }
         }) { inset ->
+            key(pageKey) {
+            pageStates.SaveableStateProvider(pageKey) {
             Column(
-                Modifier.fillMaxSize().padding(inset).consumeWindowInsets(inset).verticalScroll(rememberScrollState()).padding(16.dp),
+                Modifier.fillMaxSize().padding(inset).consumeWindowInsets(inset).imePadding()
+                    .verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (message.isNotBlank()) {
@@ -477,6 +504,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         historyProjects.forEach { project ->
+                            key(project.id) {
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(14.dp),
@@ -491,6 +519,7 @@ class MainActivity : ComponentActivity() {
                                         "${DateFormat.getDateTimeInstance().format(Date(project.createdAt))}  ·  ${project.status}  ·  ${project.duration.toInt()}秒",
                                         style = MaterialTheme.typography.bodySmall
                                     )
+                                    ProjectCostSummary(project, store, framed = false)
                                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                         Button(onClick = {
                                             selectedId = project.id
@@ -523,6 +552,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             }
+                            }
                         }
                     }
 
@@ -534,6 +564,7 @@ class MainActivity : ComponentActivity() {
                     "cutout_models" -> CutoutModelSettingsScreen(busy = projects.any { it.status == "running" })
                     "project" -> if (selected != null) ProjectOverviewScreen(
                         selected,
+                        store = store,
                         onOpenScript = { navigate("script") },
                         onOpenShots = { navigate("shots") },
                         onOpenEffects = { navigate("effects") },
@@ -543,7 +574,8 @@ class MainActivity : ComponentActivity() {
                     )
                     "result" -> if (selected != null) CompletedResultScreen(selected, store,
                         exporting = exportingAsset,
-                        onSaveVideo = { exportProject(selected) }, onSaveCover = { exportProject(selected, cover = true) })
+                        onSaveVideo = { exportProject(selected) }, onSaveCover = { exportProject(selected, cover = true) },
+                        onBack = ::goBack)
                     "script" -> if (selected != null) ScriptScreen(
                         selected,
                         store,
@@ -571,6 +603,8 @@ class MainActivity : ComponentActivity() {
                     }
                     "effects" -> if (selected != null) EffectsScreen(selected, ::saveProject)
                 }
+            }
+            }
             }
         }
         deleteTarget?.let { project ->
@@ -806,9 +840,10 @@ private fun ApiChoiceField(label: String, value: String, enabled: Boolean, onCli
 
 @Composable
 private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit) {
-    var selected by remember { mutableStateOf("text") }
-    var speed by remember { mutableStateOf(settings.speed.toString()) }
-    var concurrency by remember { mutableStateOf(settings.concurrency.toString()) }
+    var selected by rememberSaveable { mutableStateOf("text") }
+    var speed by rememberSaveable { mutableStateOf(settings.speed.toString()) }
+    var concurrency by rememberSaveable { mutableStateOf(settings.concurrency.toString()) }
+    var imageUnitPrice by rememberSaveable { mutableStateOf(settings.imageUnitPrice) }
     var testing by remember { mutableStateOf(false) }
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     val context = LocalContext.current
@@ -839,13 +874,13 @@ private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit
     }
     key(selected) {
         val initial = settings.provider(selected)
-        var interfaceType by remember { mutableStateOf(initial.name) }
-        var url by remember { mutableStateOf(initial.baseUrl) }
-        var model by remember { mutableStateOf(initial.model) }
+        var interfaceType by rememberSaveable { mutableStateOf(initial.name) }
+        var url by rememberSaveable { mutableStateOf(initial.baseUrl) }
+        var model by rememberSaveable { mutableStateOf(initial.model) }
         var apiKey by remember { mutableStateOf("") }
-        var groupId by remember { mutableStateOf(initial.groupId) }
-        var imageSize by remember { mutableStateOf(initial.imageSize.ifBlank { "1024x1792" }) }
-        var voiceId by remember { mutableStateOf(settings.voiceId) }
+        var groupId by rememberSaveable { mutableStateOf(initial.groupId) }
+        var imageSize by rememberSaveable { mutableStateOf(initial.imageSize.ifBlank { "1024x1792" }) }
+        var voiceId by rememberSaveable { mutableStateOf(settings.voiceId) }
         var imageSizeMenu by remember { mutableStateOf(false) }
         var hasSavedKey by remember { mutableStateOf(settings.hasApiKey(selected)) }
 
@@ -880,10 +915,19 @@ private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit
                             }
                         }
                         ApiInputField("生图异步数 1～10", concurrency, { concurrency = it }, enabled = !testing)
+                        ApiInputField("每张图片成本（元）", imageUnitPrice,
+                            { imageUnitPrice = it }, enabled = !testing)
                     }
                 }
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(onClick = {
+                    if (selected == "image") {
+                        val result = runCatching { settings.imageUnitPrice = imageUnitPrice.trim() }
+                        if (result.isFailure) {
+                            onMessage(result.exceptionOrNull()?.message.orEmpty())
+                            return@Button
+                        }
+                    }
                     settings.saveProvider(selected, ProviderConfig(interfaceType, url, model, apiKey, groupId, imageSize))
                     if (selected == "tts") {
                         settings.voiceId = voiceId.trim()
@@ -979,12 +1023,12 @@ private fun PromptEditorScreen(settings: AppSettings, type: String, onMessage: (
         "shots" -> "分镜提示词"
         else -> "生图提示词"
     }
-    var prompt by remember(type) { mutableStateOf(settings.prompt(type)) }
+    var prompt by rememberSaveable(type) { mutableStateOf(settings.prompt(type)) }
     Text(label, style = MaterialTheme.typography.headlineSmall)
     Text("生成时会直接使用这里保存的内容。", style = MaterialTheme.typography.bodySmall)
     Card(modifier = Modifier.fillMaxWidth().border(1.dp, HistoryColors.line, RoundedCornerShape(14.dp)),
         shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        OutlinedTextField(prompt, { prompt = it }, modifier = Modifier.fillMaxWidth().padding(6.dp), minLines = 14,
+        OutlinedTextField(prompt, { prompt = it }, modifier = Modifier.fillMaxWidth().padding(6.dp), minLines = 6, maxLines = 12,
             colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = HistoryColors.cinnabar,
                 unfocusedBorderColor = HistoryColors.line
@@ -1036,8 +1080,8 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                              onRun: (VideoProject, String, Int) -> Unit,
                              onPlay: (VideoProject, Shot) -> Unit,
                              onNavigate: (Int) -> Unit) {
-    var text by remember(shot.id, shot.text) { mutableStateOf(shot.text) }
-    var prompt by remember(shot.id, shot.imagePrompt) { mutableStateOf(shot.imagePrompt) }
+    var text by key(shot.text) { rememberSaveable { mutableStateOf(shot.text) } }
+    var prompt by key(shot.imagePrompt) { rememberSaveable { mutableStateOf(shot.imagePrompt) } }
     var showImage by remember { mutableStateOf(false) }
     var rotation by remember { mutableStateOf(0f) }
     val imageFile = store.image(project, shot)
@@ -1065,9 +1109,9 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
             Text("镜头 ${shot.id.toString().padStart(2, '0')}", style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
         Text("${shot.shotType} · ${"%.1f".format(shot.duration)} 秒", style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(text, { text = it }, label = { Text("配音文字") },
-            modifier = Modifier.fillMaxWidth(), minLines = 4, enabled = !busy)
+            modifier = Modifier.fillMaxWidth(), minLines = 4, maxLines = 10, enabled = !busy)
         OutlinedTextField(prompt, { prompt = it }, label = { Text("生图提示词") },
-            modifier = Modifier.fillMaxWidth(), minLines = 4, enabled = !busy)
+            modifier = Modifier.fillMaxWidth(), minLines = 4, maxLines = 10, enabled = !busy)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
                 val textChanged = shot.text != text
@@ -1190,7 +1234,69 @@ private fun FlowStepBar(project: VideoProject) {
 }
 
 @Composable
+private fun ProjectCostSummary(project: VideoProject, store: ProjectStore, framed: Boolean = true) {
+    val ledger = remember(store) { ProjectCosts(store) }
+    val file = ledger.file(project.id)
+    val loaded by produceState<Result<ProjectCostSnapshot>?>(ledger.cached(project.id)?.let { Result.success(it) },
+        project.id, file.lastModified(), file.length()) {
+        value = withContext(Dispatchers.IO) { runCatching { ledger.read(project.id) } }
+    }
+    var showDetails by rememberSaveable(project.id) { mutableStateOf(false) }
+    val body: @Composable () -> Unit = {
+        val snapshot = loaded?.getOrNull()
+        if (snapshot != null) {
+            val title = if (snapshot.unknownCalls > 0 || snapshot.hasEarlierUntrackedCalls) "已记录成本" else "累计成本"
+            Text("$title ${costMoney(snapshot.subtotal())}", style = MaterialTheme.typography.titleMedium,
+                color = HistoryColors.cinnabar)
+            val labels = listOf("text" to "文案", "image" to "生图", "voice" to "配音")
+            labels.forEach { (category, label) ->
+                val entries = snapshot.entries.filter { it.category == category }
+                val units = when (category) {
+                    "image" -> "${entries.size} 张"
+                    "voice" -> "${entries.size} 次 · ${entries.sumOf { it.quantity }} 字符"
+                    else -> "${entries.size} 次调用"
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("$label · $units", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                    Text(costMoney(snapshot.subtotal(category)), style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (snapshot.unknownCalls > 0) Text("${snapshot.unknownCalls} 次调用用量未知，费用待核实",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.ochre)
+            if (snapshot.hasEarlierUntrackedCalls) Text("旧版调用未记录，以上为更新后的累计费用",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            if (snapshot.entries.isNotEmpty()) {
+                TextButton(onClick = { showDetails = !showDetails }) { Text(if (showDetails) "收起明细" else "费用明细") }
+                if (showDetails) snapshot.entries.asReversed().forEach { entry ->
+                    HorizontalDivider(color = HistoryColors.line)
+                    Text(entry.label, style = MaterialTheme.typography.labelLarge)
+                    Text(DateFormat.getDateTimeInstance().format(Date(entry.createdAt)), style = MaterialTheme.typography.labelSmall,
+                        color = HistoryColors.muted)
+                    val detail = when (entry.category) {
+                        "text" -> "输入 ${entry.inputTokens?.toString() ?: "未知"} Token · 输出 ${entry.outputTokens?.toString() ?: "未知"} Token\n${entry.rate}"
+                        "image" -> "${entry.quantity} 张 × ¥${entry.rate}/张"
+                        else -> "${entry.quantity} 字符 × ¥${entry.rate}/万字符"
+                    }
+                    Text(detail, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                    Text(entry.amount?.toBigDecimalOrNull()?.let(::costMoney) ?: "费用待核实",
+                        style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        } else if (loaded?.isFailure == true) {
+            Text("成本记录读取失败：${loaded?.exceptionOrNull()?.message.orEmpty()}", color = HistoryColors.ochre)
+        } else Text("正在读取成本", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+    }
+    if (framed) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+            colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { body() }
+        }
+    } else Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) { body() }
+}
+
+@Composable
 private fun ProjectOverviewScreen(project: VideoProject,
+                                  store: ProjectStore,
                                   onOpenScript: () -> Unit,
                                   onOpenShots: () -> Unit,
                                   onOpenEffects: () -> Unit,
@@ -1200,6 +1306,7 @@ private fun ProjectOverviewScreen(project: VideoProject,
     FlowStepBar(project)
     ProjectProgress(project)
     Text(project.title, style = MaterialTheme.typography.headlineSmall)
+    ProjectCostSummary(project, store)
     Card(onClick = onOpenScript, modifier = Modifier.fillMaxWidth().height(102.dp), shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1249,7 +1356,8 @@ private fun ProjectOverviewScreen(project: VideoProject,
 
 @Composable
 private fun CompletedResultScreen(project: VideoProject, store: ProjectStore, exporting: Boolean,
-                                  onSaveVideo: () -> Unit, onSaveCover: () -> Unit) {
+                                  onSaveVideo: () -> Unit, onSaveCover: () -> Unit, onBack: () -> Unit) {
+    BackHandler(onBack = onBack)
     val video = store.output(project)
     val first = project.shots.firstOrNull { it.id == 1 }?.let { store.image(project, it) }
     val cover = store.cover(project)
@@ -1308,26 +1416,65 @@ private fun CompletedResultScreen(project: VideoProject, store: ProjectStore, ex
 @Composable
 private fun CompletedVideoPreview(file: File, imageSize: String) {
     val context = LocalContext.current
-    var error by remember(file.absolutePath, file.lastModified()) { mutableStateOf("") }
-    val view = remember(file.absolutePath, file.lastModified(), file.length()) {
-        VideoView(context).apply {
-            setVideoPath(file.absolutePath)
-            setMediaController(MediaController(context).also { it.setAnchorView(this) })
-            setOnPreparedListener { seekTo(1) }
-            setOnErrorListener { _, what, extra ->
-                error = "视频预览失败：$what / $extra，仍可保存视频"
-                true
-            }
+    val version = "${file.absolutePath}:${file.lastModified()}:${file.length()}"
+    var error by remember(version) { mutableStateOf("") }
+    var playing by remember(version) { mutableStateOf(false) }
+    var prepared by remember(version) { mutableStateOf(false) }
+    var position by rememberSaveable(version) { mutableStateOf(0f) }
+    var videoDuration by remember(version) { mutableStateOf(0f) }
+    var seeking by remember(version) { mutableStateOf(false) }
+    val view = remember(version) { VideoView(context) }
+    DisposableEffect(view) {
+        onDispose { view.stopPlayback() }
+    }
+    LaunchedEffect(view) {
+        while (true) {
+            if (prepared && !seeking) position = view.currentPosition.toFloat().coerceIn(0f, videoDuration)
+            delay(250)
         }
     }
-    DisposableEffect(view) { onDispose { view.stopPlayback() } }
     val ratio = when (imageSize.lowercase()) {
         "16:9", "1792x1024", "1920x1080" -> 16f / 9f
         "1:1", "1024x1024", "1440x1440" -> 1f
         else -> 9f / 16f
     }
     key(view) {
-        AndroidView(factory = { view }, modifier = Modifier.fillMaxWidth().aspectRatio(ratio).background(Color.Black))
+        AndroidView(factory = {
+            view.apply {
+                isFocusable = false
+                isFocusableInTouchMode = false
+                setOnPreparedListener { media ->
+                    videoDuration = media.duration.coerceAtLeast(1).toFloat()
+                    prepared = true
+                    seekTo(position.toInt().coerceIn(1, videoDuration.toInt()))
+                }
+                setOnCompletionListener { playing = false }
+                setOnErrorListener { _, what, extra ->
+                    playing = false
+                    prepared = false
+                    error = "视频预览失败：$what / $extra，仍可保存视频"
+                    true
+                }
+                setVideoPath(file.absolutePath)
+            }
+        }, modifier = Modifier.fillMaxWidth().aspectRatio(ratio).background(Color.Black))
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = {
+            if (playing) view.pause() else {
+                if (position >= videoDuration - 500f) { view.seekTo(0); position = 0f }
+                view.start()
+            }
+            playing = !playing
+        }, enabled = prepared) {
+            if (playing) Icon(painterResource(R.drawable.ic_pause), contentDescription = "暂停视频")
+            else Icon(Icons.Filled.PlayArrow, contentDescription = "播放视频")
+        }
+        Slider(value = position.coerceIn(0f, videoDuration.coerceAtLeast(1f)), onValueChange = {
+            seeking = true; position = it
+        }, onValueChangeFinished = { view.seekTo(position.toInt()); seeking = false },
+            valueRange = 0f..videoDuration.coerceAtLeast(1f), enabled = prepared, modifier = Modifier.weight(1f))
+        Text("${(position / 1000).toInt()} / ${(videoDuration / 1000).toInt()}秒", style = MaterialTheme.typography.labelSmall)
     }
     if (error.isNotBlank()) Text(error, color = HistoryColors.ochre, style = MaterialTheme.typography.bodySmall)
 }
@@ -1361,6 +1508,7 @@ private fun InputTile(label: String, value: String, onValueChange: (String) -> U
                     modifier = Modifier.fillMaxWidth().padding(12.dp),
                     textStyle = MaterialTheme.typography.bodyLarge,
                     minLines = minLines,
+                    maxLines = if (minLines == 1) 1 else maxOf(minLines, 12),
                     singleLine = minLines == 1
                 )
             }
@@ -1394,13 +1542,13 @@ private fun ScriptScreen(project: VideoProject,
                          store: ProjectStore,
                          onSave: (VideoProject) -> Unit,
                          onRun: (VideoProject, String, Int) -> Unit) {
-    var title by remember(project.id) { mutableStateOf(project.title) }
-    var script by remember(project.id, project.script) { mutableStateOf(project.script) }
-    var coverText by remember(project.id, project.coverText) { mutableStateOf(project.coverText) }
-    var bgmId by remember(project.id, project.bgmId) { mutableStateOf(project.bgmId) }
-    var introSfxId by remember(project.id, project.introSfxId) { mutableStateOf(project.introSfxId) }
-    var bgmVolume by remember(project.id, project.bgmVolume) { mutableStateOf((project.bgmVolume * 100).toInt().toString()) }
-    var sfxVolume by remember(project.id, project.introSfxVolume) { mutableStateOf((project.introSfxVolume * 100).toInt().toString()) }
+    var title by key(project.title) { rememberSaveable { mutableStateOf(project.title) } }
+    var script by key(project.script) { rememberSaveable { mutableStateOf(project.script) } }
+    var coverText by key(project.coverText) { rememberSaveable { mutableStateOf(project.coverText) } }
+    var bgmId by rememberSaveable(project.id, project.bgmId) { mutableStateOf(project.bgmId) }
+    var introSfxId by rememberSaveable(project.id, project.introSfxId) { mutableStateOf(project.introSfxId) }
+    var bgmVolume by rememberSaveable(project.id, project.bgmVolume) { mutableStateOf((project.bgmVolume * 100).toInt().toString()) }
+    var sfxVolume by rememberSaveable(project.id, project.introSfxVolume) { mutableStateOf((project.introSfxVolume * 100).toInt().toString()) }
     val scope = rememberCoroutineScope()
     var bgmMenu by remember(project.id) { mutableStateOf(false) }
     var introSfxMenu by remember(project.id) { mutableStateOf(false) }
@@ -1500,7 +1648,6 @@ private fun ScriptScreen(project: VideoProject,
     }
     fun saveInputs(saveScript: Boolean = false) {
         project.title = title.trim(); project.coverText = normalizeCoverText(coverText)
-        project.coverShotId = 1
         project.bgmId = bgmId; project.introSfxId = introSfxId
         project.bgmVolume = ((bgmVolume.toFloatOrNull() ?: 18f) / 100f).coerceIn(0f, 1f)
         project.introSfxVolume = ((sfxVolume.toFloatOrNull() ?: 100f) / 100f).coerceIn(0f, 2f)
@@ -1537,7 +1684,7 @@ private fun ScriptScreen(project: VideoProject,
         }
     }
     Text(if (script.isBlank()) "正文" else "正文 · ${script.length} 字", style = MaterialTheme.typography.titleLarge)
-    InputTile("口播文案", script, { script = it }, enabled = !busy, minLines = 10)
+    InputTile("口播文案", script, { script = it }, enabled = !busy, minLines = 6)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedButton(onClick = { saveInputs(saveScript = true) },
             enabled = !busy && script.isNotBlank()) { Text("保存文案") }
@@ -1635,6 +1782,9 @@ private fun ShotListItem(shot: Shot, imageFile: File, busy: Boolean,
 private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit) {
     val context = LocalContext.current
     var showCutoutPicker by remember(project.id) { mutableStateOf(false) }
+    var showCoverPicker by remember(project.id) { mutableStateOf(false) }
+    var motionMenu by remember { mutableStateOf(false) }
+    var transitionMenu by remember { mutableStateOf(false) }
     val cutoutModels = remember(context) { CutoutModels(context) }
     val modelsReady = remember { CutoutModel.values().all(cutoutModels::isImported) }
     var subtitle by remember(project.id, project.subtitlesEnabled) { mutableStateOf(project.subtitlesEnabled) }
@@ -1642,6 +1792,9 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     var transition by remember(project.id, project.transitionMode) { mutableStateOf(project.transitionMode) }
     var openingTemplate by remember(project.id, project.openingTemplate) { mutableStateOf(project.openingTemplate) }
     var introImageSeconds by remember(project.id, project.introImageSeconds) { mutableStateOf(project.introImageSeconds.toString()) }
+    val motionChoices = listOf("random" to "逐镜随机", "zoom_in" to "推近", "zoom_out" to "拉远", "pan" to "平移", "zoom_pan" to "边推拉边平移")
+    val transitionChoices = listOf("random" to "逐镜随机", "none" to "无", "fade" to "柔和叠化",
+        "dissolve" to "颗粒溶解", "smoothleft" to "平滑左推", "zoomin" to "推近切换", "fadeblack" to "黑场淡化")
     val busy = project.status == "running"
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1654,42 +1807,51 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("画面动势", style = MaterialTheme.typography.titleLarge)
-            ChoiceTile("图片运动", mapOf("random" to "逐镜随机", "zoom_in" to "推近", "zoom_out" to "拉远", "pan" to "平移", "zoom_pan" to "边推拉边平移")[motion].orEmpty(), onClick = {
-                motion = when (motion) { "random" -> "zoom_in"; "zoom_in" -> "zoom_out"; "zoom_out" -> "pan"; "pan" -> "zoom_pan"; else -> "random" }
-                project.motionMode = motion; onSave(project)
-            }, enabled = !busy)
-            ChoiceTile("转场特效", mapOf(
-                "fade" to "柔和叠化", "dissolve" to "颗粒溶解", "smoothleft" to "平滑左推", "slideleft" to "平滑左推",
-                "zoomin" to "推近切换", "fadeblack" to "黑场淡化", "random" to "逐镜随机", "none" to "无"
-            )[transition].orEmpty(), onClick = {
-                transition = when (transition) {
-                    "fade" -> "dissolve"; "dissolve" -> "smoothleft"; "smoothleft" -> "zoomin"
-                    "zoomin" -> "fadeblack"; "fadeblack" -> "random"; "random" -> "none"; else -> "fade"
+            Box(Modifier.fillMaxWidth()) {
+                ChoiceTile("图片运动", motionChoices.firstOrNull { it.first == motion }?.second ?: "逐镜随机",
+                    onClick = { motionMenu = true }, enabled = !busy, dropdown = true)
+                DropdownMenu(expanded = motionMenu, onDismissRequest = { motionMenu = false }) {
+                    motionChoices.forEach { (id, label) ->
+                        DropdownMenuItem(text = { Text(label) }, onClick = {
+                            motionMenu = false
+                            if (motion != id) {
+                                motion = id; project.motionMode = id
+                                project.shots.forEach { it.motionPlan = null }
+                                onSave(project)
+                            }
+                        })
+                    }
                 }
-                project.transitionMode = transition; onSave(project)
-            }, enabled = !busy)
-            OutlinedButton(onClick = {
-                project.shots.forEach {
-                    it.motionPlan = null
-                    it.cutoutBackgroundPlan = null
-                    it.cutoutForegroundPlan = null
-                    it.cutoutMirrorX = null
-                }
-                project.transitionPlans.clear()
-                project.transitionPlanSignature = ""
-                onSave(project)
-            }, enabled = !busy && (project.motionMode == "random" || project.transitionMode == "random")) {
-                Text("重抽运动和转场")
             }
-            Text("普通渲染复用已保存的随机方案；按此按钮后，下次渲染重新抽取。",
-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            Box(Modifier.fillMaxWidth()) {
+                val normalized = if (transition == "slideleft") "smoothleft" else transition
+                ChoiceTile("转场特效", transitionChoices.firstOrNull { it.first == normalized }?.second ?: "逐镜随机",
+                    onClick = { transitionMenu = true }, enabled = !busy, dropdown = true)
+                DropdownMenu(expanded = transitionMenu, onDismissRequest = { transitionMenu = false }) {
+                    transitionChoices.forEach { (id, label) ->
+                        DropdownMenuItem(text = { Text(label) }, onClick = {
+                            transitionMenu = false
+                            if (transition != id) {
+                                transition = id; project.transitionMode = id
+                                project.transitionPlans.clear(); project.transitionPlanSignature = ""
+                                onSave(project)
+                            }
+                        })
+                    }
+                }
+            }
         }
     }
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("封面", style = MaterialTheme.typography.titleLarge)
-            Text("背景固定使用第 1 镜画面；封面文案在立题成文页面填写。",
-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            val coverShot = project.shots.firstOrNull { it.id == project.coverShotId }
+            if (coverShot != null) ShotThumbnail(ProjectStore(context).image(project, coverShot),
+                Modifier.fillMaxWidth().height(180.dp))
+            Button(onClick = { showCoverPicker = true }, enabled = !busy && project.shots.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth()) {
+                Text(if (coverShot == null) "选择封面图片" else "选择封面图片 · 镜头 ${coverShot.id}")
+            }
         }
     }
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
@@ -1727,17 +1889,11 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("成片抠图", style = MaterialTheme.typography.titleLarge)
-            Text(if (modelsReady) "模型已就绪，可选择需要抠图的镜头。"
-                else "请先到设置 → 抠图模型导入两份模型。",
-                style = MaterialTheme.typography.bodySmall,
-                color = if (modelsReady) HistoryColors.green else HistoryColors.ochre)
-            Text("模型只需导入一次，保存在本机应用数据中；卸载应用后需重新导入。开启的镜头会在渲染前处理并缓存。",
-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
             val selectedCutoutCount = project.shots.count { it.cutoutEnabled }
             Button(onClick = { showCutoutPicker = true },
                 enabled = !busy && modelsReady && project.shots.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth()) {
-                Text(if (selectedCutoutCount == 0) "选择抠图图片" else "选择抠图图片 · 已选 $selectedCutoutCount 镜")
+                Text(if (!modelsReady) "请先导入抠图模型" else if (selectedCutoutCount == 0) "选择抠图图片" else "选择抠图图片 · 已选 $selectedCutoutCount 镜")
             }
             if (selectedCutoutCount > 0) {
                 OutlinedButton(onClick = {
@@ -1749,6 +1905,14 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                 }
             }
         }
+    }
+    if (showCoverPicker) {
+        ImagePickerDialog("选择封面图片", project, multiSelect = false,
+            selected = setOf(project.coverShotId), onDismiss = { showCoverPicker = false },
+            onConfirm = { selected ->
+                selected.firstOrNull()?.let { project.coverShotId = it; onSave(project) }
+                showCoverPicker = false
+            })
     }
     if (showCutoutPicker) {
         ImagePickerDialog("选择抠图图片", project, multiSelect = true,
@@ -1771,6 +1935,7 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
     val store = remember(context) { ProjectStore(context) }
     var checked by remember(project.id, title, selected) { mutableStateOf(selected.toSet()) }
     var previewId by remember(project.id) { mutableStateOf<Int?>(null) }
+    val gridState = rememberLazyGridState()
     fun select(shotId: Int, value: Boolean) {
         checked = if (value) {
             if (multiSelect) checked + shotId else setOf(shotId)
@@ -1811,7 +1976,7 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
                     }
                 } else {
                     LazyVerticalGrid(
-                        columns = GridCells.Fixed(2), modifier = Modifier.fillMaxWidth().weight(1f),
+                        columns = GridCells.Fixed(2), state = gridState, modifier = Modifier.fillMaxWidth().weight(1f),
                         contentPadding = PaddingValues(12.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -1845,7 +2010,10 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("已选 ${checked.size} 镜", modifier = Modifier.weight(1f), color = HistoryColors.muted)
-                    Button(onClick = { onConfirm(checked) }, enabled = project.status != "running",
+                    Button(onClick = { onConfirm(checked) }, enabled = project.status != "running" &&
+                        (multiSelect || checked.size == 1) && checked.all { id ->
+                            project.shots.firstOrNull { it.id == id }?.let { store.image(project, it).length() > 1000 } == true
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.green),
                         shape = RoundedCornerShape(8.dp)) {
                         Text(if (checked.isEmpty()) "完成" else "完成（${checked.size}）")
