@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
@@ -329,6 +330,7 @@ class MainActivity : ComponentActivity() {
         var navigation by rememberSaveable { mutableStateOf(listOf("home")) }
         var selectedId by rememberSaveable { mutableStateOf("") }
         var selectedShotId by rememberSaveable { mutableStateOf(0) }
+        var selectedCostCategory by rememberSaveable(selectedId) { mutableStateOf("total") }
         var selectedPromptType by rememberSaveable { mutableStateOf("script") }
         var historySearch by rememberSaveable { mutableStateOf(false) }
         val pageStates = rememberSaveableStateHolder()
@@ -545,7 +547,7 @@ class MainActivity : ComponentActivity() {
                     "history" -> {
                         HistoryScreen(projects.filter { it.title.isNotBlank() }, store, historySearch,
                             onContinue = { selectedId = it.id; navigate("project") },
-                            onCosts = { selectedId = it.id; navigate("costs") },
+                            onCosts = { selectedId = it.id; selectedCostCategory = "total"; navigate("costs") },
                             onResults = { selectedId = it.id; navigate("result") },
                             onDelete = { deleteTarget = it },
                             onPlay = { project ->
@@ -572,10 +574,12 @@ class MainActivity : ComponentActivity() {
                         onRender = { runProject(selected, GenerationService.RENDER, 0) },
                         hasOutput = store.output(selected).length() > 1000,
                         onOpenResults = { navigate("result") },
-                        onOpenCosts = { navigate("costs") },
+                        onOpenCosts = { selectedCostCategory = "total"; navigate("costs") },
+                        onFilterCosts = { selectedCostCategory = it; navigate("costs") },
                         onCancel = { startService(Intent(this@MainActivity, GenerationService::class.java).setAction(GenerationService.CANCEL)) }
                     )
-                    "costs" -> if (selected != null) ProjectCostDetailsScreen(selected, store)
+                    "costs" -> if (selected != null) ProjectCostDetailsScreen(selected, store,
+                        category = selectedCostCategory, onSelectCategory = { selectedCostCategory = it })
                     "result" -> if (selected != null) CompletedResultScreen(selected, store,
                         exporting = exportingAsset,
                         onSaveVideo = { exportProject(selected) }, onSaveCover = { exportProject(selected, cover = true) },
@@ -1433,7 +1437,8 @@ private fun CostNotes(snapshot: ProjectCostSnapshot) {
 
 @Composable
 private fun ProjectCostSummary(project: VideoProject, store: ProjectStore, framed: Boolean = true,
-                               compact: Boolean = false, onOpenDetails: (() -> Unit)? = null) {
+                               compact: Boolean = false, onOpenDetails: (() -> Unit)? = null,
+                               selectedCategory: String = "total", onSelectCategory: ((String) -> Unit)? = null) {
     val loaded = projectCostState(project, store)
     val body: @Composable () -> Unit = {
         val snapshot = loaded?.getOrNull()
@@ -1443,16 +1448,24 @@ private fun ProjectCostSummary(project: VideoProject, store: ProjectStore, frame
                 Text(if (compact) "$title ${costMoney(snapshot.subtotal())}" else "费用统计 · $title",
                     modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
                     color = if (compact) HistoryColors.cinnabar else HistoryColors.ink)
-                if (onOpenDetails != null) TextButton(onClick = onOpenDetails,
-                    contentPadding = PaddingValues(horizontal = 4.dp)) { Text("费用明细", style = MaterialTheme.typography.labelSmall) }
+                if (onOpenDetails != null) Button(onClick = onOpenDetails,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)) {
+                    Text("费用明细", style = MaterialTheme.typography.labelSmall)
+                }
             }
             if (!compact) {
                 val labels = listOf("text" to "文案", "image" to "生图", "voice" to "配音", "total" to "合计")
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     labels.forEach { (category, label) ->
                         val entries = snapshot.entries.filter { it.category == category }
-                        Column(Modifier.weight(1f).background(if (category == "total") HistoryColors.cinnabarSoft else HistoryColors.paper,
-                            RoundedCornerShape(6.dp)).padding(horizontal = 4.dp, vertical = 12.dp),
+                        val selected = onSelectCategory != null && selectedCategory == category
+                        val selection = if (onSelectCategory == null) Modifier else Modifier.selectable(
+                            selected = selected, role = Role.Tab, onClick = { onSelectCategory(category) })
+                        Column(Modifier.weight(1f).clip(RoundedCornerShape(6.dp))
+                            .background(if (category == "total" || selected) HistoryColors.cinnabarSoft else HistoryColors.paper)
+                            .then(selection).border(1.dp, if (selected) HistoryColors.cinnabar else Color.Transparent, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 4.dp, vertical = 12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             if (category != "total") Icon(painterResource(when (category) {
                                 "text" -> R.drawable.ic_copy
@@ -1468,7 +1481,7 @@ private fun ProjectCostSummary(project: VideoProject, store: ProjectStore, frame
                                 maxLines = 2, overflow = TextOverflow.Ellipsis)
                             Text(when (category) {
                                 "image" -> "${entries.size} 张"
-                                "voice" -> "${entries.size} 次\n${entries.sumOf { it.quantity }} 字符"
+                                "voice" -> "${entries.size} 次"
                                 "text" -> "${entries.size} 次调用"
                                 else -> "累计"
                             }, style = MaterialTheme.typography.labelSmall, color = HistoryColors.muted, textAlign = TextAlign.Center)
@@ -1490,16 +1503,68 @@ private fun ProjectCostSummary(project: VideoProject, store: ProjectStore, frame
 }
 
 @Composable
-private fun ProjectCostDetailsScreen(project: VideoProject, store: ProjectStore) {
+private fun ProjectCostDetailsScreen(project: VideoProject, store: ProjectStore,
+                                     category: String, onSelectCategory: (String) -> Unit) {
+    var previewEntryId by rememberSaveable(project.id) { mutableStateOf<String?>(null) }
+    var contentEntryId by rememberSaveable(project.id) { mutableStateOf<String?>(null) }
+    var rotation by remember { mutableStateOf(0f) }
+    var audioPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    var playingEntryId by remember { mutableStateOf<String?>(null) }
+    var audioError by remember { mutableStateOf("") }
+    val ledger = remember(store) { ProjectCosts(store) }
+    DisposableEffect(Unit) {
+        onDispose { audioPlayer?.release() }
+    }
+    fun stopAudio() {
+        audioPlayer?.release(); audioPlayer = null; playingEntryId = null
+    }
+    fun playAudio(entry: CostEntry, file: File) {
+        if (playingEntryId == entry.id) { stopAudio(); return }
+        stopAudio()
+        audioError = ""
+        runCatching {
+            require(file.isFile && file.length() > 1000) { "配音文件不存在或为空" }
+            val media = MediaPlayer()
+            audioPlayer = media
+            playingEntryId = entry.id
+            media.apply {
+                setDataSource(file.absolutePath)
+                setOnPreparedListener { if (audioPlayer === it) it.start() }
+                setOnCompletionListener { if (audioPlayer === it) stopAudio() }
+                setOnErrorListener { failed, what, extra ->
+                    if (audioPlayer === failed) {
+                        stopAudio(); audioError = "配音播放失败：$what / $extra"
+                    }
+                    true
+                }
+                prepareAsync()
+            }
+        }.onFailure { stopAudio(); audioError = "配音播放失败：${it.message.orEmpty()}" }
+    }
     Text(project.title.ifBlank { "未命名项目" }, style = MaterialTheme.typography.titleLarge)
-    ProjectCostSummary(project, store)
+    ProjectCostSummary(project, store, selectedCategory = category, onSelectCategory = {
+        stopAudio(); onSelectCategory(it); audioError = ""
+    })
     val loaded = projectCostState(project, store)
     val snapshot = loaded?.getOrNull()
+    if (audioError.isNotBlank()) Text(audioError, color = HistoryColors.cinnabar, style = MaterialTheme.typography.bodySmall)
     if (snapshot != null) {
-        if (snapshot.entries.isEmpty()) Text("暂无费用记录", modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+        val visibleEntries = snapshot.entries.filter { category == "total" || it.category == category }.asReversed()
+        Text("${when (category) { "text" -> "文案"; "image" -> "生图"; "voice" -> "配音"; else -> "全部" }}记录 · ${visibleEntries.size} 条",
+            style = MaterialTheme.typography.titleMedium)
+        if (visibleEntries.isEmpty()) Text("暂无此类费用记录", modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
             textAlign = TextAlign.Center, color = HistoryColors.muted)
-        snapshot.entries.asReversed().forEach { entry ->
+        visibleEntries.forEach { entry ->
             key(entry.id) {
+                val archived = ledger.mediaFile(project.id, entry)
+                val currentShot = if (entry.shotId != null) null else {
+                    val shotId = Regex("第\\s*(\\d+)\\s*镜").find(entry.label)?.groupValues?.get(1)?.toIntOrNull()
+                    project.shots.firstOrNull { it.id == shotId }
+                }
+                val currentMedia = currentShot?.let { shot ->
+                    when (entry.category) { "image" -> store.image(project, shot); "voice" -> store.audio(project, shot); else -> null }
+                }?.takeIf { it.isFile && it.length() > 1000 }
+                val media = archived ?: currentMedia
                 Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
                     colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1514,9 +1579,73 @@ private fun ProjectCostDetailsScreen(project: VideoProject, store: ProjectStore)
                         Text(detail, style = MaterialTheme.typography.bodySmall)
                         Text(entry.amount?.toBigDecimalOrNull()?.let(::costMoney) ?: "费用待核实",
                             style = MaterialTheme.typography.titleMedium, color = HistoryColors.cinnabar)
+                        if (archived == null && currentMedia != null) Text("旧记录未保存当次素材，以下为当前镜头版本",
+                            style = MaterialTheme.typography.bodySmall, color = HistoryColors.ochre)
+                        when (entry.category) {
+                            "image" -> {
+                                if (media != null) Box(Modifier.fillMaxWidth().height(180.dp).clip(RoundedCornerShape(8.dp))
+                                    .background(HistoryColors.subcard).clickable { rotation = 0f; previewEntryId = entry.id }) {
+                                    ShotThumbnail(media, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                                    Icon(painterResource(R.drawable.ic_fullscreen), contentDescription = "放大图片",
+                                        tint = Color.White, modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
+                                            .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(6.dp)).padding(6.dp))
+                                } else Text("本次图片素材未保存", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                                if (entry.content.isNotBlank()) TextButton(onClick = { contentEntryId = entry.id }) { Text("查看本次生图提示词") }
+                            }
+                            "voice" -> {
+                                val spoken = entry.content.ifBlank { currentShot?.text.orEmpty() }
+                                if (spoken.isNotBlank()) Text(spoken, style = MaterialTheme.typography.bodyMedium)
+                                else Text("此记录未保存配音文字", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                                if (media != null) OutlinedButton(onClick = { playAudio(entry, media) }, shape = RoundedCornerShape(8.dp)) {
+                                    if (playingEntryId == entry.id) {
+                                        Icon(painterResource(R.drawable.ic_pause), contentDescription = null,
+                                            modifier = Modifier.size(18.dp))
+                                    } else {
+                                        Icon(Icons.Filled.PlayArrow, contentDescription = null,
+                                            modifier = Modifier.size(18.dp))
+                                    }
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(if (playingEntryId == entry.id) "停止试听" else "试听此配音")
+                                } else Text("本次配音素材未保存", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                            }
+                            "text" -> {
+                                if (entry.content.isNotBlank()) {
+                                    Text(entry.content, maxLines = 6, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                                    TextButton(onClick = { contentEntryId = entry.id }) { Text("查看完整结果") }
+                                } else Text("此调用未保存返回内容", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                            }
+                        }
+                        if (entry.assetError.isNotBlank()) Text("历史素材保存失败：${entry.assetError}",
+                            style = MaterialTheme.typography.bodySmall, color = HistoryColors.ochre)
                     }
                 }
             }
+        }
+        val previewEntry = snapshot.entries.firstOrNull { it.id == previewEntryId }
+        val previewFile = previewEntry?.let { entry ->
+            ledger.mediaFile(project.id, entry) ?: if (entry.shotId == null) {
+                val shotId = Regex("第\\s*(\\d+)\\s*镜").find(entry.label)?.groupValues?.get(1)?.toIntOrNull()
+                project.shots.firstOrNull { it.id == shotId }?.let { store.image(project, it) }
+                    ?.takeIf { it.isFile && it.length() > 1000 }
+            } else null
+        }
+        if (previewFile != null) Dialog(onDismissRequest = { previewEntryId = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+            Column(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.safeDrawing).padding(12.dp)) {
+                Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                    ShotThumbnail(previewFile, Modifier.fillMaxSize(), rotation = rotation, previewSize = 1920)
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { rotation = (rotation + 90f) % 360f },
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)) { Text("旋转") }
+                    Button(onClick = { previewEntryId = null }) { Text("关闭") }
+                }
+            }
+        }
+        snapshot.entries.firstOrNull { it.id == contentEntryId }?.let { entry ->
+            AlertDialog(onDismissRequest = { contentEntryId = null }, title = { Text(entry.label) },
+                text = { Text(entry.content, modifier = Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) },
+                confirmButton = { TextButton(onClick = { contentEntryId = null }) { Text("关闭") } })
         }
     }
 }
@@ -1531,6 +1660,7 @@ private fun ProjectOverviewScreen(project: VideoProject,
                                   hasOutput: Boolean,
                                   onOpenResults: () -> Unit,
                                   onOpenCosts: () -> Unit,
+                                  onFilterCosts: (String) -> Unit,
                                   onCancel: () -> Unit) {
     val busy = project.status == "running"
     val firstImage = project.shots.firstOrNull()?.let { store.image(project, it) }
@@ -1556,7 +1686,8 @@ private fun ProjectOverviewScreen(project: VideoProject,
             if (hasOutput) TextButton(onClick = onOpenResults) { Text("查看视频与封面") }
         }
     }
-    ProjectCostSummary(project, store, onOpenDetails = onOpenCosts)
+    ProjectCostSummary(project, store, onOpenDetails = onOpenCosts,
+        selectedCategory = "", onSelectCategory = onFilterCosts)
     Text("本卷内容", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
     val items = listOf(
         Triple("立题成文", if (project.script.isBlank()) "题材、正文与封面文案" else "正文已保存", onOpenScript),
@@ -2038,8 +2169,8 @@ private fun ShotListItem(shot: Shot, imageFile: File, busy: Boolean,
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
     ) {
         Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.width(82.dp).height(104.dp).background(HistoryColors.subcard, RoundedCornerShape(8.dp))) {
-                ShotThumbnail(imageFile, Modifier.fillMaxSize())
+            Box(Modifier.width(82.dp).height(104.dp).clip(RoundedCornerShape(8.dp)).background(HistoryColors.subcard)) {
+                ShotThumbnail(imageFile, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("镜头 ${shot.id.toString().padStart(2, '0')}", style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
