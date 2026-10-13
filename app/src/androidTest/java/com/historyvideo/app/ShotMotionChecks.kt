@@ -79,6 +79,41 @@ internal object ShotMotionChecks {
         check(ShotMotionRules.normalize(ShotMotionSetting("pan", "bad-direction"))?.direction == "random")
         check(ShotMotionRules.normalize(ShotMotionSetting("zoom_out"))?.zoomDirection == "out")
 
+        // Detail-page edits affect exactly one shot, even when multiple shots share a preset.
+        val detailFirst = Shot(11, "当前镜头。", "当前图片", imageStatus = "done", audioStatus = "done", duration = 3.0,
+            motionSetting = preset, motionPlanSetting = preset,
+            motionPlan = ShotMotionRules.createPlan(preset, Random(12)))
+        val detailSecond = Shot(12, "另一镜头。", "另一图片", imageStatus = "done", audioStatus = "done", duration = 4.0,
+            motionSetting = preset, motionPlanSetting = preset,
+            motionPlan = ShotMotionRules.createPlan(preset, Random(13)))
+        val detailProject = VideoProject(UUID.randomUUID().toString(), "详情运动验收",
+            shots = mutableListOf(detailFirst, detailSecond))
+        val secondBefore = detailSecond.json().toString()
+        ShotMotionRules.setShot(detailProject, 11, reverse)
+        check(detailFirst.motionSetting == reverse && detailFirst.motionPlan == null && detailFirst.motionPlanSetting == null)
+        check(detailSecond.json().toString() == secondBefore)
+        check(detailFirst.imageStatus == "done" && detailFirst.audioStatus == "done" && detailFirst.duration == 3.0)
+        val detailCache = ShotMotionRules.createPlan(reverse, Random(14))
+        detailFirst.motionPlan = detailCache; detailFirst.motionPlanSetting = reverse
+        ShotMotionRules.setShot(detailProject, 11, reverse)
+        check(detailFirst.motionPlan === detailCache && detailSecond.json().toString() == secondBefore)
+        val downwardPull = ShotMotionSetting("zoom_pan", "top_to_bottom", "out")
+        ShotMotionRules.setShot(detailProject, 11, downwardPull)
+        check(Shot.from(detailFirst.json()).motionSetting == downwardPull)
+        check(detailSecond.json().toString() == secondBefore)
+        ShotMotionRules.setShot(detailProject, 11, null)
+        check(detailFirst.motionSetting == null && detailFirst.motionPlan == null && detailSecond.json().toString() == secondBefore)
+        val beforeBadDetail = detailProject.json().toString()
+        check(runCatching { ShotMotionRules.setShot(detailProject, 999, preset) }.isFailure)
+        check(runCatching { ShotMotionRules.setShot(detailProject, 11, ShotMotionSetting("bad-mode")) }.isFailure)
+        check(detailProject.json().toString() == beforeBadDetail)
+        detailFirst.cutoutEnabled = true
+        check(runCatching { ShotMotionRules.setShot(detailProject, 11, preset) }.isFailure)
+        detailFirst.cutoutEnabled = false
+        detailProject.status = "running"
+        check(runCatching { ShotMotionRules.setShot(detailProject, 11, preset) }.isFailure)
+        check(detailSecond.json().toString() == secondBefore)
+
         ShotMotionRules.selectCutouts(project, setOf(1, 3))
         check(original.cutoutEnabled && original.motionSetting == null && original.motionPlanSetting == null && original.motionPlan == null)
         check(cutout.cutoutEnabled && project.cutoutEnabled)

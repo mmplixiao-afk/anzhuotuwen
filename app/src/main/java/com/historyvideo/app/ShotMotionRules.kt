@@ -52,6 +52,18 @@ internal object ShotMotionRules {
         shot.motionPlan = null
     }
 
+    /** Update only the open shot, preserving every other shot's movement and generated media. */
+    fun setShot(project: VideoProject, shotId: Int, setting: ShotMotionSetting?) {
+        require(project.status != "running") { "请等待当前任务完成后再设置图片运动" }
+        val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
+        require(!shot.cutoutEnabled) { "已选抠图的镜头不能设置普通图片运动" }
+        val normalized = if (setting == null) null else requireNotNull(normalize(setting)) { "图片运动类型无效" }
+        if (normalize(shot.motionSetting) != normalized) {
+            clear(shot)
+            shot.motionSetting = normalized
+        }
+    }
+
     /** Assign selected shots; deselected members of this exact preset return to the default. */
     fun assign(project: VideoProject, preset: ShotMotionSetting, selectedIds: Set<Int>) {
         require(project.status != "running") { "请等待当前任务完成后再设置图片运动" }

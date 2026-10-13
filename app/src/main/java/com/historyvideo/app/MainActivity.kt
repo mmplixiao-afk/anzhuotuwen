@@ -614,6 +614,13 @@ class MainActivity : ComponentActivity() {
                                         selectedShotId = inserted.id
                                         message = "已插入新镜头，原图片和配音已保留"
                                     }.onFailure { message = it.message.orEmpty() }.isSuccess
+                                }, onMotionChange = { setting ->
+                                    runCatching {
+                                        val updated = VideoProject.from(selected.json())
+                                        ShotMotionRules.setShot(updated, shot.id, setting)
+                                        saveProject(updated)
+                                        message = "镜头 ${updated.shotNumber(shot.id)} 的运动已保存，重新渲染后生效"
+                                    }.onFailure { message = it.message.orEmpty() }
                                 })
                         }
                     }
@@ -1210,7 +1217,8 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                              onRun: (VideoProject, String, Int) -> Unit,
                              onPlay: (VideoProject, Shot) -> Unit,
                              onNavigate: (Int) -> Unit,
-                             onInsert: (String, String) -> Boolean) {
+                             onInsert: (String, String) -> Boolean,
+                             onMotionChange: (ShotMotionSetting?) -> Unit) {
     var text by key(shot.text) { rememberSaveable { mutableStateOf(shot.text) } }
     var prompt by key(shot.imagePrompt) { rememberSaveable { mutableStateOf(shot.imagePrompt) } }
     var showImage by remember { mutableStateOf(false) }
@@ -1245,6 +1253,7 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
         },
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        ShotMotionSettingsCard(project, shot, busy, onChange = onMotionChange)
         Box(Modifier.fillMaxWidth().height(320.dp).clip(RoundedCornerShape(8.dp)).background(HistoryColors.subcard)) {
             ShotThumbnail(imageFile, Modifier.fillMaxSize().pointerInput(imageFile.lastModified(), imageFile.length()) {
                 detectTapGestures(onDoubleTap = { showImage = true })
@@ -1368,6 +1377,81 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                     Button(onClick = { showImage = false }) { Text("关闭") }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ShotMotionSettingsCard(project: VideoProject, shot: Shot, busy: Boolean,
+                                   onChange: (ShotMotionSetting?) -> Unit) {
+    val setting = if (shot.cutoutEnabled) null else ShotMotionRules.normalize(shot.motionSetting)
+    val mode = setting?.mode ?: "default"
+    val enabled = !busy && !shot.cutoutEnabled
+    var modeMenu by remember(shot.id) { mutableStateOf(false) }
+    var directionMenu by remember(shot.id) { mutableStateOf(false) }
+    var zoomMenu by remember(shot.id) { mutableStateOf(false) }
+    val modeChoices = listOf("default" to "使用默认运动") + ShotMotionRules.modes
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("本镜图片运动", style = MaterialTheme.typography.titleMedium)
+            Box(Modifier.fillMaxWidth()) {
+                ChoiceTile("运动类型", if (shot.cutoutEnabled) "人物抠图已启用" else
+                    modeChoices.firstOrNull { it.first == mode }?.second ?: "使用默认运动",
+                    onClick = { modeMenu = true }, enabled = enabled, dropdown = true)
+                DropdownMenu(expanded = modeMenu && enabled, onDismissRequest = { modeMenu = false }) {
+                    modeChoices.forEach { (id, label) ->
+                        DropdownMenuItem(text = { Text(label) }, onClick = {
+                            modeMenu = false
+                            val next = if (id == "default") null else {
+                                val direction = setting?.direction?.takeIf { value ->
+                                    ShotMotionRules.directions.any { it.first == value }
+                                } ?: "left_to_right"
+                                ShotMotionSetting(id, direction,
+                                    if (id == "zoom_pan") setting?.zoomDirection ?: "in" else "in")
+                            }
+                            if (ShotMotionRules.normalize(next) != setting) onChange(next)
+                        })
+                    }
+                }
+            }
+            if (!shot.cutoutEnabled && (mode == "pan" || mode == "zoom_pan")) {
+                Box(Modifier.fillMaxWidth()) {
+                    val directionLabel = ShotMotionRules.directions.firstOrNull { it.first == setting?.direction }?.second
+                        ?: "随机方向"
+                    ChoiceTile("移动方向", directionLabel, onClick = { directionMenu = true },
+                        enabled = enabled, dropdown = true)
+                    DropdownMenu(expanded = directionMenu && enabled, onDismissRequest = { directionMenu = false }) {
+                        ShotMotionRules.directions.forEach { (id, label) ->
+                            DropdownMenuItem(text = { Text(label) }, onClick = {
+                                directionMenu = false
+                                setting?.copy(direction = id)?.let { next ->
+                                    if (next != setting) onChange(next)
+                                }
+                            })
+                        }
+                    }
+                }
+            }
+            if (!shot.cutoutEnabled && mode == "zoom_pan") {
+                Box(Modifier.fillMaxWidth()) {
+                    ChoiceTile("缩放方式", if (setting?.zoomDirection == "out") "拉远" else "推近",
+                        onClick = { zoomMenu = true }, enabled = enabled, dropdown = true)
+                    DropdownMenu(expanded = zoomMenu && enabled, onDismissRequest = { zoomMenu = false }) {
+                        listOf("in" to "推近", "out" to "拉远").forEach { (id, label) ->
+                            DropdownMenuItem(text = { Text(label) }, onClick = {
+                                zoomMenu = false
+                                setting?.copy(zoomDirection = id)?.let { next ->
+                                    if (next != setting) onChange(next)
+                                }
+                            })
+                        }
+                    }
+                }
+            }
+            Text(if (shot.cutoutEnabled) "已选择成片抠图，取消抠图后可设置普通图片运动" else
+                "选择后自动保存，仅影响当前镜头，重新渲染后生效",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         }
     }
 }
@@ -2238,13 +2322,6 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     val context = LocalContext.current
     var showCutoutPicker by remember(project.id) { mutableStateOf(false) }
     var showCoverPicker by remember(project.id) { mutableStateOf(false) }
-    var showMotionPicker by remember(project.id) { mutableStateOf<ShotMotionSetting?>(null) }
-    var panDirection by rememberSaveable(project.id) { mutableStateOf("left_to_right") }
-    var combinedDirection by rememberSaveable(project.id) { mutableStateOf("left_to_right") }
-    var combinedZoom by rememberSaveable(project.id) { mutableStateOf("in") }
-    var panDirectionMenu by remember { mutableStateOf(false) }
-    var combinedDirectionMenu by remember { mutableStateOf(false) }
-    var combinedZoomMenu by remember { mutableStateOf(false) }
     var motionMenu by remember { mutableStateOf(false) }
     var transitionMenu by remember { mutableStateOf(false) }
     val cutoutModels = remember(context) { CutoutModels(context) }
@@ -2288,57 +2365,6 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                     }
                 }
             }
-            Text("逐镜选择图片运动", style = MaterialTheme.typography.titleMedium)
-            val normalShots = project.shots.filter { !it.cutoutEnabled }
-            ShotMotionRules.modes.take(2).forEach { (id, label) ->
-                val count = normalShots.count { ShotMotionRules.normalize(it.motionSetting)?.mode == id }
-                OutlinedButton(onClick = { showMotionPicker = ShotMotionSetting(id) },
-                    enabled = !busy && project.shots.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
-                    Text("选择${label}图片 · 已选 $count 镜")
-                }
-            }
-            Box(Modifier.fillMaxWidth()) {
-                ChoiceTile("平移方向", ShotMotionRules.directions.first { it.first == panDirection }.second,
-                    onClick = { panDirectionMenu = true }, enabled = !busy, dropdown = true)
-                DropdownMenu(expanded = panDirectionMenu, onDismissRequest = { panDirectionMenu = false }) {
-                    ShotMotionRules.directions.forEach { (id, label) ->
-                        DropdownMenuItem(text = { Text(label) }, onClick = { panDirection = id; panDirectionMenu = false })
-                    }
-                }
-            }
-            val panCount = normalShots.count {
-                ShotMotionRules.normalize(it.motionSetting) == ShotMotionSetting("pan", panDirection)
-            }
-            OutlinedButton(onClick = { showMotionPicker = ShotMotionSetting("pan", panDirection) },
-                enabled = !busy && project.shots.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
-                Text("选择平移图片 · 当前方向已选 $panCount 镜")
-            }
-            Box(Modifier.fillMaxWidth()) {
-                ChoiceTile("组合运动缩放", if (combinedZoom == "out") "拉远" else "推近",
-                    onClick = { combinedZoomMenu = true }, enabled = !busy, dropdown = true)
-                DropdownMenu(expanded = combinedZoomMenu, onDismissRequest = { combinedZoomMenu = false }) {
-                    listOf("in" to "推近", "out" to "拉远").forEach { (id, label) ->
-                        DropdownMenuItem(text = { Text(label) }, onClick = { combinedZoom = id; combinedZoomMenu = false })
-                    }
-                }
-            }
-            Box(Modifier.fillMaxWidth()) {
-                ChoiceTile("组合运动方向", ShotMotionRules.directions.first { it.first == combinedDirection }.second,
-                    onClick = { combinedDirectionMenu = true }, enabled = !busy, dropdown = true)
-                DropdownMenu(expanded = combinedDirectionMenu, onDismissRequest = { combinedDirectionMenu = false }) {
-                    ShotMotionRules.directions.forEach { (id, label) ->
-                        DropdownMenuItem(text = { Text(label) }, onClick = { combinedDirection = id; combinedDirectionMenu = false })
-                    }
-                }
-            }
-            val combinedPreset = ShotMotionSetting("zoom_pan", combinedDirection, combinedZoom)
-            val combinedCount = normalShots.count { ShotMotionRules.normalize(it.motionSetting) == combinedPreset }
-            OutlinedButton(onClick = { showMotionPicker = combinedPreset },
-                enabled = !busy && project.shots.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
-                Text("选择边推拉边平移图片 · 当前组合已选 $combinedCount 镜")
-            }
-            Text("先选方向，再勾选图片。每张图片只保留一种普通运动；未单独设置的镜头使用默认运动。",
-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
             Box(Modifier.fillMaxWidth()) {
                 val normalized = if (transition == "slideleft") "smoothleft" else transition
                 ChoiceTile("转场特效", transitionChoices.firstOrNull { it.first == normalized }?.second ?: "逐镜随机",
@@ -2447,20 +2473,6 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                 }
             }
         }
-    }
-    showMotionPicker?.let { preset ->
-        ImagePickerDialog("选择图片 · ${ShotMotionRules.label(preset)}", project, multiSelect = true,
-            selected = project.shots.filter { !it.cutoutEnabled && ShotMotionRules.normalize(it.motionSetting) == ShotMotionRules.normalize(preset) }
-                .map { it.id }.toSet(),
-            onDismiss = { showMotionPicker = null },
-            onConfirm = { selected ->
-                ShotMotionRules.assign(project, preset, selected)
-                onSave(project)
-                showMotionPicker = null
-            },
-            canSelect = { !it.cutoutEnabled },
-            selectionNote = { shot -> if (shot.cutoutEnabled) "已选抠图 · 不能设置普通运动" else
-                ShotMotionRules.label(shot.motionSetting) })
     }
     if (showCoverPicker) {
         ImagePickerDialog("选择封面图片", project, multiSelect = false,
