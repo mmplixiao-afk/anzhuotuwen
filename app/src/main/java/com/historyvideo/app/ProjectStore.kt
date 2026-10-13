@@ -252,12 +252,20 @@ class ProjectStore(context: Context) {
     private val appContext = context.applicationContext
     private val root = File(context.filesDir, "projects").apply { mkdirs() }
     private val audioRoot = File(context.filesDir, "audio_assets").apply { mkdirs() }
+    private val navigationPrefs = appContext.getSharedPreferences("project_navigation", Context.MODE_PRIVATE)
 
     internal fun context(): Context = appContext
 
     fun directory(id: String): File {
         require(id.matches(Regex("[a-f0-9-]{36}")))
         return File(root, id)
+    }
+
+    fun currentProjectId(): String = navigationPrefs.getString("current_project_id", "").orEmpty()
+
+    fun markCurrentProject(id: String) {
+        check(File(directory(id), "project.json").isFile) { "当前项目不存在" }
+        navigationPrefs.edit().putString("current_project_id", id).apply()
     }
 
     fun create(title: String): VideoProject = synchronized(this) {
@@ -291,7 +299,11 @@ class ProjectStore(context: Context) {
         File(dir, "shots.json").writeText(JSONArray().apply { project.shots.forEach { put(it.json()) } }.toString(2))
     }
 
-    fun delete(id: String) = synchronized(this) { directory(id).deleteRecursively() }
+    fun delete(id: String) = synchronized(this) {
+        val removed = directory(id).deleteRecursively()
+        if (removed && currentProjectId() == id) navigationPrefs.edit().remove("current_project_id").apply()
+        removed
+    }
     private fun revisionSuffix(revision: String): String {
         require(revision.isEmpty() || revision.matches(Regex("[a-f0-9-]{36}")))
         return if (revision.isEmpty()) "" else "_$revision"

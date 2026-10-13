@@ -69,6 +69,7 @@ class GenerationService : Service() {
         val shotImagePrompt = intent.getStringExtra(EXTRA_SHOT_IMAGE_PROMPT)
         activeProject = id
         activeProjectId = id
+        store.markCurrentProject(id)
         val notification = notification("正在准备视频任务")
         if (Build.VERSION.SDK_INT >= 29) {
             val type = if (Build.VERSION.SDK_INT >= 35 && (action == FINISH || action == VOICE_ALL || action == IMAGE_ALL || action == RENDER))
@@ -400,7 +401,11 @@ class GenerationService : Service() {
     }
 
     private fun notification(detail: String, active: Boolean = true): Notification {
-        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+        val openIntent = Intent(this, MainActivity::class.java)
+            .setAction("com.historyvideo.app.OPEN_PROJECT.$activeProject")
+            .putExtra(MainActivity.EXTRA_OPEN_PROJECT, activeProject)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        val open = PendingIntent.getActivity(this, activeProject.hashCode(), openIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val pause = PendingIntent.getService(this, 1, Intent(this, GenerationService::class.java).setAction(CANCEL),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)

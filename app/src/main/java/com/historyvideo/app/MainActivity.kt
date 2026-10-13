@@ -181,12 +181,14 @@ private val HistoryTypography = Typography().let { base ->
 class MainActivity : ComponentActivity() {
     private lateinit var store: ProjectStore
     private var player: MediaPlayer? = null
+    private var notificationProjectId by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         configureStatusBar()
         store = ProjectStore(this)
-        store.all().filter { it.status == "running" && it.id != GenerationService.activeProjectId }
+        notificationProjectId = intent?.getStringExtra(EXTRA_OPEN_PROJECT)
+        store.all().filter { CurrentProjectRules.inProgress(it) && it.id != GenerationService.activeProjectId }
             .forEach { project ->
                 project.status = "paused"
                 project.detail = "任务中断，可继续制作"
@@ -220,6 +222,16 @@ class MainActivity : ComponentActivity() {
                 Surface(color = HistoryColors.paper) { App() }
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        notificationProjectId = intent.getStringExtra(EXTRA_OPEN_PROJECT)
+    }
+
+    companion object {
+        const val EXTRA_OPEN_PROJECT = "open_project_id"
     }
 
     @Suppress("DEPRECATION")
@@ -336,6 +348,7 @@ class MainActivity : ComponentActivity() {
         var historySearch by rememberSaveable { mutableStateOf(false) }
         val pageStates = rememberSaveableStateHolder()
         var projects by remember { mutableStateOf(store.all()) }
+        var preferredCurrentId by remember { mutableStateOf(store.currentProjectId()) }
         var message by remember { mutableStateOf("") }
         var exportingAsset by remember { mutableStateOf(false) }
         var deleteTarget by remember { mutableStateOf<VideoProject?>(null) }
@@ -358,6 +371,9 @@ class MainActivity : ComponentActivity() {
 
         fun newProject() {
             val project = store.create("")
+            store.markCurrentProject(project.id)
+            preferredCurrentId = project.id
+            projects = store.all()
             selectedId = project.id
             navigate("project")
         }
@@ -377,19 +393,34 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(Unit) {
             while (true) {
                 projects = store.all()
+                preferredCurrentId = store.currentProjectId()
                 delay(1200)
             }
         }
         val selected = projects.firstOrNull { it.id == selectedId }
-        val titledProjects = projects.filter { it.title.isNotBlank() }
-        val runningProject = projects.firstOrNull { it.status == "running" && it.title.isNotBlank() }
-        val currentProject = runningProject ?: titledProjects.firstOrNull()
+        val runningProject = CurrentProjectRules.running(projects)
+        val currentProject = CurrentProjectRules.current(projects, preferredCurrentId)
         LaunchedEffect(runningProject?.id, runningProject?.status, runningProject?.taskStartedAt) {
             if (runningProject != null) {
-                while (runningProject.status == "running") {
+                while (CurrentProjectRules.inProgress(runningProject)) {
                     now = System.currentTimeMillis()
                     delay(1000)
                 }
+            }
+        }
+
+        LaunchedEffect(notificationProjectId) {
+            val id = notificationProjectId ?: return@LaunchedEffect
+            val project = runCatching { store.get(id) }.getOrNull()
+            notificationProjectId = null
+            if (project != null) {
+                store.markCurrentProject(project.id)
+                preferredCurrentId = project.id
+                projects = store.all()
+                selectedId = project.id
+                focusManager.clearFocus(force = true); keyboard?.hide()
+                message = ""
+                navigation = listOf("home", CurrentProjectRules.resumeScreen(project))
             }
         }
 
@@ -407,8 +438,12 @@ class MainActivity : ComponentActivity() {
                 else -> null
             }
             val prompt = promptName?.let { settings.prompt(it) }.orEmpty()
-            runCatching { start(project, action, shotId, prompt) }
-                .onFailure { message = it.message.orEmpty() }
+            runCatching {
+                start(project, action, shotId, prompt)
+                store.markCurrentProject(project.id)
+                preferredCurrentId = project.id
+                projects = store.all()
+            }.onFailure { message = it.message.orEmpty() }
         }
 
         fun exportProject(project: VideoProject, cover: Boolean = false) {
@@ -543,14 +578,19 @@ class MainActivity : ComponentActivity() {
                             onNew = ::newProject, onHistory = { navigate("history") }, onCurrent = {
                                 currentProject?.let {
                                     selectedId = it.id
-                                    navigate("project")
+                                    store.markCurrentProject(it.id); preferredCurrentId = it.id
+                                    navigate(CurrentProjectRules.resumeScreen(it))
                                 }
                             })
                     }
 
                     "history" -> {
                         HistoryScreen(projects.filter { it.title.isNotBlank() }, store, historySearch,
-                            onContinue = { selectedId = it.id; navigate("project") },
+                            onContinue = {
+                                selectedId = it.id
+                                store.markCurrentProject(it.id); preferredCurrentId = it.id
+                                navigate("project")
+                            },
                             onCosts = { selectedId = it.id; selectedCostCategory = "total"; navigate("costs") },
                             onResults = { selectedId = it.id; navigate("result") },
                             onDelete = { deleteTarget = it },
@@ -593,6 +633,7 @@ class MainActivity : ComponentActivity() {
                         onGenerate = { query ->
                             val updated = VideoProject.from(selected.json())
                             updated.topicQuery = query.trim()
+                            CurrentProjectRules.markTopicQueued(updated, System.currentTimeMillis())
                             saveProject(updated)
                             runProject(updated, GenerationService.TOPICS, 0)
                         },
@@ -826,7 +867,7 @@ private fun HistoryScreen(projects: List<VideoProject>, store: ProjectStore, sea
 @Composable
 private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long,
                        onNew: () -> Unit, onHistory: () -> Unit, onCurrent: () -> Unit) {
-    val task = running?.detail ?: current?.detail?.ifBlank { null } ?: "空闲"
+    val task = CurrentProjectRules.taskLabel(running ?: current)
     val elapsed = running?.taskStartedAt?.takeIf { it > 0L }?.let { " · 已执行 ${elapsedLabel(it, now)}" }.orEmpty()
     Card(
         onClick = onCurrent,
@@ -842,7 +883,8 @@ private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long
                     color = if (running != null) HistoryColors.copper else HistoryColors.teal,
                     fontWeight = FontWeight.Bold)
             }
-            Text(current?.title ?: "尚未建立项目", style = MaterialTheme.typography.headlineSmall)
+            if (current == null) Text("尚未建立项目", style = MaterialTheme.typography.headlineSmall)
+            else if (current.title.isNotBlank()) Text(current.title, style = MaterialTheme.typography.headlineSmall)
             Text("当前任务：$task$elapsed", color = HistoryColors.muted)
             if (current != null) {
                 Button(onClick = onCurrent, modifier = Modifier.fillMaxWidth(),
