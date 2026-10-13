@@ -41,6 +41,15 @@ fun normalizeCoverText(value: String): String {
 class VideoRenderer(private val store: ProjectStore) {
     private data class SubtitleEvent(val start: Double, val end: Double, val text: String)
     private data class CoverLayout(val lines: List<String>, val fontSize: Int, val textHeight: Double)
+    private data class KeywordPlayback(val keyword: String, val file: File, val offset: Double, val duration: Double)
+    private data class AudioMixPlan(
+        val inputs: List<String>, val filters: MutableList<String>, val labels: List<String>,
+        val duration: Double, val hasOverlay: Boolean
+    ) {
+        fun graph(filterOverride: List<String> = filters): String =
+            (filterOverride + "${labels.joinToString("")}amix=inputs=${labels.size}:duration=longest:dropout_transition=2:normalize=0[aout]")
+                .joinToString(";")
+    }
 
     private companion object {
         const val SUBTITLE_FONT_SIZE = 100
@@ -51,6 +60,9 @@ class VideoRenderer(private val store: ProjectStore) {
         const val COVER_TITLE_MAX_CHARS = 40
         const val COVER_TITLE_DELAY = 1.0
         const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2-cover-1-timing-2"
+        const val AUDIO_MIX_VERSION = "keyword-audio-1"
+        const val KEYWORD_SFX_LEAD_SECONDS = 1.0 / KeywordAudioRules.FRAME_RATE
+        const val KEYWORD_BGM_FADE_SECONDS = 0.5
         const val SUBTITLE_SPLIT_MARKS = "，。！？；：、,.!?;:…"
         const val SUBTITLE_CLOSING_QUOTES = "”’\"'」』）》】)]}〉〕〗〙〛"
         val spokenOnlyPhrases = listOf("他娘的", "奶奶的", "老子")
@@ -58,7 +70,6 @@ class VideoRenderer(private val store: ProjectStore) {
             "(?<![\\p{L}\\p{N}_])(?:哎呀|哼哼|啧啧|嘿嘿|呵呵|哈哈|哼|切|啧|呸|嘿|唉|哎|嗯|哟)(?![\\p{L}\\p{N}_])"
         )
     }
-
     fun duration(path: File): Double {
         val session = FFprobeKit.getMediaInformation(path.absolutePath)
         return session.mediaInformation?.duration?.toDoubleOrNull()?.takeIf { it > 0.0 }
@@ -851,70 +862,127 @@ class VideoRenderer(private val store: ProjectStore) {
             "-r", "30", "-frames:v", totalFrames.toString(), "-pix_fmt", "yuv420p", output.absolutePath)
     }
 
-    private fun muxFinalAudio(project: VideoProject, video: File, voice: File, output: File) {
+    private fun keywordAudioEvents(project: VideoProject, parts: List<File>, shotDurations: List<Double>): List<KeywordPlayback> {
+        val triggers = KeywordAudioRules.triggers(project.shots.map { it.text })
+        if (triggers.isEmpty()) return emptyList()
+        val silenceCache = mutableMapOf<String, List<Double>>()
+        val soundDurationCache = mutableMapOf<String, Double>()
+        val starts = DoubleArray(shotDurations.size)
+        var elapsed = 0.0
+        shotDurations.forEachIndexed { index, seconds ->
+            starts[index] = elapsed
+            elapsed += seconds
+        }
+        return triggers.mapNotNull { trigger ->
+            val shot = project.shots.getOrNull(trigger.shotIndex) ?: return@mapNotNull null
+            val audio = parts.getOrNull(trigger.shotIndex)?.takeIf { it.isFile } ?: return@mapNotNull null
+            val sound = runCatching { store.keywordAudio(trigger.keyword) }.getOrNull() ?: return@mapNotNull null
+            val soundDuration = soundDurationCache.getOrPut(sound.absolutePath) {
+                runCatching { duration(sound) }.getOrElse { if (trigger.keyword == "放屁") 0.862 else 4.336 }
+            }
+            val shotDuration = shotDurations.getOrElse(trigger.shotIndex) { 0.0 }.coerceAtLeast(0.0)
+            val totalUnits = KeywordAudioRules.semanticCount(shot.text).coerceAtLeast(1)
+            val prefix = shot.text.substring(0, trigger.charIndex.coerceIn(0, shot.text.length))
+            val estimate = shotDuration * KeywordAudioRules.semanticCount(prefix) / totalUnits
+            val pauseEnds = silenceCache.getOrPut(audio.absolutePath) { detectSilenceEnds(audio) }
+            val refined = pauseEnds
+                .filter { it >= (estimate - 1.2).coerceAtLeast(0.0) && it <= estimate + 0.6 }
+                .minByOrNull { kotlin.math.abs(it - estimate) } ?: estimate
+            val offset = (starts.getOrElse(trigger.shotIndex) { 0.0 } + refined - KEYWORD_SFX_LEAD_SECONDS)
+                .coerceAtLeast(0.0)
+            KeywordPlayback(trigger.keyword, sound, offset, soundDuration)
+        }.sortedBy { it.offset }
+    }
+
+    private fun detectSilenceEnds(audio: File): List<Double> = runCatching {
+        val session = FFmpegKit.executeWithArguments(arrayOf(
+            "-hide_banner", "-i", audio.absolutePath,
+            "-af", "silencedetect=noise=-38dB:d=0.06", "-f", "null", "-"
+        ))
+        Regex("silence_end:\\s*([0-9]+(?:\\.[0-9]+)?)")
+            .findAll(session.allLogsAsString.orEmpty())
+            .mapNotNull { it.groupValues.getOrNull(1)?.toDoubleOrNull() }
+            .toList()
+    }.getOrDefault(emptyList())
+
+    private fun audioMixPlan(project: VideoProject, voiceDuration: Double,
+                             keywordEvents: List<KeywordPlayback>, voiceInputIndex: Int = 0): AudioMixPlan {
+        var outputDuration = voiceDuration.coerceAtLeast(0.0)
+        keywordEvents.forEach { outputDuration = maxOf(outputDuration, it.offset + it.duration) }
+        val filters = mutableListOf("[$voiceInputIndex:a]volume=${String.format(Locale.US, "%.3f", project.ttsVolume)}[voice]")
+        val labels = mutableListOf("[voice]")
+        val inputs = mutableListOf<String>()
+        var inputIndex = voiceInputIndex + 1
         val bgm = store.bundledAudio(project.bgmId)
-        val sfx = store.bundledAudio(project.introSfxId)
-        val useMix = bgm != null || sfx != null || project.ttsVolume != 1f
-        if (!useMix) {
+        if (bgm != null) {
+            val bgmStart = KeywordAudioRules.bgmStart(keywordEvents.map {
+                KeywordAudioRules.Event(it.keyword, it.offset, it.duration)
+            })
+            outputDuration = maxOf(outputDuration, bgmStart + KEYWORD_BGM_FADE_SECONDS)
+            inputs += listOf("-stream_loop", "-1", "-i", bgm.absolutePath)
+            val remaining = (outputDuration - bgmStart).coerceAtLeast(0.0)
+            val fade = min(KEYWORD_BGM_FADE_SECONDS, remaining)
+            val delayMs = (bgmStart * 1000).roundToInt().coerceAtLeast(0)
+            filters += "[$inputIndex:a]volume=${String.format(Locale.US, "%.3f", project.bgmVolume)},atrim=0:${String.format(Locale.US, "%.6f", remaining)},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=${String.format(Locale.US, "%.3f", fade)},adelay=$delayMs:all=1[bgm]"
+            labels += "[bgm]"
+            inputIndex++
+        }
+        val introSfx = store.bundledAudio(project.introSfxId)
+        if (introSfx != null) {
+            outputDuration = maxOf(outputDuration, runCatching { duration(introSfx) }.getOrDefault(0.0))
+            inputs += listOf("-i", introSfx.absolutePath)
+            filters += "[$inputIndex:a]volume=${String.format(Locale.US, "%.3f", project.introSfxVolume)},adelay=0:all=1[intro_sfx]"
+            labels += "[intro_sfx]"
+            inputIndex++
+        }
+        keywordEvents.forEachIndexed { eventIndex, event ->
+            inputs += listOf("-i", event.file.absolutePath)
+            val delayMs = (event.offset * 1000).roundToInt().coerceAtLeast(0)
+            filters += "[$inputIndex:a]volume=1.000,adelay=$delayMs:all=1[keyword_sfx$eventIndex]"
+            labels += "[keyword_sfx$eventIndex]"
+            inputIndex++
+        }
+        return AudioMixPlan(inputs, filters, labels, outputDuration, labels.size > 1)
+    }
+    private fun muxFinalAudio(project: VideoProject, video: File, voice: File, output: File,
+                              keywordEvents: List<KeywordPlayback>) {
+        val plan = audioMixPlan(project, duration(voice), keywordEvents, voiceInputIndex = 1)
+        if (!plan.hasOverlay && project.ttsVolume == 1f) {
             run("封装最终视频", "-y", "-i", video.absolutePath, "-i", voice.absolutePath,
                 "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
                 "-shortest", "-movflags", "+faststart", output.absolutePath)
             return
         }
-        val inputs = mutableListOf("-y", "-i", video.absolutePath, "-i", voice.absolutePath)
-        val filters = mutableListOf("[1:a]volume=${"%.3f".format(project.ttsVolume)}[voice]")
-        val labels = mutableListOf("[voice]")
-        var index = 2
-        val total = duration(voice)
-        if (bgm != null) {
-            inputs += listOf("-stream_loop", "-1", "-i", bgm.absolutePath)
-            val fade = min(0.5, total.coerceAtLeast(0.1))
-            filters += "[$index:a]volume=${"%.3f".format(project.bgmVolume)},atrim=0:${"%.3f".format(total)},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=${"%.3f".format(fade)},adelay=800:all=1[bgm]"
-            labels += "[bgm]"
-            index++
-        }
-        if (sfx != null) {
-            inputs += listOf("-i", sfx.absolutePath)
-            filters += "[$index:a]volume=${"%.3f".format(project.introSfxVolume)},adelay=0:all=1[sfx]"
-            labels += "[sfx]"
-        }
-        filters += "${labels.joinToString("")}amix=inputs=${labels.size}:duration=first:dropout_transition=2:normalize=0[aout]"
-        run("混合背景音乐和音效", *inputs.toTypedArray(), "-filter_complex", filters.joinToString(";"),
-            "-map", "0:v:0", "-map", "[aout]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                "-shortest", "-movflags", "+faststart", output.absolutePath)
+        val videoDuration = duration(video)
+        val videoTail = (plan.duration - videoDuration).coerceAtLeast(0.0)
+        val filters = plan.filters.toMutableList()
+        val videoMap = if (videoTail > 0.001) {
+            filters.add(0, "[0:v]tpad=stop_mode=clone:stop_duration=${String.format(Locale.US, "%.6f", videoTail)}[vout]")
+            "[vout]"
+        } else "0:v:0"
+        val videoCodec = if (videoTail > 0.001) "mpeg4" else "copy"
+        val videoCodecArgs = if (videoTail > 0.001) arrayOf("-q:v", "4", "-r", "30", "-pix_fmt", "yuv420p") else emptyArray()
+        run("混合配音、BGM和台词音效", "-y", "-i", video.absolutePath, "-i", voice.absolutePath,
+            *plan.inputs.toTypedArray(), "-filter_complex", plan.graph(filters),
+            "-map", videoMap, "-map", "[aout]", "-t", String.format(Locale.US, "%.6f", maxOf(plan.duration, videoDuration)),
+            "-c:v", videoCodec, *videoCodecArgs,
+            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output.absolutePath)
     }
 
-    private fun mixVoicePreview(project: VideoProject, voice: File, output: File): File {
-        val bgm = store.bundledAudio(project.bgmId)
-        val sfx = store.bundledAudio(project.introSfxId)
-        if (bgm == null && sfx == null && project.ttsVolume == 1f) {
+    private fun mixVoicePreview(project: VideoProject, voice: File, output: File,
+                                keywordEvents: List<KeywordPlayback>): File {
+        val plan = audioMixPlan(project, duration(voice), keywordEvents)
+        if (!plan.hasOverlay && project.ttsVolume == 1f) {
             Files.move(voice.toPath(), output.toPath(), StandardCopyOption.REPLACE_EXISTING)
             return output
         }
-        val inputs = mutableListOf("-y", "-i", voice.absolutePath)
-        val filters = mutableListOf("[0:a]volume=${"%.3f".format(project.ttsVolume)}[voice]")
-        val labels = mutableListOf("[voice]")
-        var index = 1
-        val total = duration(voice)
-        if (bgm != null) {
-            inputs += listOf("-stream_loop", "-1", "-i", bgm.absolutePath)
-            val fade = min(0.5, total.coerceAtLeast(0.1))
-            filters += "[$index:a]volume=${"%.3f".format(project.bgmVolume)},atrim=0:${"%.3f".format(total)},asetpts=PTS-STARTPTS,afade=t=in:st=0:d=${"%.3f".format(fade)},adelay=800:all=1[bgm]"
-            labels += "[bgm]"
-            index++
-        }
-        if (sfx != null) {
-            inputs += listOf("-i", sfx.absolutePath)
-            filters += "[$index:a]volume=${"%.3f".format(project.introSfxVolume)},adelay=0:all=1[sfx]"
-            labels += "[sfx]"
-        }
-        filters += "${labels.joinToString("")}amix=inputs=${labels.size}:duration=first:dropout_transition=2:normalize=0[aout]"
-        run("生成配音预览", *inputs.toTypedArray(), "-filter_complex", filters.joinToString(";"), "-map", "[aout]",
-            "-c:a", "aac", "-b:a", "192k", "-shortest", output.absolutePath)
+        run("生成完整配音试听", "-y", "-i", voice.absolutePath, *plan.inputs.toTypedArray(),
+            "-filter_complex", plan.graph(), "-map", "[aout]",
+            "-t", String.format(Locale.US, "%.6f", plan.duration), "-c:a", "aac", "-b:a", "192k",
+            output.absolutePath)
         voice.delete()
         return output
     }
-
     fun concatAudio(project: VideoProject, output: File): File {
         require(project.shots.isNotEmpty()) { "暂无分镜配音" }
         val parts = project.shots.map { store.audio(project, it) }
@@ -925,7 +993,9 @@ class VideoRenderer(private val store: ProjectStore) {
         val pending = File(output.parentFile, "${output.nameWithoutExtension}.pending.m4a")
         run("配音试听合并", "-y", "-f", "concat", "-safe", "0", "-i", list.absolutePath, "-vn", "-c:a", "aac", "-b:a", "192k", pending.absolutePath)
         require(pending.length() > 1000) { "配音预览为空" }
-        return mixVoicePreview(project, pending, output)
+        val shotDurations = parts.map { duration(it) }
+        val keywordEvents = keywordAudioEvents(project, parts, shotDurations)
+        return mixVoicePreview(project, pending, output, keywordEvents)
     }
 
     fun render(project: VideoProject, progress: (Int, Int) -> Unit,
@@ -957,6 +1027,10 @@ class VideoRenderer(private val store: ProjectStore) {
             duration(audio).also { project.shots[index].duration = it }
         }
         val frameCounts = VideoTimeline.frameCounts(durations)
+        val keywordEvents = keywordAudioEvents(project, parts, durations)
+        val keywordAudioSignature = keywordEvents.joinToString(";") {
+            "${it.keyword}:${String.format(Locale.US, "%.6f", it.offset)}:${String.format(Locale.US, "%.6f", it.duration)}:${it.file.length()}:${it.file.lastModified()}"
+        }
         val openingInputs = if (project.openingTemplate == "none") "" else images.take(5).joinToString("|") {
             "${it.length()}:${it.lastModified()}"
         }
@@ -996,7 +1070,8 @@ class VideoRenderer(private val store: ProjectStore) {
                     "${store.audio(project, shot).length()}:${store.audio(project, shot).lastModified()}"
             }.joinToString(",")
         ).joinToString("|")
-        if (store.output(project).length() > 1000 && finalStamp.readTextOrNull() == "$clipSignature|${project.renderRevision}") {
+        val expectedFinalSignature = "$clipSignature|${project.renderRevision}|$AUDIO_MIX_VERSION:${KeywordAudioRules.VERSION}|$keywordAudioSignature"
+        if (store.output(project).length() > 1000 && finalStamp.readTextOrNull() == expectedFinalSignature) {
             stage("素材未改变，复用已有成片")
             return
         }
@@ -1106,13 +1181,13 @@ class VideoRenderer(private val store: ProjectStore) {
         run("合并配音", "-y", "-f", "concat", "-safe", "0", "-i", audioList.absolutePath, "-vn", "-c:a", "aac", "-b:a", "192k", voice.absolutePath)
         val pending = File(dir, "output/final.pending.mp4")
         stage("正在封装最终 MP4")
-        muxFinalAudio(project, video, voice, pending)
+        muxFinalAudio(project, video, voice, pending, keywordEvents)
         require(pending.length() > 1000) { "输出视频为空" }
         Files.move(pending.toPath(), store.output(project).toPath(), StandardCopyOption.REPLACE_EXISTING)
         project.duration = duration(store.output(project))
         renderStamp.writeText(clipSignature)
         openingInputsStamp.writeText(openingInputs)
-        finalStamp.writeText("$clipSignature|${project.renderRevision}")
+        finalStamp.writeText(expectedFinalSignature)
     }
 }
 

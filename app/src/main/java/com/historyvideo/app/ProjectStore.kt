@@ -328,6 +328,18 @@ class ProjectStore(context: Context) {
         return target.takeIf { it.isFile && it.length() > 1000 }
     }
 
+    fun keywordAudio(keyword: String): File? {
+        val assetName = when (keyword) {
+            "放屁" -> "放屁.mp3"
+            "哼", "他娘的" -> "叮咚紧张.mp3"
+            else -> return null
+        }
+        val target = File(audioRoot, "keyword_$assetName")
+        if (!target.isFile || target.length() < 1000) {
+            appContext.assets.open("audio/$assetName").use { input -> target.outputStream().use { input.copyTo(it) } }
+        }
+        return target.takeIf { it.isFile && it.length() > 1000 }
+    }
     fun bundledFont(id: String): File {
         val assetName = when (id) {
             "cover" -> "STXINGKA.TTF"
