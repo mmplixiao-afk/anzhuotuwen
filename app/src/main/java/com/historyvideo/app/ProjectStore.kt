@@ -160,7 +160,8 @@ data class VideoProject(
     var introSfxVolume: Float = 1.0f,
     var ttsVolume: Float = 1.0f,
     var storyboardScript: String = "",
-    var renderRevision: String = ""
+    var renderRevision: String = "",
+    var coverTitleDelaySeconds: Float = OpeningTiming.DEFAULT_DELAY
 ) {
     fun json() = JSONObject().apply {
         put("schema_version", 1); put("id", id); put("title", title)
@@ -174,6 +175,7 @@ data class VideoProject(
         put("transition_plans", JSONArray().apply { transitionPlans.forEach { put(it.json()) } })
         put("transition_plan_signature", transitionPlanSignature)
         put("cover_shot_id", coverShotId); put("cover_text", coverText)
+        put("cover_title_delay_seconds", OpeningTiming.normalizeDelay(coverTitleDelaySeconds))
         put("opening_template", openingTemplate); put("intro_image_seconds", introImageSeconds)
         put("cutout_enabled", cutoutEnabled)
         put("bgm_id", bgmId); put("intro_sfx_id", introSfxId)
@@ -222,10 +224,14 @@ data class VideoProject(
             introSfxVolume = value.optDouble("intro_sfx_volume", 1.0).toFloat().coerceIn(0f, 2f),
             ttsVolume = value.optDouble("tts_volume", 1.0).toFloat().coerceIn(0f, 2f),
             storyboardScript = value.optString("storyboard_script", value.optString("script")),
-            renderRevision = value.optString("render_revision")
+            renderRevision = value.optString("render_revision"),
+            coverTitleDelaySeconds = OpeningTiming.normalizeDelay(value.optDouble("cover_title_delay_seconds", OpeningTiming.DEFAULT_DELAY.toDouble()).toFloat())
         )
     }
 }
+
+/** Display order is independent of the immutable ID used in asset paths. */
+internal fun VideoProject.shotNumber(shotId: Int): Int = shots.indexOfFirst { it.id == shotId } + 1
 
 class ProjectStore(context: Context) {
     private val appContext = context.applicationContext
@@ -312,6 +318,35 @@ class ProjectStore(context: Context) {
         project.coverShotId = 1
         project.transitionPlans.clear()
         project.transitionPlanSignature = ""
+    }
+
+    fun insertShotAfter(project: VideoProject, afterShotId: Int, text: String, imagePrompt: String): Shot {
+        require(project.status != "running") { "请等待当前任务完成后再插入镜头" }
+        require(project.storyboardScript == project.script) { "正文有尚未同步到分镜的修改，请先处理后再插入镜头" }
+        val cleanText = text.trim()
+        val cleanPrompt = imagePrompt.trim()
+        require(cleanText.isNotBlank()) { "请输入新增镜头的配音文字" }
+        require(cleanPrompt.isNotBlank()) { "请输入新增镜头的生图提示词" }
+        val position = project.shots.indexOfFirst { it.id == afterShotId }
+        require(position >= 0) { "找不到要插入位置的镜头" }
+        val newId = (project.shots.maxOfOrNull { it.id } ?: 0) + 1
+        require(newId > 0) { "镜头数量超出范围" }
+        val shot = Shot(
+            id = newId, text = cleanText, imagePrompt = cleanPrompt, duration = 0.0,
+            subtitleChunks = mutableListOf(cleanText),
+            imageRevision = UUID.randomUUID().toString(), audioRevision = UUID.randomUUID().toString()
+        )
+        // Keep existing IDs and revisions: their audio/image paths and cost records remain valid.
+        project.shots.add(position + 1, shot)
+        project.script = project.shots.joinToString("") { it.text }
+        project.storyboardScript = project.script
+        project.renderRevision = UUID.randomUUID().toString()
+        project.duration = 0.0
+        project.status = "review"; project.stage = "shots"
+        project.completed = 0; project.total = 0; project.taskStartedAt = 0L
+        project.detail = "已插入镜头，请生成新镜头的图片和配音，再渲染视频"
+        project.transitionPlans.clear(); project.transitionPlanSignature = ""
+        return shot
     }
 
     fun bundledAudio(id: String): File? {

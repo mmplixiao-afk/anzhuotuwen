@@ -250,7 +250,7 @@ class GenerationService : Service() {
                         for (attempt in 0..2) {
                             if (!isActive) return@async
                             try {
-                                val costEntry = CostEntry.image("第 ${shot.id} 镜生图", imageUnitPrice,
+                                val costEntry = CostEntry.image("第 ${project.shotNumber(shot.id)} 镜生图", imageUnitPrice,
                                     shotId = shot.id, prompt = "$imagePrompt\n${shot.imagePrompt}")
                                 api.image(imageProvider, "$imagePrompt\n${shot.imagePrompt}", target,
                                     onGenerated = { ProjectCosts(store).add(project.id, costEntry) })
@@ -300,7 +300,7 @@ class GenerationService : Service() {
             update(project, "tts", "running", "正在配音 ${index + 1}/${project.shots.size}", index, project.shots.size)
             if (target.length() < 1000 || shot.audioStatus != "done") {
                 val replacement = File(target.parentFile, target.name + ".new.mp3")
-                val costEntry = CostEntry.voice("第 ${shot.id} 镜配音", shot.text, shot.id)
+                val costEntry = CostEntry.voice("第 ${project.shotNumber(shot.id)} 镜配音", shot.text, shot.id)
                 api.doubao(tts, settings.voiceId, settings.speed, shot.text, replacement,
                     onGenerated = { ProjectCosts(store).add(project.id, costEntry) })
                 ProjectCosts(store).attachMedia(project.id, costEntry.id, replacement)
@@ -323,11 +323,11 @@ class GenerationService : Service() {
         shot.imagePrompt = shotPrompt
         shot.imageStatus = "running"
         shot.error = ""
-        update(project, "images", "running", "正在重生成第 $shotId 张图片", 0, 1)
+        update(project, "images", "running", "正在生成第 ${project.shotNumber(shotId)} 张图片", 0, 1)
         val target = store.image(project, shot)
         val replacement = File(target.parentFile, target.name + ".new")
         val imageUnitPrice = settings.imageUnitPrice
-        val costEntry = CostEntry.image("第 $shotId 镜重生图片", imageUnitPrice,
+        val costEntry = CostEntry.image("第 ${project.shotNumber(shotId)} 镜重生图片", imageUnitPrice,
             shotId = shotId, prompt = "$imagePrompt\n$shotPrompt")
         try {
             api.image(settings.provider("image"), "$imagePrompt\n$shotPrompt", replacement,
@@ -348,8 +348,8 @@ class GenerationService : Service() {
         val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
         val target = store.audio(project, shot)
         val replacement = File(target.parentFile, target.name + ".new.mp3")
-        update(project, "tts", "running", "正在重生成第 $shotId 段配音", 0, 1)
-        val costEntry = CostEntry.voice("第 $shotId 镜重配音", shot.text, shotId)
+        update(project, "tts", "running", "正在生成第 ${project.shotNumber(shotId)} 段配音", 0, 1)
+        val costEntry = CostEntry.voice("第 ${project.shotNumber(shotId)} 镜重配音", shot.text, shotId)
         api.doubao(settings.provider("tts"), settings.voiceId, settings.speed, shot.text, replacement,
             onGenerated = { ProjectCosts(store).add(project.id, costEntry) })
         ProjectCosts(store).attachMedia(project.id, costEntry.id, replacement)
@@ -358,7 +358,7 @@ class GenerationService : Service() {
         shot.duration = newDuration
         shot.audioStatus = "done"
         File(store.directory(project.id), "temp/clip_%03d.mp4".format(shot.id)).delete()
-        update(project, "shots", "review", "第 $shotId 段配音已更新，请重新剪辑", 1, 1)
+        update(project, "shots", "review", "第 ${project.shotNumber(shotId)} 段配音已更新，请重新剪辑", 1, 1)
     }
 
     private suspend fun render(project: VideoProject) {

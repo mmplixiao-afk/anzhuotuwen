@@ -58,8 +58,7 @@ class VideoRenderer(private val store: ProjectStore) {
         const val SUBTITLE_SAFE_MARGIN_RATIO = 0.065
         const val SUBTITLE_GLYPH_WIDTH_RATIO = 1.05
         const val COVER_TITLE_MAX_CHARS = 40
-        const val COVER_TITLE_DELAY = 1.0
-        const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2-cover-1-timing-2"
+        const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2-cover-2-timing-2"
         const val AUDIO_MIX_VERSION = "keyword-audio-1"
         const val KEYWORD_SFX_LEAD_SECONDS = 1.0 / KeywordAudioRules.FRAME_RATE
         const val KEYWORD_BGM_FADE_SECONDS = 0.5
@@ -293,7 +292,7 @@ class VideoRenderer(private val store: ProjectStore) {
         val hasCover = normalizeCoverText(project.coverText).isNotBlank()
         if (!hasCover) return shot.text to shot.subtitleChunks
         if (shot.id == 1) return "" to emptyList()
-        if (shot.id == 2) {
+        if (project.shotNumber(shot.id) == 2) {
             val firstShot = project.shots.firstOrNull { it.id == 1 }
             val remainder = firstShot?.let { openingBody(it.text) }
             if (!remainder.isNullOrBlank()) return remainder + shot.text to emptyList()
@@ -574,6 +573,8 @@ class VideoRenderer(private val store: ProjectStore) {
         val fontPath = ffmpegPath(store.bundledFont("cover"))
         val outline = maxOf(3, (layout.fontSize * 0.065).roundToInt())
         val shadow = maxOf(2, (layout.fontSize * 0.025).roundToInt())
+        val delay = OpeningTiming.start(project.coverTitleDelaySeconds, duration)
+        val delaySeconds = String.format(Locale.US, "%.6f", delay)
         val entry = min(0.42, duration.coerceAtLeast(0.1) * 0.55)
         val firstPhase = entry * 0.65
         val secondPhase = entry * 0.82
@@ -581,13 +582,13 @@ class VideoRenderer(private val store: ProjectStore) {
         val overshootTop = finalTop - height * 0.055
         val reboundTop = finalTop + height * 0.018
         val initialTop = height + layout.textHeight * 0.6
-        val y = "if(lt(t,$COVER_TITLE_DELAY),$initialTop," +
-            "if(lt(t,${String.format(Locale.US, "%.4f", COVER_TITLE_DELAY + firstPhase)})," +
-            "$initialTop+($overshootTop-$initialTop)*(t-$COVER_TITLE_DELAY)/${String.format(Locale.US, "%.4f", firstPhase)}," +
-            "if(lt(t,${String.format(Locale.US, "%.4f", COVER_TITLE_DELAY + secondPhase)})," +
-            "$overshootTop+($reboundTop-$overshootTop)*(t-${String.format(Locale.US, "%.4f", COVER_TITLE_DELAY + firstPhase)})/${String.format(Locale.US, "%.4f", entry * 0.17)}," +
-            "if(lt(t,${String.format(Locale.US, "%.4f", COVER_TITLE_DELAY + entry)})," +
-            "$reboundTop+($finalTop-$reboundTop)*(t-${String.format(Locale.US, "%.4f", COVER_TITLE_DELAY + secondPhase)})/${String.format(Locale.US, "%.4f", entry * 0.18)},$finalTop))))"
+        val y = "if(lt(t,$delaySeconds),$initialTop," +
+            "if(lt(t,${String.format(Locale.US, "%.4f", delay + firstPhase)})," +
+            "$initialTop+($overshootTop-$initialTop)*(t-$delaySeconds)/${String.format(Locale.US, "%.4f", firstPhase)}," +
+            "if(lt(t,${String.format(Locale.US, "%.4f", delay + secondPhase)})," +
+            "$overshootTop+($reboundTop-$overshootTop)*(t-${String.format(Locale.US, "%.4f", delay + firstPhase)})/${String.format(Locale.US, "%.4f", entry * 0.17)}," +
+            "if(lt(t,${String.format(Locale.US, "%.4f", delay + entry)})," +
+            "$reboundTop+($finalTop-$reboundTop)*(t-${String.format(Locale.US, "%.4f", delay + secondPhase)})/${String.format(Locale.US, "%.4f", entry * 0.18)},$finalTop))))"
         return layout.lines.mapIndexed { index, line ->
             val file = File(dir, "cover_title_%02d.txt".format(index)).apply { writeText(line) }
             ",drawtext=fontfile='$fontPath':textfile='${ffmpegPath(file)}':" +
@@ -685,23 +686,26 @@ class VideoRenderer(private val store: ProjectStore) {
         frames: Int,
         width: Int,
         height: Int,
-        duration: Double
+        duration: Double,
+        entryDelay: Double = 0.0
     ): String {
         val background = motionFilter(backgroundPlan, frames, width, height, stillImage = true)
         val foreground = motionFilter(foregroundPlan, frames, width, height, preserveAlpha = true, stillImage = true)
         val entry = min(0.28, maxOf(1.0 / 30.0, duration / 3.0))
         val entrySeconds = String.format(Locale.US, "%.6f", entry)
         val focusSeconds = String.format(Locale.US, "%.6f", min(0.08, entry))
-        // These arguments go directly to FFmpeg; escape expression commas for the filter graph.
-        val focus = "A*min(1,T/$entrySeconds)+B*(1-min(1,T/$entrySeconds))".replace(",", "\\,")
-        val duringEntry = "lt(t,$entrySeconds)".replace(",", "\\,")
-        val entryY = "${height * 0.18}*pow(max(0,1-t/$entrySeconds),3)".replace(",", "\\,")
+        val delaySeconds = String.format(Locale.US, "%.6f", entryDelay)
+        val entryEnd = String.format(Locale.US, "%.6f", entryDelay + entry)
+        // Shift blur, opacity and movement together; the title uses the same opening start time.
+        val focusProgress = "min(1,max(0,(T-$delaySeconds)/$entrySeconds))"
+        val focus = "A*$focusProgress+B*(1-$focusProgress)".replace(",", "\\,")
+        val duringEntry = "lt(t,$entryEnd)".replace(",", "\\,")
+        val entryY = "${height * 0.18}*pow(max(0,min(1,1-(t-$delaySeconds)/$entrySeconds)),3)".replace(",", "\\,")
         return "[0:v]$background[bg];" +
             "[1:v]$foreground,split[sharp][blur];" +
-            // The Android FFmpeg package includes gblur; keep the alpha plane intact.
             "[blur]gblur=sigma=6:steps=2:planes=7:enable=$duringEntry[blurred];" +
             "[sharp][blurred]blend=all_expr=$focus:enable=$duringEntry," +
-            "format=rgba,fade=t=in:st=0:d=$focusSeconds:alpha=1[fg];" +
+            "format=rgba,fade=t=in:st=$delaySeconds:d=$focusSeconds:alpha=1[fg];" +
             "[bg][fg]overlay=x=0:y=$entryY:" +
             "shortest=1:format=auto,format=yuv420p[v]"
     }
@@ -1056,7 +1060,7 @@ class VideoRenderer(private val store: ProjectStore) {
         val clipSignature = listOf(
             RENDER_STYLE_VERSION, frameCounts.joinToString(","), project.imageSize, project.subtitlesEnabled, project.motionMode,
             project.transitionMode, transitionPlans.joinToString(",") { "${it.type}:${it.frames}" },
-            project.coverShotId, project.coverText, project.openingTemplate, project.introImageSeconds,
+            project.coverShotId, project.coverText, OpeningTiming.normalizeDelay(project.coverTitleDelaySeconds), project.openingTemplate, project.introImageSeconds,
             project.bgmId, project.introSfxId, project.bgmVolume, project.introSfxVolume, project.ttsVolume,
             project.shots.mapIndexed { index, shot ->
                 val visualShot = visualShots[index]
@@ -1125,7 +1129,8 @@ class VideoRenderer(private val store: ProjectStore) {
                                     )
                                     val cutout = cutoutFilter(
                                         visualShot.cutoutBackgroundPlan ?: error("第 ${shot.id} 镜背景运动方案丢失"),
-                                        foregroundPlan, frameCount, width, height, durations[index]
+                                        foregroundPlan, frameCount, width, height, durations[index],
+                                        entryDelay = if (index == 0) OpeningTiming.start(project.coverTitleDelaySeconds, durations[index]) else 0.0
                                     )
                                     val overlays = subtitle + cover
                                     val graph = if (overlays.isBlank()) cutout else

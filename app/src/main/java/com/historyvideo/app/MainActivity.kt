@@ -255,9 +255,9 @@ class MainActivity : ComponentActivity() {
     private fun play(project: VideoProject, shot: Shot): String {
         val file = store.audio(project, shot)
         require(shot.audioStatus == "done" && file.isFile && file.length() > 1000) {
-            "第 ${shot.id} 段配音尚未生成，请先完成配音"
+            "第 ${project.shotNumber(shot.id)} 段配音尚未生成，请先完成配音"
         }
-        return playFile(file, "正在试听第 ${shot.id} 段配音")
+        return playFile(file, "正在试听第 ${project.shotNumber(shot.id)} 段配音")
     }
 
     private fun playFile(file: File, message: String): String {
@@ -606,6 +606,14 @@ class MainActivity : ComponentActivity() {
                                 onSave = ::saveProject, onRun = ::runProject, onPlay = ::playShot,
                                 onNavigate = { nextId ->
                                     if (selected.shots.any { it.id == nextId }) selectedShotId = nextId
+                                }, onInsert = { newText, newPrompt ->
+                                    runCatching {
+                                        val updated = VideoProject.from(selected.json())
+                                        val inserted = store.insertShotAfter(updated, shot.id, newText, newPrompt)
+                                        saveProject(updated)
+                                        selectedShotId = inserted.id
+                                        message = "已插入新镜头，原图片和配音已保留"
+                                    }.onFailure { message = it.message.orEmpty() }.isSuccess
                                 })
                         }
                     }
@@ -1201,7 +1209,8 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                              onSave: (VideoProject) -> Unit,
                              onRun: (VideoProject, String, Int) -> Unit,
                              onPlay: (VideoProject, Shot) -> Unit,
-                             onNavigate: (Int) -> Unit) {
+                             onNavigate: (Int) -> Unit,
+                             onInsert: (String, String) -> Boolean) {
     var text by key(shot.text) { rememberSaveable { mutableStateOf(shot.text) } }
     var prompt by key(shot.imagePrompt) { rememberSaveable { mutableStateOf(shot.imagePrompt) } }
     var showImage by remember { mutableStateOf(false) }
@@ -1209,6 +1218,9 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
     val imageFile = store.image(project, shot)
     val clipboard = LocalClipboardManager.current
     val shotIndex = project.shots.indexOfFirst { it.id == shot.id }
+    var showInsert by rememberSaveable(project.id, shot.id) { mutableStateOf(false) }
+    var insertedText by rememberSaveable(project.id, shot.id) { mutableStateOf("") }
+    var insertedPrompt by rememberSaveable(project.id, shot.id) { mutableStateOf("") }
     fun saveInputs() {
         val textChanged = shot.text != text
         val promptChanged = shot.imagePrompt != prompt
@@ -1218,14 +1230,15 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
         onSave(project)
     }
     Column(
-        modifier = Modifier.fillMaxWidth().pointerInput(shot.id, busy) {
+        modifier = Modifier.fillMaxWidth().pointerInput(shot.id, busy, project.shots.map { it.id }) {
             var dragDistance = 0f
             detectHorizontalDragGestures(
                 onDragStart = { dragDistance = 0f },
                 onHorizontalDrag = { _, amount -> dragDistance += amount },
                 onDragEnd = {
                     if (!busy && abs(dragDistance) >= 100f) {
-                        onNavigate(if (dragDistance < 0f) shot.id + 1 else shot.id - 1)
+                        val nextIndex = shotIndex + if (dragDistance < 0f) 1 else -1
+                        project.shots.getOrNull(nextIndex)?.let { onNavigate(it.id) }
                     }
                 }
             )
@@ -1244,7 +1257,7 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
         }
         Row(Modifier.fillMaxWidth().background(HistoryColors.card, RoundedCornerShape(8.dp)).padding(14.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            Text("镜头 ${shot.id.toString().padStart(2, '0')}", modifier = Modifier.weight(1f),
+            Text("镜头 ${(shotIndex + 1).toString().padStart(2, '0')}", modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
             Text("时长 ${"%.1f".format(shot.duration)} 秒", style = MaterialTheme.typography.labelMedium, color = HistoryColors.muted)
         }
@@ -1313,6 +1326,36 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                 Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp))
             }
         }
+    }
+    val currentInputsSaved = text == shot.text && prompt == shot.imagePrompt
+    if (!currentInputsSaved) Text("请先保存当前镜头的修改，再插入新镜头",
+        color = HistoryColors.muted, style = MaterialTheme.typography.bodySmall)
+    OutlinedButton(onClick = { showInsert = true }, enabled = !busy && currentInputsSaved,
+        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
+        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("在此镜头后插入新镜头")
+    }
+    if (showInsert) {
+        AlertDialog(onDismissRequest = { showInsert = false },
+            title = { Text("在镜头 ${shotIndex + 1} 后插入") },
+            text = {
+                Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("已有图片和配音会保留，只需生成新镜头的素材后重新渲染。",
+                        style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                    InputTile("新镜头配音文字", insertedText, { insertedText = it }, minLines = 3)
+                    InputTile("新镜头生图提示词", insertedPrompt, { insertedPrompt = it }, minLines = 3)
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (onInsert(insertedText, insertedPrompt)) {
+                        showInsert = false; insertedText = ""; insertedPrompt = ""
+                    }
+                }, enabled = !busy && insertedText.isNotBlank() && insertedPrompt.isNotBlank()) { Text("插入并打开") }
+            },
+            dismissButton = { TextButton(onClick = { showInsert = false }) { Text("取消") } })
     }
     if (showImage) {
         Dialog(onDismissRequest = { showImage = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -2145,7 +2188,7 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
         }
         visibleShots.forEach { shot ->
             key(project.id, shot.id) {
-                ShotListItem(shot, store.image(project, shot), busy,
+                ShotListItem(shot, project.shotNumber(shot.id), store.image(project, shot), busy,
                     onClick = { onOpenShot(shot.id) }, onPlay = { onPlay(project, shot) })
             }
         }
@@ -2158,7 +2201,7 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
 }
 
 @Composable
-private fun ShotListItem(shot: Shot, imageFile: File, busy: Boolean,
+private fun ShotListItem(shot: Shot, displayNumber: Int, imageFile: File, busy: Boolean,
                          onClick: () -> Unit, onPlay: () -> Unit) {
     val imageReady = shot.imageStatus == "done" && imageFile.isFile && imageFile.length() > 1000
     Card(
@@ -2173,7 +2216,7 @@ private fun ShotListItem(shot: Shot, imageFile: File, busy: Boolean,
                 ShotThumbnail(imageFile, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("镜头 ${shot.id.toString().padStart(2, '0')}", style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
+                Text("镜头 ${displayNumber.toString().padStart(2, '0')}", style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
                 Text(shot.text.take(70), maxLines = 2, style = MaterialTheme.typography.bodySmall)
                 Text(when {
                     shot.imageStatus == "failed" -> "图片生成失败"
@@ -2201,6 +2244,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     var transition by remember(project.id, project.transitionMode) { mutableStateOf(project.transitionMode) }
     var openingTemplate by remember(project.id, project.openingTemplate) { mutableStateOf(project.openingTemplate) }
     var introImageSeconds by remember(project.id, project.introImageSeconds) { mutableStateOf(project.introImageSeconds.toString()) }
+    var coverDelay by rememberSaveable(project.id) { mutableStateOf(OpeningTiming.normalizeDelay(project.coverTitleDelaySeconds).toString()) }
     val motionChoices = listOf("random" to "逐镜随机", "zoom_in" to "推近", "zoom_out" to "拉远", "pan" to "平移", "zoom_pan" to "边推拉边平移")
     val transitionChoices = listOf("random" to "逐镜随机", "none" to "无", "fade" to "柔和叠化",
         "dissolve" to "颗粒溶解", "smoothleft" to "平滑左推", "zoomin" to "推近切换", "fadeblack" to "黑场淡化")
@@ -2259,7 +2303,33 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                 Modifier.fillMaxWidth().height(180.dp))
             Button(onClick = { showCoverPicker = true }, enabled = !busy && project.shots.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth()) {
-                Text(if (coverShot == null) "选择封面图片" else "选择封面图片 · 镜头 ${coverShot.id}")
+                Text(if (coverShot == null) "选择封面图片" else "选择封面图片 · 镜头 ${project.shotNumber(coverShot.id)}")
+            }
+            InputTile("文案与人物出现时间（秒）", coverDelay, { value ->
+                coverDelay = value.filter { it.isDigit() || it == '.' }.take(5)
+            }, enabled = !busy)
+            val delayValue = coverDelay.toFloatOrNull()
+            val validDelay = delayValue != null && delayValue.isFinite() && delayValue in 0f..OpeningTiming.MAX_DELAY
+            if (!validDelay) Text("请输入 0–5 秒", color = HistoryColors.cinnabar,
+                style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = {
+                delayValue?.let {
+                    project.coverTitleDelaySeconds = OpeningTiming.normalizeDelay(it)
+                    onSave(project)
+                    coverDelay = project.coverTitleDelaySeconds.toString()
+                }
+            }, enabled = !busy && validDelay, modifier = Modifier.fillMaxWidth()) {
+                Text(if (validDelay && delayValue == project.coverTitleDelaySeconds) "出现时间已保存" else "保存出现时间")
+            }
+            Text("从首镜开始计时，封面文字与首镜抠图人物同步弹出；默认 0.5 秒，重新渲染后生效。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            val firstShot = project.shots.firstOrNull()
+            if (firstShot != null && firstShot.audioStatus == "done" && firstShot.duration > 0.0) {
+                val effectiveStart = OpeningTiming.start(project.coverTitleDelaySeconds, firstShot.duration)
+                if (effectiveStart + 0.001 < project.coverTitleDelaySeconds) {
+                    Text("首镜较短，实际在 ${"%.2f".format(effectiveStart)} 秒出现，预留弹出动画时间。",
+                        style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                }
             }
         }
     }
@@ -2367,7 +2437,7 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
                     IconButton(onClick = ::back) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = HistoryColors.ink)
                     }
-                    Text(if (preview == null) title else "镜头 ${preview.id}",
+                    Text(if (preview == null) title else "镜头 ${project.shotNumber(preview.id)}",
                         modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (preview == null) {
@@ -2409,7 +2479,7 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
                                         onCheckedChange = { select(shot.id, it) },
                                         modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
                                 }
-                                Text("镜头 ${shot.id}", style = MaterialTheme.typography.bodyMedium,
+                                Text("镜头 ${project.shotNumber(shot.id)}", style = MaterialTheme.typography.bodyMedium,
                                     color = HistoryColors.ink, maxLines = 1)
                             }
                         }
