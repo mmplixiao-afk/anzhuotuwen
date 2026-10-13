@@ -2218,6 +2218,9 @@ private fun ShotListItem(shot: Shot, displayNumber: Int, imageFile: File, busy: 
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("镜头 ${displayNumber.toString().padStart(2, '0')}", style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
                 Text(shot.text.take(70), maxLines = 2, style = MaterialTheme.typography.bodySmall)
+                if (shot.cutoutEnabled || shot.motionSetting != null) Text(
+                    if (shot.cutoutEnabled) "人物抠图" else ShotMotionRules.label(shot.motionSetting),
+                    style = MaterialTheme.typography.labelSmall, color = HistoryColors.muted)
                 Text(when {
                     shot.imageStatus == "failed" -> "图片生成失败"
                     imageReady -> "画面已生成"
@@ -2235,6 +2238,13 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     val context = LocalContext.current
     var showCutoutPicker by remember(project.id) { mutableStateOf(false) }
     var showCoverPicker by remember(project.id) { mutableStateOf(false) }
+    var showMotionPicker by remember(project.id) { mutableStateOf<ShotMotionSetting?>(null) }
+    var panDirection by rememberSaveable(project.id) { mutableStateOf("left_to_right") }
+    var combinedDirection by rememberSaveable(project.id) { mutableStateOf("left_to_right") }
+    var combinedZoom by rememberSaveable(project.id) { mutableStateOf("in") }
+    var panDirectionMenu by remember { mutableStateOf(false) }
+    var combinedDirectionMenu by remember { mutableStateOf(false) }
+    var combinedZoomMenu by remember { mutableStateOf(false) }
     var motionMenu by remember { mutableStateOf(false) }
     var transitionMenu by remember { mutableStateOf(false) }
     val cutoutModels = remember(context) { CutoutModels(context) }
@@ -2261,7 +2271,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("画面动势", style = MaterialTheme.typography.titleLarge)
             Box(Modifier.fillMaxWidth()) {
-                ChoiceTile("图片运动", motionChoices.firstOrNull { it.first == motion }?.second ?: "逐镜随机",
+                ChoiceTile("默认图片运动", motionChoices.firstOrNull { it.first == motion }?.second ?: "逐镜随机",
                     onClick = { motionMenu = true }, enabled = !busy, dropdown = true)
                 DropdownMenu(expanded = motionMenu, onDismissRequest = { motionMenu = false }) {
                     motionChoices.forEach { (id, label) ->
@@ -2269,13 +2279,66 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                             motionMenu = false
                             if (motion != id) {
                                 motion = id; project.motionMode = id
-                                project.shots.forEach { it.motionPlan = null }
+                                project.shots.filter { it.motionSetting == null && !it.cutoutEnabled }.forEach {
+                                    it.motionPlan = null; it.motionPlanSetting = null
+                                }
                                 onSave(project)
                             }
                         })
                     }
                 }
             }
+            Text("逐镜选择图片运动", style = MaterialTheme.typography.titleMedium)
+            val normalShots = project.shots.filter { !it.cutoutEnabled }
+            ShotMotionRules.modes.take(2).forEach { (id, label) ->
+                val count = normalShots.count { ShotMotionRules.normalize(it.motionSetting)?.mode == id }
+                OutlinedButton(onClick = { showMotionPicker = ShotMotionSetting(id) },
+                    enabled = !busy && project.shots.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
+                    Text("选择${label}图片 · 已选 $count 镜")
+                }
+            }
+            Box(Modifier.fillMaxWidth()) {
+                ChoiceTile("平移方向", ShotMotionRules.directions.first { it.first == panDirection }.second,
+                    onClick = { panDirectionMenu = true }, enabled = !busy, dropdown = true)
+                DropdownMenu(expanded = panDirectionMenu, onDismissRequest = { panDirectionMenu = false }) {
+                    ShotMotionRules.directions.forEach { (id, label) ->
+                        DropdownMenuItem(text = { Text(label) }, onClick = { panDirection = id; panDirectionMenu = false })
+                    }
+                }
+            }
+            val panCount = normalShots.count {
+                ShotMotionRules.normalize(it.motionSetting) == ShotMotionSetting("pan", panDirection)
+            }
+            OutlinedButton(onClick = { showMotionPicker = ShotMotionSetting("pan", panDirection) },
+                enabled = !busy && project.shots.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
+                Text("选择平移图片 · 当前方向已选 $panCount 镜")
+            }
+            Box(Modifier.fillMaxWidth()) {
+                ChoiceTile("组合运动缩放", if (combinedZoom == "out") "拉远" else "推近",
+                    onClick = { combinedZoomMenu = true }, enabled = !busy, dropdown = true)
+                DropdownMenu(expanded = combinedZoomMenu, onDismissRequest = { combinedZoomMenu = false }) {
+                    listOf("in" to "推近", "out" to "拉远").forEach { (id, label) ->
+                        DropdownMenuItem(text = { Text(label) }, onClick = { combinedZoom = id; combinedZoomMenu = false })
+                    }
+                }
+            }
+            Box(Modifier.fillMaxWidth()) {
+                ChoiceTile("组合运动方向", ShotMotionRules.directions.first { it.first == combinedDirection }.second,
+                    onClick = { combinedDirectionMenu = true }, enabled = !busy, dropdown = true)
+                DropdownMenu(expanded = combinedDirectionMenu, onDismissRequest = { combinedDirectionMenu = false }) {
+                    ShotMotionRules.directions.forEach { (id, label) ->
+                        DropdownMenuItem(text = { Text(label) }, onClick = { combinedDirection = id; combinedDirectionMenu = false })
+                    }
+                }
+            }
+            val combinedPreset = ShotMotionSetting("zoom_pan", combinedDirection, combinedZoom)
+            val combinedCount = normalShots.count { ShotMotionRules.normalize(it.motionSetting) == combinedPreset }
+            OutlinedButton(onClick = { showMotionPicker = combinedPreset },
+                enabled = !busy && project.shots.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
+                Text("选择边推拉边平移图片 · 当前组合已选 $combinedCount 镜")
+            }
+            Text("先选方向，再勾选图片。每张图片只保留一种普通运动；未单独设置的镜头使用默认运动。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
             Box(Modifier.fillMaxWidth()) {
                 val normalized = if (transition == "slideleft") "smoothleft" else transition
                 ChoiceTile("转场特效", transitionChoices.firstOrNull { it.first == normalized }?.second ?: "逐镜随机",
@@ -2385,6 +2448,20 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
             }
         }
     }
+    showMotionPicker?.let { preset ->
+        ImagePickerDialog("选择图片 · ${ShotMotionRules.label(preset)}", project, multiSelect = true,
+            selected = project.shots.filter { !it.cutoutEnabled && ShotMotionRules.normalize(it.motionSetting) == ShotMotionRules.normalize(preset) }
+                .map { it.id }.toSet(),
+            onDismiss = { showMotionPicker = null },
+            onConfirm = { selected ->
+                ShotMotionRules.assign(project, preset, selected)
+                onSave(project)
+                showMotionPicker = null
+            },
+            canSelect = { !it.cutoutEnabled },
+            selectionNote = { shot -> if (shot.cutoutEnabled) "已选抠图 · 不能设置普通运动" else
+                ShotMotionRules.label(shot.motionSetting) })
+    }
     if (showCoverPicker) {
         ImagePickerDialog("选择封面图片", project, multiSelect = false,
             selected = setOf(project.coverShotId), onDismiss = { showCoverPicker = false },
@@ -2398,8 +2475,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
             selected = project.shots.filter { it.cutoutEnabled }.map { it.id }.toSet(),
             onDismiss = { showCutoutPicker = false },
             onConfirm = { selected ->
-                project.shots.forEach { it.cutoutEnabled = it.id in selected }
-                project.cutoutEnabled = project.shots.any { it.cutoutEnabled }
+                ShotMotionRules.selectCutouts(project, selected)
                 onSave(project)
                 showCutoutPicker = false
             })
@@ -2409,13 +2485,18 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
 @Composable
 private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect: Boolean,
                              selected: Set<Int>, onDismiss: () -> Unit,
-                             onConfirm: (Set<Int>) -> Unit) {
+                             onConfirm: (Set<Int>) -> Unit,
+                             canSelect: (Shot) -> Boolean = { true },
+                             selectionNote: ((Shot) -> String)? = null) {
     val context = LocalContext.current
     val store = remember(context) { ProjectStore(context) }
-    var checked by remember(project.id, title, selected) { mutableStateOf(selected.toSet()) }
+    val eligibleIds = project.shots.filter(canSelect).map { it.id }.toSet()
+    var checked by remember(project.id, title, selected, eligibleIds) { mutableStateOf(selected.intersect(eligibleIds)) }
     var previewId by remember(project.id) { mutableStateOf<Int?>(null) }
     val gridState = rememberLazyGridState()
     fun select(shotId: Int, value: Boolean) {
+        if (project.status == "running") return
+        if (value && shotId !in eligibleIds) return
         checked = if (value) {
             if (multiSelect) checked + shotId else setOf(shotId)
         } else checked - shotId
@@ -2443,7 +2524,9 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
                     if (preview == null) {
                         TextButton(onClick = { checked = emptySet() }, enabled = checked.isNotEmpty()) { Text("清空") }
                     } else {
-                        ImageSelectionCheck(preview.id in checked, enabled = true,
+                        val previewFile = store.image(project, preview)
+                        ImageSelectionCheck(preview.id in checked, enabled = project.status != "running" &&
+                            preview.id in eligibleIds && (previewFile.isFile && previewFile.length() > 1000 || preview.id in checked),
                             onCheckedChange = { select(preview.id, it) })
                     }
                 }
@@ -2452,6 +2535,10 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
                     Box(Modifier.fillMaxWidth().weight(1f).background(Color(0xFFF2F2F2)),
                         contentAlignment = Alignment.Center) {
                         ShotThumbnail(store.image(project, preview), Modifier.fillMaxSize(), previewSize = 1920)
+                    }
+                    selectionNote?.let { note ->
+                        Text(note(preview), modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
                     }
                 } else {
                     LazyVerticalGrid(
@@ -2463,6 +2550,7 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
                         items(project.shots, key = { it.id }) { shot ->
                             val imageFile = store.image(project, shot)
                             val available = imageFile.isFile && imageFile.length() > 1000
+                            val selectable = shot.id in eligibleIds
                             val isChecked = shot.id in checked
                             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Box(Modifier.fillMaxWidth().aspectRatio(0.75f)
@@ -2470,17 +2558,23 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
                                     .border(if (isChecked) 2.dp else 1.dp,
                                         if (isChecked) HistoryColors.green else Color(0xFFE5E5E5), RoundedCornerShape(8.dp))) {
                                     if (available) {
-                                        ShotThumbnail(imageFile, Modifier.fillMaxSize().clickable { previewId = shot.id })
+                                        ShotThumbnail(imageFile, Modifier.fillMaxSize().clickable { previewId = shot.id }, contentScale = ContentScale.Crop)
                                     } else {
                                         Text("尚未生成图片", Modifier.align(Alignment.Center).padding(8.dp),
                                             style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
                                     }
-                                    ImageSelectionCheck(isChecked, enabled = available || isChecked,
+                                    if (!selectable) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = 0.45f)))
+                                    ImageSelectionCheck(isChecked, enabled = project.status != "running" && selectable && (available || isChecked),
                                         onCheckedChange = { select(shot.id, it) },
                                         modifier = Modifier.align(Alignment.TopEnd).padding(4.dp))
                                 }
                                 Text("镜头 ${project.shotNumber(shot.id)}", style = MaterialTheme.typography.bodyMedium,
                                     color = HistoryColors.ink, maxLines = 1)
+                                selectionNote?.let { note ->
+                                    Text(note(shot), style = MaterialTheme.typography.bodySmall,
+                                        color = if (selectable) HistoryColors.muted else HistoryColors.cinnabar,
+                                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
                             }
                         }
                     }
@@ -2491,7 +2585,7 @@ private fun ImagePickerDialog(title: String, project: VideoProject, multiSelect:
                     Text("已选 ${checked.size} 镜", modifier = Modifier.weight(1f), color = HistoryColors.muted)
                     Button(onClick = { onConfirm(checked) }, enabled = project.status != "running" &&
                         (multiSelect || checked.size == 1) && checked.all { id ->
-                            project.shots.firstOrNull { it.id == id }?.let { store.image(project, it).length() > 1000 } == true
+                            project.shots.firstOrNull { it.id == id }?.let { canSelect(it) && store.image(project, it).length() > 1000 } == true
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.green),
                         shape = RoundedCornerShape(8.dp)) {

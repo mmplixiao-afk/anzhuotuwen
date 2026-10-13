@@ -76,7 +76,9 @@ data class Shot(
     var cutoutForegroundPlan: MotionPlan? = null,
     var visual: String = "",
     var imageRevision: String = "",
-    var audioRevision: String = ""
+    var audioRevision: String = "",
+    var motionSetting: ShotMotionSetting? = null,
+    var motionPlanSetting: ShotMotionSetting? = null
 ) {
     fun json() = JSONObject().apply {
         put("shot_id", id); put("text", text); put("image_prompt", imagePrompt)
@@ -86,6 +88,8 @@ data class Shot(
         put("audio_status", audioStatus); put("error", error); put("cutout_enabled", cutoutEnabled)
         put("subtitle_chunks", JSONArray(subtitleChunks))
         put("motion_plan", motionPlan?.json() ?: JSONObject.NULL)
+        put("motion_setting", if (cutoutEnabled) JSONObject.NULL else motionSetting?.json() ?: JSONObject.NULL)
+        put("motion_plan_setting", if (cutoutEnabled) JSONObject.NULL else motionPlanSetting?.json() ?: JSONObject.NULL)
         put("cutout_mirror_x", cutoutMirrorX ?: JSONObject.NULL)
         put("cutout_background_plan", cutoutBackgroundPlan?.json() ?: JSONObject.NULL)
         put("cutout_foreground_plan", cutoutForegroundPlan?.json() ?: JSONObject.NULL)
@@ -124,7 +128,9 @@ data class Shot(
             cutoutForegroundPlan = value.optJSONObject("cutout_foreground_plan")?.let { MotionPlan.from(it) },
             visual = value.optString("visual"),
             imageRevision = value.optString("image_revision"),
-            audioRevision = value.optString("audio_revision")
+            audioRevision = value.optString("audio_revision"),
+            motionSetting = if (value.optBoolean("cutout_enabled")) null else ShotMotionSetting.from(value.optJSONObject("motion_setting")),
+            motionPlanSetting = if (value.optBoolean("cutout_enabled")) null else ShotMotionSetting.from(value.optJSONObject("motion_plan_setting"))
         )
     }
 }
@@ -307,6 +313,8 @@ class ProjectStore(context: Context) {
                 duration = if (sameVoice) old!!.duration else next.duration,
                 cutoutEnabled = if (sameImage) old!!.cutoutEnabled else false,
                 motionPlan = if (sameImage) old!!.motionPlan else null,
+                motionSetting = if (sameImage && !old!!.cutoutEnabled) ShotMotionRules.normalize(old!!.motionSetting) else null,
+                motionPlanSetting = if (sameImage && !old!!.cutoutEnabled) ShotMotionRules.normalize(old!!.motionPlanSetting) else null,
                 cutoutMirrorX = if (sameImage) old!!.cutoutMirrorX else null,
                 cutoutBackgroundPlan = if (sameImage) old!!.cutoutBackgroundPlan else null,
                 cutoutForegroundPlan = if (sameImage) old!!.cutoutForegroundPlan else null

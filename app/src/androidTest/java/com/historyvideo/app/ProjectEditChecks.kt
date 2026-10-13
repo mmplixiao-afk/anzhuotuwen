@@ -36,6 +36,10 @@ internal object ProjectEditChecks {
             project.storyboardScript = project.script
             project.status = "done"; project.stage = "render"; project.duration = 6.0
             project.coverShotId = 2
+            val savedMovement = ShotMotionSetting("pan", "left_to_right")
+            project.shots[0].motionSetting = savedMovement
+            project.shots[0].motionPlan = ShotMotionRules.createPlan(savedMovement)
+            project.shots[0].motionPlanSetting = savedMovement
             project.coverTitleDelaySeconds = 1.25f
             project.renderRevision = UUID.randomUUID().toString()
             project.transitionPlans = mutableListOf(TransitionPlan("none", 0), TransitionPlan("fade", 8))
@@ -72,6 +76,8 @@ internal object ProjectEditChecks {
             val restored = requireNotNull(store.get(project.id))
             check(restored.shots.map { it.id } == listOf(1, 4, 2, 3))
             check(restored.coverTitleDelaySeconds == 1.25f && restored.script == project.script)
+            check(restored.shots.first { it.id == 1 }.motionSetting == savedMovement)
+            check(restored.shots.first { it.id == 1 }.motionPlanSetting == savedMovement)
             originalShots.forEach { old ->
                 val restoredShot = restored.shots.first { it.id == old.id }
                 check(store.image(restored, restoredShot) == store.image(project, old))

@@ -182,9 +182,18 @@ class VideoRenderer(private val store: ProjectStore) {
     }
 
     private fun motionPlanFor(project: VideoProject, shot: Shot): MotionPlan {
-        val requested = requestedMotionMode(project, shot)
+        val manual = if (shot.cutoutEnabled) null else ShotMotionRules.normalize(shot.motionSetting)
         val current = shot.motionPlan
-        if (current != null && (requested == "random" || current.mode == requested)) return current
+        if (manual != null) {
+            if (current != null && shot.motionPlanSetting == manual && current.mode == manual.mode) return current
+            return ShotMotionRules.createPlan(manual).also {
+                shot.motionPlan = it
+                shot.motionPlanSetting = manual
+            }
+        }
+        val requested = requestedMotionMode(project, shot)
+        if (current != null && shot.motionPlanSetting == null && (requested == "random" || current.mode == requested)) return current
+        shot.motionPlanSetting = null
         return newMotionPlan(requested).also { shot.motionPlan = it }
     }
 
@@ -664,6 +673,7 @@ class VideoRenderer(private val store: ProjectStore) {
     }
 
     private fun ensureCutoutPlans(shot: Shot) {
+        ShotMotionRules.clear(shot)
         val direction = shot.cutoutMirrorX ?: Random.nextBoolean().also { shot.cutoutMirrorX = it }
         val sign = if (direction) -1.0 else 1.0
         if (shot.cutoutBackgroundPlan == null || shot.cutoutForegroundPlan == null) {
@@ -1046,14 +1056,13 @@ class VideoRenderer(private val store: ProjectStore) {
         val cutoutShots = visualShots.distinctBy { it.id }.filter { it.cutoutEnabled }
         val cutoutIndexes = cutoutShots.mapIndexed { index, shot -> shot.id to index + 1 }.toMap()
         visualShots.distinctBy { it.id }.forEach { shot ->
-            motionPlanFor(project, shot)
             if (shot.cutoutEnabled) {
                 val index = cutoutIndexes[shot.id] ?: 1
                 stage("正在处理抠图镜头 $index/${cutoutShots.size}：识别第 ${shot.id} 镜人物并修补背景")
                 cutoutProcessor.prepare(project, shot, canvasSize(project))
                 layerFiles(project, shot)
                 ensureCutoutPlans(shot)
-            }
+            } else motionPlanFor(project, shot)
         }
         val transitionPlans = transitionPlansFor(project, durations, frameCounts)
         store.save(project)
@@ -1069,7 +1078,7 @@ class VideoRenderer(private val store: ProjectStore) {
                     "$sourceStamp:${it.background.length()}:${it.background.lastModified()}:${it.foreground.length()}:${it.foreground.lastModified()}"
                 } else ""
                 "${shot.id}:${shot.imageRevision}:${shot.audioRevision}:${shot.cutoutEnabled}:${shot.text.hashCode()}:${shot.subtitleChunks.joinToString("\u0000").hashCode()}:" +
-                    "${visualShot.id}:${visualShot.cutoutEnabled}:${visualShot.motionPlan}:${visualShot.cutoutBackgroundPlan}:${visualShot.cutoutForegroundPlan}:$layers:" +
+                    "${visualShot.id}:${visualShot.cutoutEnabled}:${visualShot.motionSetting}:${visualShot.motionPlanSetting}:${visualShot.motionPlan}:${visualShot.cutoutBackgroundPlan}:${visualShot.cutoutForegroundPlan}:$layers:" +
                     "${images[index].length()}:${images[index].lastModified()}:" +
                     "${store.audio(project, shot).length()}:${store.audio(project, shot).lastModified()}"
             }.joinToString(",")
