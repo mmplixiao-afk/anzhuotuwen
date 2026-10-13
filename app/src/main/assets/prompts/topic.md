@@ -10,6 +10,6 @@
 不要输出“古代婚姻”“古人生活”“底层职业”这类泛泛分类，也不要只替换一个职业名就重复同一主题。每个候选应有不同的具体身份、事件或生存处境，能让后续文案围绕真实细节、代价、反差和人物选择展开。用户指定的朝代、地区、身份和资料优先；未指定时选择有可靠历史背景、容易讲清楚的题材。
 
 只返回严格 JSON，不要 Markdown：
-{"ideas":[{"title":"string","direction":"string","tags":["string"],"reason":"string"}]}
+{"ideas":[{"id":1,"title":"string","category":"string","direction":"string","tags":["string","string","string"],"reason":"string"}]}
 
-title 控制在 10 至 26 个中文字符，必须是完整主题句；direction 说明时代或背景、主角身份、核心处境、主要冲突和可展开的细节，约 80 至 180 字；tags 返回 3 至 5 个短标签；reason 用一句话说明这个题目为什么适合历史口播。
+title 控制在 10 至 26 个中文字符，必须是完整主题句；category 标明选题所属赛道；direction 说明时代或背景、主角身份反差、三个递进的打脸或搞钱小事件，以及结尾收扣，约 120 至 200 字；tags 返回 3 至 5 个短标签；reason 用一句话说明这个题目为什么适合历史口播。

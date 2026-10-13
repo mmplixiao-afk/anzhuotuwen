@@ -198,7 +198,7 @@ class GenerationService : Service() {
         val prompt = configuredPrompt("script", promptOverride)
         update(project, "script", "running", "正在生成文案")
         val script = ensureScriptStartsWithTitle(project.title,
-            api.text(settings.provider("text"), prompt, project.title, scriptTitleInstruction(project.title),
+            api.text(settings.provider("text"), prompt, TopicIdeas.scriptInput(project), scriptTitleInstruction(project.title),
                 onUsage = { ProjectCosts(store).add(project.id, CostEntry.text("生成正文", it)) }))
         project.script = script
         project.shots.clear()
@@ -210,11 +210,13 @@ class GenerationService : Service() {
     private fun generateTopics(project: VideoProject, promptOverride: String = "") {
         val prompt = configuredPrompt("topic", promptOverride)
         update(project, "topic", "running", "正在生成候选题材")
-        project.topicCandidates = api.topics(
-            settings.provider("text"), prompt, project.title,
+        val ideas = api.topics(
+            settings.provider("text"), prompt, project.topicQuery,
             onUsage = { ProjectCosts(store).add(project.id, CostEntry.text("生成选题", it)) }
         )
-        update(project, "topic", "review", "选题生成成功，请选择题材")
+        project.topicIdeas = ideas
+        project.topicCandidates = ideas.map { it.title }.toMutableList()
+        update(project, "topic", "review", "选题生成成功，请选择并编辑题目")
     }
 
     private fun generateShots(project: VideoProject, promptOverride: String = "") {

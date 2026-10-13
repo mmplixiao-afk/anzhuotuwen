@@ -167,7 +167,10 @@ data class VideoProject(
     var ttsVolume: Float = 1.0f,
     var storyboardScript: String = "",
     var renderRevision: String = "",
-    var coverTitleDelaySeconds: Float = OpeningTiming.DEFAULT_DELAY
+    var coverTitleDelaySeconds: Float = OpeningTiming.DEFAULT_DELAY,
+    var topicQuery: String = "",
+    var topicIdeas: MutableList<TopicIdea> = mutableListOf(),
+    var selectedTopic: TopicIdea? = null
 ) {
     fun json() = JSONObject().apply {
         put("schema_version", 1); put("id", id); put("title", title)
@@ -175,6 +178,9 @@ data class VideoProject(
         put("stage", stage); put("status", status)
         put("detail", detail); put("script", script); put("completed", completed)
         put("topic_candidates", JSONArray(topicCandidates))
+        put("topic_query", topicQuery)
+        put("topic_ideas", JSONArray().apply { topicIdeas.forEach { put(it.json()) } })
+        put("selected_topic", selectedTopic?.json() ?: JSONObject.NULL)
         put("total", total); put("duration", duration)
         put("image_size", imageSize); put("subtitles_enabled", subtitlesEnabled)
         put("motion_mode", motionMode); put("transition_mode", transitionMode)
@@ -231,7 +237,10 @@ data class VideoProject(
             ttsVolume = value.optDouble("tts_volume", 1.0).toFloat().coerceIn(0f, 2f),
             storyboardScript = value.optString("storyboard_script", value.optString("script")),
             renderRevision = value.optString("render_revision"),
-            coverTitleDelaySeconds = OpeningTiming.normalizeDelay(value.optDouble("cover_title_delay_seconds", OpeningTiming.DEFAULT_DELAY.toDouble()).toFloat())
+            coverTitleDelaySeconds = OpeningTiming.normalizeDelay(value.optDouble("cover_title_delay_seconds", OpeningTiming.DEFAULT_DELAY.toDouble()).toFloat()),
+            topicQuery = value.optString("topic_query"),
+            topicIdeas = TopicIdeas.storedIdeas(value),
+            selectedTopic = value.optJSONObject("selected_topic")?.let { TopicIdea.from(it, "selected-topic") }
         )
     }
 }

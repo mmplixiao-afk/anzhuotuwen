@@ -82,6 +82,16 @@ internal object ShotMotionRules {
         }
     }
 
+    fun setCutout(project: VideoProject, shotId: Int, enabled: Boolean) {
+        require(project.status != "running") { "请等待当前任务完成后再设置抠图" }
+        val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
+        if (shot.cutoutEnabled != enabled) {
+            clear(shot)
+            shot.cutoutEnabled = enabled
+        }
+        project.cutoutEnabled = project.shots.any { it.cutoutEnabled }
+    }
+
     fun selectCutouts(project: VideoProject, selectedIds: Set<Int>) {
         require(project.status != "running") { "请等待当前任务完成后再选择抠图" }
         require(selectedIds.all { id -> project.shots.any { it.id == id } }) { "镜头不存在" }

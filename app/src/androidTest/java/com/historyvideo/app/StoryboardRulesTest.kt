@@ -44,6 +44,7 @@ class StoryboardRulesTest : Instrumentation() {
     fun testKeywordAudioRules() = KeywordAudioChecks.run()
     fun testProjectEditingRules() = ProjectEditChecks.run(targetContext)
     fun testShotMotionRules() = ShotMotionChecks.run()
+    fun testTopicIdeaRules() = TopicIdeaChecks.run(targetContext)
     private val theme = "在古代当通房丫鬟到底有多爽？"
     private val hook = "哼，你以为她只会受气？"
     private val rebuttal = listOf(

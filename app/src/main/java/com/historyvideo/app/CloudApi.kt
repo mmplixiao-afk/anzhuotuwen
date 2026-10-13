@@ -167,28 +167,9 @@ class CloudApi {
     }
 
     fun topics(config: ProviderConfig, prompt: String, direction: String,
-               onUsage: (TextUsage) -> Unit = {}): MutableList<String> {
-        val raw = text(config, prompt, direction, onUsage = onUsage).removePrefix("```json").removePrefix("```")
-            .removeSuffix("```").trim()
-        val start = raw.indexOf('{')
-        val end = raw.lastIndexOf('}')
-        require(start >= 0 && end > start) { "选题不是 JSON" }
-        val json = JSONObject(raw.substring(start, end + 1))
-        val array = json.optJSONArray("topics")
-        val ideas = json.optJSONArray("ideas")
-        val topics = mutableListOf<String>()
-        if (array != null) for (i in 0 until array.length()) {
-            val value = array.optString(i).trim()
-            if (value.isNotBlank()) topics += value
-        }
-        if (ideas != null) for (i in 0 until ideas.length()) {
-            val item = ideas.opt(i)
-            val value = if (item is JSONObject) item.optString("title") else item.toString()
-            if (value.isNotBlank()) topics += value.trim()
-        }
-        require(topics.isNotEmpty()) { "选题 JSON 缺少 topics 或 ideas" }
-        require(topics.size in 1..12) { "选题数量无效" }
-        return topics
+               onUsage: (TextUsage) -> Unit = {}): MutableList<TopicIdea> {
+        val raw = text(config, prompt, direction, outputInstruction = TopicIdeas.OUTPUT_INSTRUCTION, onUsage = onUsage)
+        return TopicIdeas.parseResponse(raw)
     }
 
     fun shots(config: ProviderConfig, prompt: String, input: String, expectedScript: String = input,

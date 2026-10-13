@@ -107,9 +107,11 @@ internal object ShotMotionChecks {
         check(runCatching { ShotMotionRules.setShot(detailProject, 999, preset) }.isFailure)
         check(runCatching { ShotMotionRules.setShot(detailProject, 11, ShotMotionSetting("bad-mode")) }.isFailure)
         check(detailProject.json().toString() == beforeBadDetail)
-        detailFirst.cutoutEnabled = true
+        ShotMotionRules.setCutout(detailProject, 11, true)
+        check(detailFirst.cutoutEnabled && detailProject.cutoutEnabled && detailFirst.motionSetting == null)
         check(runCatching { ShotMotionRules.setShot(detailProject, 11, preset) }.isFailure)
-        detailFirst.cutoutEnabled = false
+        ShotMotionRules.setCutout(detailProject, 11, false)
+        check(!detailFirst.cutoutEnabled && !detailProject.cutoutEnabled && detailSecond.json().toString() == secondBefore)
         detailProject.status = "running"
         check(runCatching { ShotMotionRules.setShot(detailProject, 11, preset) }.isFailure)
         check(detailSecond.json().toString() == secondBefore)
