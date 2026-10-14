@@ -24,11 +24,44 @@ internal object TopicIdeaChecks {
             .put("title", "题目？").put("direction", "完整大纲").put("tags", JSONArray(listOf("甲", "乙", "丙")))))
         val noOptional = TopicIdeas.parseResponse(minimal.toString()).single()
         check(noOptional.id == null && noOptional.category.isEmpty() && noOptional.reason.isEmpty())
-        for (missing in listOf("title", "direction", "tags")) {
-            val wrong = JSONObject(response.toString())
-            wrong.getJSONArray("ideas").getJSONObject(0).remove(missing)
-            check(runCatching { TopicIdeas.parseResponse(wrong.toString()) }.isFailure)
+        val titleOnlyResponse = JSONObject().put("ideas", JSONArray().put(JSONObject().put("title", "只有题目？")))
+        val titleOnlyIdea = TopicIdeas.parseResponse(titleOnlyResponse.toString()).single()
+        check(titleOnlyIdea.title == "只有题目？" && titleOnlyIdea.id == null)
+        check(titleOnlyIdea.direction.isEmpty() && titleOnlyIdea.tags.isEmpty())
+        for (optional in listOf("direction", "tags")) {
+            val missingOptional = JSONObject(response.toString())
+            missingOptional.getJSONArray("ideas").getJSONObject(0).remove(optional)
+            val first = TopicIdeas.parseResponse(missingOptional.toString()).first()
+            check(first.title == parsed.first().title)
+            if (optional == "direction") check(first.direction.isEmpty()) else check(first.tags.isEmpty())
         }
+        val missingTitle = JSONObject(response.toString())
+        missingTitle.getJSONArray("ideas").getJSONObject(0).remove("title")
+        check(runCatching { TopicIdeas.parseResponse(missingTitle.toString()) }.isFailure)
+
+        // Legacy prompts return strings; new prompts may return either strings or title objects.
+        val titles = listOf("古代入赘到底有多爽？", "清末闯关东到底有多苦？")
+        val stringArray = JSONArray(titles)
+        val objectArray = JSONArray().apply { titles.forEach { put(JSONObject().put("title", it)) } }
+        for (field in listOf("ideas", "topics", "candidates", "titles")) {
+            check(TopicIdeas.parseResponse(JSONObject().put(field, stringArray).toString()).map { it.title } == titles)
+            check(TopicIdeas.parseResponse(JSONObject().put(field, objectArray).toString()).map { it.title } == titles)
+        }
+        check(TopicIdeas.parseResponse(stringArray.toString()).map { it.title } == titles)
+        check(TopicIdeas.parseResponse("```json\n$objectArray\n```").map { it.title } == titles)
+        check(TopicIdeas.parseResponse("选题结果如下：\n$objectArray").map { it.title } == titles)
+        check(TopicIdeas.parseResponse(JSONArray().put("  手写题目？  ").toString()).single().title == "手写题目？")
+        val withNullId = JSONObject().put("ideas", JSONArray().put(JSONObject()
+            .put("title", "无序号题目？").put("id", JSONObject.NULL)))
+        check(TopicIdeas.parseResponse(withNullId.toString()).single().id == null)
+        val unsupported = runCatching { TopicIdeas.parseResponse("{\"items\":[]}") }.exceptionOrNull()
+        check(unsupported?.message?.contains("实际字段：items") == true)
+        for (invalid in listOf(
+            "[]", "{\"topics\":[]}", "{\"topics\":\"题目\"}",
+            "{\"ideas\":[{\"title\":123}]}", "{\"ideas\":[{\"title\":null}]}",
+            "{\"ideas\":[\" \" ]}", "{\"ideas\":[123]}",
+            "[{\"title\":\"题目\"}"
+        )) check(runCatching { TopicIdeas.parseResponse(invalid) }.isFailure)
         val wrongTags = JSONObject(response.toString())
         wrongTags.getJSONArray("ideas").getJSONObject(0).put("tags", JSONArray(listOf("甲", 3, "丙")))
         check(runCatching { TopicIdeas.parseResponse(wrongTags.toString()) }.isFailure)

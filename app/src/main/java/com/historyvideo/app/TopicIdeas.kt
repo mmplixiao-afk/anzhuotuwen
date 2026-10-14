@@ -2,6 +2,8 @@ package com.historyvideo.app
 
 import org.json.JSONArray
 import org.json.JSONObject
+import org.json.JSONTokener
+import org.json.JSONException
 import java.util.UUID
 
 /** Complete topic metadata is retained from the API through the document-generation input. */
@@ -35,40 +37,70 @@ data class TopicIdea(
 }
 
 internal object TopicIdeas {
-    const val OUTPUT_INSTRUCTION = """【选题返回格式】只返回严格 JSON 对象，包含 ideas 数组；提示词未指定数量时默认 6 条。
-每条字段：id（可选整数）、title（非空字符串，完整主题及口播第一句）、category（可选赛道分类）、direction（非空剧情推进大纲，约120–200字）、tags（3–5个非空短标签字符串）、reason（可选推荐理由）。
-剧情大纲用于后续生成正文，请交代人物身份反差、三个递进事件和结尾收扣。题材、文风和内容要求以用户设置的选题提示词为准，不输出 Markdown。"""
+    const val OUTPUT_INSTRUCTION = """【选题返回格式】本次结果用于题目下拉框，提示词未指定数量时默认 6 条。
+请返回严格 JSON：{"ideas":[{"title":"完整题目1"},{"title":"完整题目2"}]}。
+title 必须是非空字符串，作为主题及口播第一句；题材、文风和内容要求以用户设置的选题提示词为准。
+只需要题目即可。如果设置中的提示词还要求 id、category、direction、tags、reason，可保留这些字段作为隐藏参考，但它们不是必填字段。不要输出 Markdown 或解释文字。"""
 
     fun parseResponse(raw: String): MutableList<TopicIdea> {
-        val start = raw.indexOf('{')
-        val end = raw.lastIndexOf('}')
-        require(start >= 0 && end > start) { "选题返回内容不是 JSON 对象" }
-        val json = JSONObject(raw.substring(start, end + 1))
-        val array = json.optJSONArray("ideas") ?: error("选题 JSON 缺少 ideas 数组")
+        // Locate the root value before parsing: an array of objects starts with '[' rather than '{'.
+        val start = raw.indexOfFirst { it == '{' || it == '[' }
+        require(start >= 0) { "选题返回内容不是 JSON 对象或数组" }
+        val result = try {
+            JSONTokener(raw.substring(start)).nextValue()
+        } catch (error: JSONException) {
+            throw IllegalArgumentException("选题返回 JSON 不完整或格式无效", error)
+        }
+        val array = when (result) {
+            is JSONArray -> result
+            is JSONObject -> {
+                // Saved prompts from older versions may still ask for topics instead of ideas.
+                val field = listOf("ideas", "topics", "candidates", "titles")
+                    .firstOrNull { result.optJSONArray(it) != null }
+                require(field != null) {
+                    val fields = result.keys().asSequence().toList().joinToString("、").take(120).ifBlank { "无" }
+                    "选题返回未找到题目列表，支持 ideas/topics/candidates/titles 数组；实际字段：$fields"
+                }
+                result.getJSONArray(field)
+            }
+            else -> error("选题返回内容不是 JSON 对象或数组")
+        }
         require(array.length() in 1..12) { "选题数量应为 1–12 条，默认 6 条" }
         return (0 until array.length()).map { index ->
-            val item = array.optJSONObject(index) ?: error("第 ${index + 1} 条选题应为对象")
-            fun requiredText(field: String): String {
-                val text = (item.opt(field) as? String)?.trim().orEmpty()
-                require(text.isNotBlank()) { "第 ${index + 1} 条选题缺少 $field" }
-                return text
+            val value = array.opt(index)
+            val item = value as? JSONObject
+            val title = when (value) {
+                is String -> value.trim()
+                is JSONObject -> (value.opt("title") as? String)?.trim().orEmpty()
+                else -> ""
             }
-            val title = requiredText("title")
-            val direction = requiredText("direction")
-            val tagsArray = item.optJSONArray("tags") ?: error("第 ${index + 1} 条选题缺少 tags 数组")
-            val tags = (0 until tagsArray.length()).map { tagIndex ->
-                val tag = (tagsArray.opt(tagIndex) as? String)?.trim().orEmpty()
-                require(tag.isNotBlank()) { "第 ${index + 1} 条选题的标签应为非空字符串" }
-                tag
+            require(title.isNotBlank()) { "第 ${index + 1} 条选题缺少非空字符串 title" }
+            fun optionalText(field: String): String {
+                if (item == null || item.isNull(field)) return ""
+                val text = item.opt(field)
+                require(text is String) { "第 ${index + 1} 条选题的 $field 应为字符串" }
+                return text.trim()
             }
-            require(tags.size in 3..5) { "第 ${index + 1} 条选题应包含 3–5 个标签" }
-            val id = if (item.isNull("id")) null else {
-                val number = item.opt("id") as? Number ?: error("选题 id 应为整数")
-                require(number.toDouble() == number.toInt().toDouble()) { "选题 id 应为整数" }
-                number.toInt()
+            val tags = if (item == null || item.isNull("tags")) emptyList() else {
+                val tagsArray = item.optJSONArray("tags") ?: error("第 ${index + 1} 条选题的 tags 应为数组")
+                require(tagsArray.length() <= 5) { "第 ${index + 1} 条选题最多包含 5 个标签" }
+                (0 until tagsArray.length()).map { tagIndex ->
+                    val tag = (tagsArray.opt(tagIndex) as? String)?.trim().orEmpty()
+                    require(tag.isNotBlank()) { "第 ${index + 1} 条选题的标签应为非空字符串" }
+                    tag
+                }.distinct()
             }
-            TopicIdea(id = id, title = title, category = (item.opt("category") as? String).orEmpty().trim(),
-                direction = direction, tags = tags, reason = (item.opt("reason") as? String).orEmpty().trim())
+            val id = when {
+                item == null -> index + 1
+                item.isNull("id") -> null
+                else -> {
+                    val number = item.opt("id") as? Number ?: error("选题 id 应为整数")
+                    require(number.toDouble() == number.toInt().toDouble()) { "选题 id 应为整数" }
+                    number.toInt()
+                }
+            }
+            TopicIdea(id = id, title = title, category = optionalText("category"),
+                direction = optionalText("direction"), tags = tags, reason = optionalText("reason"))
         }.toMutableList()
     }
 
