@@ -2083,7 +2083,7 @@ private fun InputTile(label: String, value: String, onValueChange: (String) -> U
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(label, style = MaterialTheme.typography.titleMedium, color = HistoryColors.ink)
+            if (label.isNotBlank()) Text(label, style = MaterialTheme.typography.titleMedium, color = HistoryColors.ink)
             BasicTextField(
                     value = value,
                     onValueChange = { incoming ->
@@ -2228,7 +2228,7 @@ private fun ScriptScreen(project: VideoProject,
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("题目", style = MaterialTheme.typography.titleLarge)
-            InputTile("手动输入题目", title, { title = it }, enabled = !busy, minLines = 2)
+            InputTile("", title, { title = it }, enabled = !busy, minLines = 2)
             OutlinedButton(onClick = { saveInputs(saveScript = true) }, enabled = !busy && title.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()) { Text("保存题目") }
             Button(onClick = {
