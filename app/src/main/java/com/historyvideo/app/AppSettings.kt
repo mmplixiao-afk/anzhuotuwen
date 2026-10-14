@@ -107,7 +107,7 @@ class AppSettings(context: Context) {
         }
 
     companion object {
-        val types = listOf("topic", "script", "shots", "image")
+        val types = listOf("script", "shots", "image")
         fun defaultProviderName(name: String) = when (name) {
             "text" -> "OpenAI Compatible"
             "image" -> "OpenAI Images API"

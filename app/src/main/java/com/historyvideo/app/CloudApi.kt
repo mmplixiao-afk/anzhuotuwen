@@ -166,12 +166,6 @@ class CloudApi {
         return content
     }
 
-    fun topics(config: ProviderConfig, prompt: String, direction: String,
-               onUsage: (TextUsage) -> Unit = {}): MutableList<TopicIdea> {
-        val raw = text(config, prompt, direction, outputInstruction = TopicIdeas.OUTPUT_INSTRUCTION, onUsage = onUsage)
-        return TopicIdeas.parseResponse(raw)
-    }
-
     fun shots(config: ProviderConfig, prompt: String, input: String, expectedScript: String = input,
               onRetry: () -> Unit = {}, onUsage: (TextUsage) -> Unit = {}): MutableList<Shot> {
         val taskPrompt = prompt + StoryboardRules.instruction(expectedScript)

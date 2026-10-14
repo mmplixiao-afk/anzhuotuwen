@@ -437,7 +437,6 @@ class MainActivity : ComponentActivity() {
 
         fun runProject(project: VideoProject, action: String, shotId: Int = 0) {
             val promptName = when (action) {
-                GenerationService.TOPICS -> "topic"
                 GenerationService.SCRIPT -> "script"
                 GenerationService.SHOTS -> "shots"
                 GenerationService.IMAGE_ALL, GenerationService.IMAGE -> "image"
@@ -450,11 +449,6 @@ class MainActivity : ComponentActivity() {
                 preferredCurrentId = project.id
                 projects = store.all()
             }.onFailure { error ->
-                if (action == GenerationService.TOPICS && project.status == "queued") {
-                    project.status = "failed"
-                    project.detail = "AI选题启动失败：${error.message ?: error.javaClass.simpleName}"
-                    saveProject(project)
-                }
                 message = error.message.orEmpty()
             }
         }
@@ -643,15 +637,6 @@ class MainActivity : ComponentActivity() {
                         selected,
                         store,
                         onSave = ::saveProject,
-                        onGenerateTopics = { updated ->
-                            if (CurrentProjectRules.running(store.all()) != null) {
-                                message = "请等待当前任务完成后再生成选题"
-                            } else {
-                                CurrentProjectRules.markTopicQueued(updated, System.currentTimeMillis())
-                                saveProject(updated)
-                                runProject(updated, GenerationService.TOPICS, 0)
-                            }
-                        },
                         onRun = ::runProject
                     )
                     "shots" -> if (selected != null) ShotsScreen(
@@ -1008,7 +993,7 @@ private fun stageLabel(stage: String) = when (stage) {
     "render" -> "渲染"
     "script" -> "文案"
     "shots" -> "分镜"
-    "topic" -> "选题"
+    "topic" -> "成文"
     else -> "任务"
 }
 
@@ -1209,7 +1194,6 @@ private fun PromptListScreen(settings: AppSettings, onOpen: (String) -> Unit) {
         style = MaterialTheme.typography.bodySmall)
     AppSettings.types.forEach { type ->
         val label = when (type) {
-            "topic" -> "选题提示词"
             "script" -> "文案提示词"
             "shots" -> "分镜提示词"
             else -> "生图提示词"
@@ -1228,7 +1212,6 @@ private fun PromptListScreen(settings: AppSettings, onOpen: (String) -> Unit) {
 @Composable
 private fun PromptEditorScreen(settings: AppSettings, type: String, onMessage: (String) -> Unit) {
     val label = when (type) {
-        "topic" -> "选题提示词"
         "script" -> "文案提示词"
         "shots" -> "分镜提示词"
         else -> "生图提示词"
@@ -1258,12 +1241,11 @@ private fun PromptEditorScreen(settings: AppSettings, type: String, onMessage: (
 @Composable
 private fun PromptSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit) {
     Text("提示词卷库", style = MaterialTheme.typography.headlineSmall)
-    Text("恢复默认会使用历史工作台中的四组提示词。")
+    Text("恢复默认会使用历史工作台中的三组提示词。")
     AppSettings.types.forEach { type ->
         key(type) {
             var prompt by remember { mutableStateOf(settings.prompt(type)) }
             Text(when (type) {
-                "topic" -> "选题"
                 "script" -> "文案"
                 "shots" -> "分镜"
                 else -> "生图提示词"
@@ -2129,14 +2111,10 @@ private fun ChoiceTile(label: String, value: String, onClick: () -> Unit, enable
 private fun ScriptScreen(project: VideoProject,
                          store: ProjectStore,
                          onSave: (VideoProject) -> Unit,
-                         onGenerateTopics: (VideoProject) -> Unit,
                          onRun: (VideoProject, String, Int) -> Unit) {
     var title by key(project.title) { rememberSaveable { mutableStateOf(project.title) } }
     var script by key(project.script) { rememberSaveable { mutableStateOf(project.script) } }
     var coverText by key(project.coverText) { rememberSaveable { mutableStateOf(project.coverText) } }
-    var topicMenu by remember(project.id) { mutableStateOf(false) }
-    val topicChoices = project.topicIdeas.filter { it.title.isNotBlank() }
-        .distinctBy { it.title.trim() }
     var bgmId by rememberSaveable(project.id, project.bgmId) { mutableStateOf(project.bgmId) }
     var introSfxId by rememberSaveable(project.id, project.introSfxId) { mutableStateOf(project.introSfxId) }
     var bgmVolume by rememberSaveable(project.id, project.bgmVolume) { mutableStateOf((project.bgmVolume * 100).toInt().toString()) }
@@ -2201,10 +2179,11 @@ private fun ScriptScreen(project: VideoProject,
         }
     }
     val busy = CurrentProjectRules.inProgress(project)
-    fun saveInputs(saveScript: Boolean = false, idea: TopicIdea? = null): VideoProject {
+    fun saveInputs(saveScript: Boolean = false): VideoProject {
         // Use a snapshot so saving local edits cannot mutate the project's polled UI state.
         val updated = VideoProject.from(project.json())
-        TopicIdeas.updateWritingTitle(updated, idea?.title ?: title, idea)
+        updated.title = title.trim()
+        updated.selectedTopic = null
         updated.topicQuery = ""
         updated.coverText = normalizeCoverText(coverText)
         updated.bgmId = bgmId; updated.introSfxId = introSfxId
@@ -2229,34 +2208,6 @@ private fun ScriptScreen(project: VideoProject,
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("题目", style = MaterialTheme.typography.titleLarge)
             InputTile("", title, { title = it }, enabled = !busy, minLines = 2)
-            OutlinedButton(onClick = { saveInputs(saveScript = true) }, enabled = !busy && title.isNotBlank(),
-                modifier = Modifier.fillMaxWidth()) { Text("保存题目") }
-            Button(onClick = {
-                val updated = saveInputs(saveScript = true)
-                topicMenu = false
-                stopPreview()
-                onGenerateTopics(updated)
-            }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                Text(if (busy && project.stage == "topic") "正在选题…" else "AI帮我选题")
-            }
-            if (topicChoices.isNotEmpty()) {
-                Box(Modifier.fillMaxWidth()) {
-                    ChoiceTile("AI选题结果", title.takeIf { currentTitle ->
-                        topicChoices.any { it.title.trim() == currentTitle.trim() }
-                    } ?: "选择题目", onClick = { topicMenu = true }, enabled = !busy, dropdown = true)
-                    DropdownMenu(expanded = topicMenu && !busy, onDismissRequest = { topicMenu = false },
-                        modifier = Modifier.fillMaxWidth(0.85f).heightIn(max = 360.dp)) {
-                        topicChoices.forEach { idea ->
-                            DropdownMenuItem(text = { Text(idea.title, maxLines = 3, overflow = TextOverflow.Ellipsis) },
-                                onClick = {
-                                    topicMenu = false
-                                    saveInputs(saveScript = true, idea = idea)
-                                    title = idea.title.trim()
-                                })
-                        }
-                    }
-                }
-            }
         }
     }
     InputTile("封面文案", coverText, { coverText = it }, enabled = !busy, maxLength = 40)

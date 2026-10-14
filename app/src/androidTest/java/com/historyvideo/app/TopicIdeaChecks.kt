@@ -149,9 +149,9 @@ internal object TopicIdeaChecks {
             check(combined.shots.map { it.json().toString() } == shotsBefore)
 
             val blank = VideoProject(UUID.randomUUID().toString(), "")
-            CurrentProjectRules.markTopicQueued(blank, System.currentTimeMillis())
             check(CurrentProjectRules.current(listOf(restored, blank), blank.id) == blank)
-            check(CurrentProjectRules.taskLabel(blank) == "AI选题")
+            check(CurrentProjectRules.taskLabel(blank) == "待成文")
+            // Existing projects from older app versions still resume in the writing page.
             check(CurrentProjectRules.resumeScreen(blank) == "script")
             blank.status = "review"; blank.topicIdeas.add(titleOnly)
             check(CurrentProjectRules.current(listOf(restored, blank), blank.id) == blank)

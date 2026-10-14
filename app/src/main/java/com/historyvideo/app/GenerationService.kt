@@ -44,7 +44,7 @@ class GenerationService : Service() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(NOTIFICATION_CHANNEL, "视频生成", NotificationManager.IMPORTANCE_DEFAULT).apply {
-                description = "显示选题、文案、分镜、配音和视频生成状态"
+                description = "显示文案、分镜、配音和视频生成状态"
             }
         )
     }
@@ -103,7 +103,6 @@ class GenerationService : Service() {
                     store.save(project)
                 }
                 when (action) {
-                    TOPICS -> generateTopics(project, promptOverride)
                     SCRIPT -> generateScript(project, promptOverride)
                     SHOTS -> generateShots(project, promptOverride)
                     FINISH -> {
@@ -142,7 +141,6 @@ class GenerationService : Service() {
         val task = when (stage) {
             "shots" -> "拆分镜头"
             "script" -> "生成文案"
-            "topic" -> "生成选题"
             "tts" -> "生成配音"
             "images" -> "生成图片"
             else -> "当前任务"
@@ -177,7 +175,6 @@ class GenerationService : Service() {
     }
 
     private fun promptLabel(name: String) = when (name) {
-        "topic" -> "选题提示词"
         "script" -> "文案提示词"
         "shots" -> "分镜提示词"
         "image" -> "生图提示词"
@@ -206,18 +203,6 @@ class GenerationService : Service() {
         project.storyboardScript = ""
         project.renderRevision = java.util.UUID.randomUUID().toString()
         update(project, "script", "review", "文案生成成功，请确认或修改")
-    }
-
-    private fun generateTopics(project: VideoProject, promptOverride: String = "") {
-        val prompt = configuredPrompt("topic", promptOverride)
-        update(project, "topic", "running", "正在生成候选题材")
-        val ideas = api.topics(
-            settings.provider("text"), prompt, direction = "",
-            onUsage = { ProjectCosts(store).add(project.id, CostEntry.text("生成选题", it)) }
-        )
-        project.topicIdeas = ideas
-        project.topicCandidates = ideas.map { it.title }.toMutableList()
-        update(project, "topic", "review", "选题生成成功，请在成文中选择题目")
     }
 
     private fun generateShots(project: VideoProject, promptOverride: String = "") {
@@ -439,7 +424,6 @@ class GenerationService : Service() {
         const val EXTRA_PROMPT = "prompt_override"
         const val EXTRA_SHOT_IMAGE_PROMPT = "shot_image_prompt"
         const val SCRIPT = "script"
-        const val TOPICS = "topics"
         const val SHOTS = "shots"
         const val FINISH = "finish"
         const val VOICE_ALL = "voice_all"

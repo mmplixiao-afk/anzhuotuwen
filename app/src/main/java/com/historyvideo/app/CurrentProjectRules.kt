@@ -15,22 +15,10 @@ internal object CurrentProjectRules {
             .maxByOrNull { it.taskStartedAt.coerceAtLeast(it.createdAt) }
     }
 
-    fun markTopicQueued(project: VideoProject, now: Long) {
-        project.stage = "topic"; project.status = "queued"; project.detail = "AI选题"
-        project.taskStartedAt = now
-        project.completed = 0; project.total = 0
-    }
-
     fun taskLabel(project: VideoProject?): String {
         if (project == null) return "空闲"
-        if (project.stage != "topic") return project.detail.ifBlank { "空闲" }
-        return when (project.status) {
-            "queued", "running" -> "AI选题"
-            "review", "done" -> "AI选题完成，请选择题目"
-            "failed" -> project.detail.ifBlank { "AI选题失败，请重试" }
-            "paused" -> "AI选题已暂停，可继续制作"
-            else -> project.detail.ifBlank { "待成文" }
-        }
+        if (project.stage == "topic") return project.detail.ifBlank { "待成文" }
+        return project.detail.ifBlank { "空闲" }
     }
 
     fun resumeScreen(project: VideoProject): String = if (project.stage == "topic") "script" else "project"
