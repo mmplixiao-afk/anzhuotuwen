@@ -212,7 +212,7 @@ class GenerationService : Service() {
         val prompt = configuredPrompt("topic", promptOverride)
         update(project, "topic", "running", "正在生成候选题材")
         val ideas = api.topics(
-            settings.provider("text"), prompt, project.topicQuery,
+            settings.provider("text"), prompt, direction = "",
             onUsage = { ProjectCosts(store).add(project.id, CostEntry.text("生成选题", it)) }
         )
         project.topicIdeas = ideas

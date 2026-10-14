@@ -2134,7 +2134,6 @@ private fun ScriptScreen(project: VideoProject,
     var title by key(project.title) { rememberSaveable { mutableStateOf(project.title) } }
     var script by key(project.script) { rememberSaveable { mutableStateOf(project.script) } }
     var coverText by key(project.coverText) { rememberSaveable { mutableStateOf(project.coverText) } }
-    var topicQuery by key(project.topicQuery) { rememberSaveable { mutableStateOf(project.topicQuery) } }
     var topicMenu by remember(project.id) { mutableStateOf(false) }
     val topicChoices = project.topicIdeas.filter { it.title.isNotBlank() }
         .distinctBy { it.title.trim() }
@@ -2206,7 +2205,7 @@ private fun ScriptScreen(project: VideoProject,
         // Use a snapshot so saving local edits cannot mutate the project's polled UI state.
         val updated = VideoProject.from(project.json())
         TopicIdeas.updateWritingTitle(updated, idea?.title ?: title, idea)
-        updated.topicQuery = topicQuery.trim()
+        updated.topicQuery = ""
         updated.coverText = normalizeCoverText(coverText)
         updated.bgmId = bgmId; updated.introSfxId = introSfxId
         updated.bgmVolume = ((bgmVolume.toFloatOrNull() ?: 18f) / 100f).coerceIn(0f, 1f)
@@ -2232,7 +2231,6 @@ private fun ScriptScreen(project: VideoProject,
             InputTile("手动输入题目", title, { title = it }, enabled = !busy, minLines = 2)
             OutlinedButton(onClick = { saveInputs(saveScript = true) }, enabled = !busy && title.isNotBlank(),
                 modifier = Modifier.fillMaxWidth()) { Text("保存题目") }
-            InputTile("选题方向", topicQuery, { topicQuery = it }, enabled = !busy, minLines = 2)
             Button(onClick = {
                 val updated = saveInputs(saveScript = true)
                 topicMenu = false
