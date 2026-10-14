@@ -90,6 +90,49 @@ internal object TopicIdeaChecks {
             check(runCatching { TopicIdeas.saveAndSelect(restored, edited.copy(direction = "")) }.isFailure)
             check(runCatching { TopicIdeas.saveAndSelect(restored, edited.copy(tags = emptyList())) }.isFailure)
             check(restored.json().toString() == beforeInvalid)
+            // The combined writing page can choose a title without requiring metadata fields.
+            val titleOnly = TopicIdea(title = "只需要题目的候选？")
+            val combined = VideoProject.from(restored.json())
+            combined.stage = "topic"; combined.status = "review"
+            TopicIdeas.updateWritingTitle(combined, titleOnly.title, titleOnly)
+            check(combined.title == titleOnly.title && combined.selectedTopic == titleOnly)
+            check(combined.stage == "script" && CurrentProjectRules.resumeScreen(combined) == "project")
+            check(TopicIdeas.scriptInput(combined) == "主题 / 口播第一句：${titleOnly.title}")
+            check(combined.script == restored.script && combined.storyboardScript == restored.storyboardScript)
+            check(combined.shots.map { it.json().toString() } == shotsBefore && combined.renderRevision == revisionBefore)
+            check(store.image(combined, combined.shots[0]) == image && store.audio(combined, combined.shots[0]) == audio)
+            check(store.output(combined) == oldOutput && ledger.read(project.id) == costsBefore)
+
+            // A selected AI title keeps its metadata; replacing it manually detaches the old outline.
+            TopicIdeas.updateWritingTitle(combined, edited.title, edited)
+            check(TopicIdeas.scriptInput(combined).contains(edited.direction))
+            TopicIdeas.updateWritingTitle(combined, "  我手写的新题目？  ")
+            check(combined.title == "我手写的新题目？" && combined.selectedTopic == null)
+            check(TopicIdeas.scriptInput(combined) == "主题 / 口播第一句：我手写的新题目？")
+            check(combined.topicIdeas.map { it.json().toString() } == restored.topicIdeas.map { it.json().toString() })
+            store.save(combined)
+            check(store.get(combined.id)?.selectedTopic == null)
+            check(store.get(combined.id)?.title == combined.title)
+            check(combined.shots.map { it.json().toString() } == shotsBefore)
+
+            val blank = VideoProject(UUID.randomUUID().toString(), "")
+            CurrentProjectRules.markTopicQueued(blank, System.currentTimeMillis())
+            check(CurrentProjectRules.current(listOf(restored, blank), blank.id) == blank)
+            check(CurrentProjectRules.taskLabel(blank) == "AI选题")
+            check(CurrentProjectRules.resumeScreen(blank) == "script")
+            blank.status = "review"; blank.topicIdeas.add(titleOnly)
+            check(CurrentProjectRules.current(listOf(restored, blank), blank.id) == blank)
+            check(CurrentProjectRules.resumeScreen(blank) == "script")
+            TopicIdeas.updateWritingTitle(blank, "手写题目？")
+            check(blank.title == "手写题目？" && blank.stage == "script")
+            check(blank.topicIdeas.single() == titleOnly)
+
+            for (status in listOf("running", "queued")) {
+                combined.status = status
+                val unchanged = combined.json().toString()
+                check(runCatching { TopicIdeas.updateWritingTitle(combined, "不该保存？") }.isFailure)
+                check(combined.json().toString() == unchanged)
+            }
             restored.status = "running"
             check(runCatching { TopicIdeas.saveAndSelect(restored, edited) }.isFailure)
         } finally {

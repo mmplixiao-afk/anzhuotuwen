@@ -342,7 +342,6 @@ class MainActivity : ComponentActivity() {
         var navigation by rememberSaveable { mutableStateOf(listOf("home")) }
         var selectedId by rememberSaveable { mutableStateOf("") }
         var selectedShotId by rememberSaveable { mutableStateOf(0) }
-        var selectedIdeaKey by rememberSaveable { mutableStateOf("") }
         var selectedCostCategory by rememberSaveable(selectedId) { mutableStateOf("total") }
         var selectedPromptType by rememberSaveable { mutableStateOf("script") }
         var historySearch by rememberSaveable { mutableStateOf(false) }
@@ -353,11 +352,13 @@ class MainActivity : ComponentActivity() {
         var exportingAsset by remember { mutableStateOf(false) }
         var deleteTarget by remember { mutableStateOf<VideoProject?>(null) }
         var now by remember { mutableStateOf(System.currentTimeMillis()) }
-        val screen = navigation.last()
+        val screen = when (val route = navigation.last()) {
+            "topics", "topic_editor" -> "script"
+            else -> route
+        }
         val pageKey = when (screen) {
-            "project", "topics", "script", "shots", "effects", "result", "costs" -> "$screen:$selectedId"
+            "project", "script", "shots", "effects", "result", "costs" -> "$screen:$selectedId"
             "shot" -> "$screen:$selectedId:$selectedShotId"
-            "topic_editor" -> "$screen:$selectedId:$selectedIdeaKey"
             "prompt_editor" -> "$screen:$selectedPromptType"
             else -> screen
         }
@@ -391,6 +392,11 @@ class MainActivity : ComponentActivity() {
         BackHandler(enabled = navigation.size > 1) { goBack() }
         LaunchedEffect(screen) { message = "" }
         LaunchedEffect(Unit) {
+            // Restore old topic routes into the combined writing page after an app update.
+            navigation = navigation.map { if (it == "topics" || it == "topic_editor") "script" else it }
+                .fold(emptyList<String>()) { routes, route ->
+                    if (routes.lastOrNull() == route) routes else routes + route
+                }
             while (true) {
                 projects = store.all()
                 preferredCurrentId = store.currentProjectId()
@@ -443,7 +449,14 @@ class MainActivity : ComponentActivity() {
                 store.markCurrentProject(project.id)
                 preferredCurrentId = project.id
                 projects = store.all()
-            }.onFailure { message = it.message.orEmpty() }
+            }.onFailure { error ->
+                if (action == GenerationService.TOPICS && project.status == "queued") {
+                    project.status = "failed"
+                    project.detail = "AI选题启动失败：${error.message ?: error.javaClass.simpleName}"
+                    saveProject(project)
+                }
+                message = error.message.orEmpty()
+            }
         }
 
         fun exportProject(project: VideoProject, cover: Boolean = false) {
@@ -494,8 +507,6 @@ class MainActivity : ComponentActivity() {
                             Text(when (screen) {
                                 "home" -> "史镜 · 图文创作台（$appVersion）"
                                 "project" -> "制作此卷"
-                                "topics" -> "立题"
-                                "topic_editor" -> "选题详情"
                                 "script" -> "成文"
                                 "shots" -> "生图"
                                 "shot" -> "镜头详情"
@@ -612,7 +623,6 @@ class MainActivity : ComponentActivity() {
                     "project" -> if (selected != null) ProjectOverviewScreen(
                         selected,
                         store = store,
-                        onOpenTopics = { navigate("topics") },
                         onOpenScript = { navigate("script") },
                         onOpenShots = { navigate("shots") },
                         onOpenEffects = { navigate("effects") },
@@ -629,43 +639,19 @@ class MainActivity : ComponentActivity() {
                         exporting = exportingAsset,
                         onSaveVideo = { exportProject(selected) }, onSaveCover = { exportProject(selected, cover = true) },
                         onBack = ::goBack)
-                    "topics" -> if (selected != null) TopicsScreen(selected,
-                        onGenerate = { query ->
-                            val updated = VideoProject.from(selected.json())
-                            updated.topicQuery = query.trim()
-                            CurrentProjectRules.markTopicQueued(updated, System.currentTimeMillis())
-                            saveProject(updated)
-                            runProject(updated, GenerationService.TOPICS, 0)
-                        },
-                        onOpenIdea = { idea -> selectedIdeaKey = idea.key; navigate("topic_editor") })
-                    "topic_editor" -> if (selected != null) {
-                        val manual = if (selectedIdeaKey == "manual-topic-${selected.id}")
-                            listOf(TopicIdea(key = selectedIdeaKey, title = selected.title)) else emptyList()
-                        val ideas = (TopicIdeas.editorIdeas(selected) + manual).distinctBy { it.key }
-                        ideas.firstOrNull { it.key == selectedIdeaKey }?.let { idea ->
-                            TopicEditorScreen(selected, idea, ideas,
-                                onNavigate = { nextKey ->
-                                    if (ideas.any { it.key == nextKey }) {
-                                        focusManager.clearFocus(force = true); keyboard?.hide()
-                                        selectedIdeaKey = nextKey
-                                    }
-                                },
-                                onSaveAndUse = { edited ->
-                                    runCatching {
-                                        val updated = VideoProject.from(selected.json())
-                                        TopicIdeas.saveAndSelect(updated, edited)
-                                        saveProject(updated)
-                                        focusManager.clearFocus(force = true); keyboard?.hide()
-                                        message = ""
-                                        navigation = navigation.dropLast(1) + "script"
-                                    }.onFailure { message = it.message.orEmpty() }.isSuccess
-                                })
-                        }
-                    }
                     "script" -> if (selected != null) ScriptScreen(
                         selected,
                         store,
                         onSave = ::saveProject,
+                        onGenerateTopics = { updated ->
+                            if (CurrentProjectRules.running(store.all()) != null) {
+                                message = "请等待当前任务完成后再生成选题"
+                            } else {
+                                CurrentProjectRules.markTopicQueued(updated, System.currentTimeMillis())
+                                saveProject(updated)
+                                runProject(updated, GenerationService.TOPICS, 0)
+                            }
+                        },
                         onRun = ::runProject
                     )
                     "shots" -> if (selected != null) ShotsScreen(
@@ -1610,12 +1596,11 @@ private fun ProjectProgress(project: VideoProject) {
 
 @Composable
 private fun FlowStepBar(project: VideoProject) {
-    val steps = listOf("立题", "成文", "生图", "章法", "成片")
+    val steps = listOf("成文", "生图", "章法", "成片")
     val current = when {
-        project.status == "done" || project.stage == "render" -> 4
-        project.stage == "effects" -> 3
-        project.stage in setOf("shots", "images", "tts") -> 2
-        project.stage == "script" -> 1
+        project.status == "done" || project.stage == "render" -> 3
+        project.stage == "effects" -> 2
+        project.stage in setOf("shots", "images", "tts") -> 1
         else -> 0
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1878,7 +1863,6 @@ private fun ProjectCostDetailsScreen(project: VideoProject, store: ProjectStore,
 @Composable
 private fun ProjectOverviewScreen(project: VideoProject,
                                   store: ProjectStore,
-                                  onOpenTopics: () -> Unit,
                                   onOpenScript: () -> Unit,
                                   onOpenShots: () -> Unit,
                                   onOpenEffects: () -> Unit,
@@ -1898,7 +1882,7 @@ private fun ProjectOverviewScreen(project: VideoProject,
             Text(project.title.ifBlank { "未命名项目" }, color = Color.White, style = MaterialTheme.typography.titleLarge,
                 maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
-        IconButton(onClick = onOpenTopics, enabled = !busy, modifier = Modifier.align(Alignment.BottomEnd)) {
+        IconButton(onClick = onOpenScript, enabled = !busy, modifier = Modifier.align(Alignment.BottomEnd)) {
             Icon(Icons.Filled.Edit, contentDescription = "编辑题材", tint = Color.White)
         }
     }
@@ -1916,8 +1900,7 @@ private fun ProjectOverviewScreen(project: VideoProject,
         selectedCategory = "", onSelectCategory = onFilterCosts)
     Text("本卷内容", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
     val items = listOf(
-        Triple("立题", if (project.title.isBlank()) "确定题材、选择或编辑选题" else project.title, onOpenTopics),
-        Triple("成文", if (project.script.isBlank()) "正文与封面文案" else "正文已保存", onOpenScript),
+        Triple("成文", if (project.script.isBlank()) "选题、正文与封面文案" else "正文已保存", onOpenScript),
         Triple("生图", "${project.shots.size} 个镜头 · 图片与配音", onOpenShots),
         Triple("画面与章法", "字幕、转场、封面与开头模板", onOpenEffects)
     )
@@ -1925,9 +1908,8 @@ private fun ProjectOverviewScreen(project: VideoProject,
         Row(Modifier.fillMaxWidth().clickable(onClick = action).padding(vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
             val ready = when (index) {
-                0 -> project.title.isNotBlank()
-                1 -> project.script.isNotBlank()
-                2 -> project.shots.isNotEmpty()
+                0 -> project.script.isNotBlank()
+                1 -> project.shots.isNotEmpty()
                 else -> project.shots.isNotEmpty()
             }
             Box(Modifier.size(26.dp).background(if (ready) HistoryColors.green else HistoryColors.subcard, CircleShape),
@@ -2144,150 +2126,18 @@ private fun ChoiceTile(label: String, value: String, onClick: () -> Unit, enable
 }
 
 @Composable
-private fun TopicTags(tags: List<String>) {
-    val colors = listOf(HistoryColors.cinnabarSoft to HistoryColors.cinnabar,
-        HistoryColors.tealSoft to HistoryColors.teal, HistoryColors.subcard to HistoryColors.ochre)
-    tags.chunked(3).forEachIndexed { rowIndex, row ->
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            row.forEachIndexed { index, tag ->
-                val (background, foreground) = colors[(rowIndex * 3 + index) % colors.size]
-                Surface(modifier = Modifier.weight(1f), shape = RoundedCornerShape(6.dp), color = background) {
-                    Text(tag, modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                        color = foreground, style = MaterialTheme.typography.labelSmall,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TopicsScreen(project: VideoProject, onGenerate: (String) -> Unit,
-                         onOpenIdea: (TopicIdea) -> Unit) {
-    val busy = project.status == "running"
-    var query by rememberSaveable(project.id, project.topicQuery) { mutableStateOf(project.topicQuery) }
-    var category by rememberSaveable(project.id) { mutableStateOf("") }
-    var categoryMenu by remember { mutableStateOf(false) }
-    val ideas = TopicIdeas.editorIdeas(project)
-    val categories = ideas.map { it.category }.filter(String::isNotBlank).distinct()
-    val activeCategory = category.takeIf { it in categories }.orEmpty()
-    val visible = if (activeCategory.isBlank()) ideas else ideas.filter { it.category == activeCategory }
-    ProjectProgress(project)
-    InputTile("选题方向", query, { query = it }, enabled = !busy, minLines = 3)
-    Button(onClick = { onGenerate(query) }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-        Text(if (busy && project.stage == "topic") "正在选题…" else "AI帮我选题")
-    }
-    OutlinedButton(onClick = {
-        onOpenIdea(TopicIdea(key = "manual-topic-${project.id}", title = project.title))
-    }, enabled = !busy, modifier = Modifier.fillMaxWidth()) { Text("手动立题") }
-    project.selectedTopic?.let { selected ->
-        Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = HistoryColors.cinnabarSoft),
-            shape = RoundedCornerShape(8.dp)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("当前选题", style = MaterialTheme.typography.labelLarge, color = HistoryColors.cinnabar)
-                Text(selected.title, style = MaterialTheme.typography.titleMedium)
-                Text(selected.direction, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                OutlinedButton(onClick = { onOpenIdea(selected) }, enabled = !busy) { Text("修改当前选题") }
-            }
-        }
-    }
-    if (categories.isNotEmpty()) {
-        Box(Modifier.fillMaxWidth()) {
-            ChoiceTile("选题赛道", activeCategory.ifBlank { "全部" }, onClick = { categoryMenu = true }, dropdown = true)
-            DropdownMenu(expanded = categoryMenu, onDismissRequest = { categoryMenu = false }) {
-                (listOf("" to "全部") + categories.map { it to it }).forEach { (id, label) ->
-                    DropdownMenuItem(text = { Text(label) }, onClick = { category = id; categoryMenu = false })
-                }
-            }
-        }
-    }
-    if (visible.isNotEmpty()) Text("候选选题 · ${visible.size} 条", style = MaterialTheme.typography.titleMedium)
-    if (visible.isEmpty()) Text("生成候选题目，或手动填写选题后开始成文。",
-        color = HistoryColors.muted, modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp))
-    visible.forEach { idea ->
-        key(idea.key) {
-            Card(onClick = { onOpenIdea(idea) }, enabled = !busy, modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = HistoryColors.card), shape = RoundedCornerShape(8.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text("选题 ${ideas.indexOfFirst { it.key == idea.key } + 1}", modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.labelMedium, color = HistoryColors.muted)
-                        if (idea.key == project.selectedTopic?.key) Text("已选", color = HistoryColors.cinnabar,
-                            style = MaterialTheme.typography.labelMedium)
-                    }
-                    Text(idea.title, style = MaterialTheme.typography.titleLarge)
-                    if (idea.category.isNotBlank()) Text(idea.category, color = HistoryColors.teal,
-                        style = MaterialTheme.typography.labelMedium)
-                    if (idea.direction.isNotBlank()) Text(idea.direction, style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 4, overflow = TextOverflow.Ellipsis)
-                    if (idea.tags.isNotEmpty()) TopicTags(idea.tags)
-                    if (idea.reason.isNotBlank()) Text("推荐理由：${idea.reason}", style = MaterialTheme.typography.bodySmall,
-                        color = HistoryColors.muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("查看、修改并选择", color = HistoryColors.cinnabar, style = MaterialTheme.typography.labelLarge)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TopicEditorScreen(project: VideoProject, idea: TopicIdea, ideas: List<TopicIdea>,
-                              onNavigate: (String) -> Unit, onSaveAndUse: (TopicIdea) -> Boolean) {
-    val busy = project.status == "running"
-    val position = ideas.indexOfFirst { it.key == idea.key }
-    var title by key(idea.key, idea.title) { rememberSaveable { mutableStateOf(idea.title) } }
-    var category by key(idea.key, idea.category) { rememberSaveable { mutableStateOf(idea.category) } }
-    var direction by key(idea.key, idea.direction) { rememberSaveable { mutableStateOf(idea.direction) } }
-    var tags by key(idea.key, idea.tags) { rememberSaveable { mutableStateOf(idea.tags.joinToString("，")) } }
-    var reason by key(idea.key, idea.reason) { rememberSaveable { mutableStateOf(idea.reason) } }
-    var idText by key(idea.key, idea.id) { rememberSaveable { mutableStateOf(idea.id?.toString().orEmpty()) } }
-    var saveError by remember(idea.key) { mutableStateOf("") }
-    fun move(step: Int) { if (!busy) ideas.getOrNull(position + step)?.let { onNavigate(it.key) } }
-    Column(Modifier.fillMaxWidth().pointerInput(idea.key, busy, ideas.map { it.key }) {
-        var horizontalDistance = 0f
-        detectHorizontalDragGestures(onDragStart = { horizontalDistance = 0f },
-            onHorizontalDrag = { _, delta -> horizontalDistance += delta },
-            onDragEnd = { if (abs(horizontalDistance) >= 100f) move(if (horizontalDistance < 0f) 1 else -1) })
-    }, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { move(-1) }, enabled = !busy && position > 0) {
-                Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = null, modifier = Modifier.size(18.dp)); Text("上一题")
-            }
-            Text("${position + 1} / ${ideas.size}", modifier = Modifier.weight(1f), textAlign = TextAlign.Center,
-                style = MaterialTheme.typography.titleMedium)
-            OutlinedButton(onClick = { move(1) }, enabled = !busy && position < ideas.lastIndex) {
-                Text("下一题"); Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp))
-            }
-        }
-        Text("左右滑动切换题目，编辑内容会暂存；保存后带入成文。", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-        InputTile("标题 / 口播第一句", title, { title = it }, enabled = !busy, minLines = 2)
-        InputTile("选题赛道", category, { category = it }, enabled = !busy)
-        InputTile("剧情推进大纲", direction, { direction = it }, enabled = !busy, minLines = 6)
-        InputTile("标签（3–5 个，用逗号分隔）", tags, { tags = it }, enabled = !busy, minLines = 2)
-        val parsedTags = TopicIdeas.parseTags(tags)
-        if (parsedTags.isNotEmpty()) TopicTags(parsedTags)
-        InputTile("推荐理由", reason, { reason = it }, enabled = !busy, minLines = 3)
-        InputTile("序号（可选）", idText, { idText = it.filter(Char::isDigit).take(9) }, enabled = !busy)
-        val valid = title.isNotBlank() && direction.isNotBlank() && parsedTags.size in 3..5
-        if (!valid) Text("请填写标题、剧情大纲和 3–5 个标签。", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-        if (saveError.isNotBlank()) Text(saveError, color = HistoryColors.cinnabar, style = MaterialTheme.typography.bodySmall)
-        Button(onClick = {
-            val edited = idea.copy(id = idText.toIntOrNull(), title = title, category = category,
-                direction = direction, tags = parsedTags, reason = reason)
-            saveError = if (onSaveAndUse(edited)) "" else "保存失败，请查看页面提示后重试"
-        }, enabled = !busy && valid, modifier = Modifier.fillMaxWidth().height(52.dp)) { Text("保存并用于成文") }
-    }
-}
-
-@Composable
 private fun ScriptScreen(project: VideoProject,
                          store: ProjectStore,
                          onSave: (VideoProject) -> Unit,
+                         onGenerateTopics: (VideoProject) -> Unit,
                          onRun: (VideoProject, String, Int) -> Unit) {
     var title by key(project.title) { rememberSaveable { mutableStateOf(project.title) } }
     var script by key(project.script) { rememberSaveable { mutableStateOf(project.script) } }
     var coverText by key(project.coverText) { rememberSaveable { mutableStateOf(project.coverText) } }
-    var topicDirection by key(project.selectedTopic?.direction) { rememberSaveable { mutableStateOf(project.selectedTopic?.direction.orEmpty()) } }
+    var topicQuery by key(project.topicQuery) { rememberSaveable { mutableStateOf(project.topicQuery) } }
+    var topicMenu by remember(project.id) { mutableStateOf(false) }
+    val topicChoices = project.topicIdeas.filter { it.title.isNotBlank() }
+        .distinctBy { it.title.trim() }
     var bgmId by rememberSaveable(project.id, project.bgmId) { mutableStateOf(project.bgmId) }
     var introSfxId by rememberSaveable(project.id, project.introSfxId) { mutableStateOf(project.introSfxId) }
     var bgmVolume by rememberSaveable(project.id, project.bgmVolume) { mutableStateOf((project.bgmVolume * 100).toInt().toString()) }
@@ -2351,11 +2201,65 @@ private fun ScriptScreen(project: VideoProject,
             previewError = it.message.orEmpty()
         }
     }
-    val busy = project.status == "running"
+    val busy = CurrentProjectRules.inProgress(project)
+    fun saveInputs(saveScript: Boolean = false, idea: TopicIdea? = null): VideoProject {
+        // Use a snapshot so saving local edits cannot mutate the project's polled UI state.
+        val updated = VideoProject.from(project.json())
+        TopicIdeas.updateWritingTitle(updated, idea?.title ?: title, idea)
+        updated.topicQuery = topicQuery.trim()
+        updated.coverText = normalizeCoverText(coverText)
+        updated.bgmId = bgmId; updated.introSfxId = introSfxId
+        updated.bgmVolume = ((bgmVolume.toFloatOrNull() ?: 18f) / 100f).coerceIn(0f, 1f)
+        updated.introSfxVolume = ((sfxVolume.toFloatOrNull() ?: 100f) / 100f).coerceIn(0f, 2f)
+        if (saveScript && updated.script != script) {
+            updated.script = script
+            updated.stage = "script"
+            updated.status = "review"
+            updated.detail = if (updated.shots.isEmpty()) "正文已保存" else "正文已保存，请重新拆分镜头"
+            updated.renderRevision = java.util.UUID.randomUUID().toString()
+            updated.completed = 0; updated.total = 0
+            updated.duration = 0.0
+            updated.transitionPlans.clear(); updated.transitionPlanSignature = ""
+        }
+        onSave(updated)
+        return updated
+    }
     ProjectProgress(project)
-    InputTile("题材", title, { title = it }, enabled = !busy)
-    if (project.selectedTopic != null) {
-        InputTile("剧情推进大纲", topicDirection, { topicDirection = it }, enabled = !busy, minLines = 4)
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("题目", style = MaterialTheme.typography.titleLarge)
+            InputTile("手动输入题目", title, { title = it }, enabled = !busy, minLines = 2)
+            OutlinedButton(onClick = { saveInputs(saveScript = true) }, enabled = !busy && title.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()) { Text("保存题目") }
+            InputTile("选题方向", topicQuery, { topicQuery = it }, enabled = !busy, minLines = 2)
+            Button(onClick = {
+                val updated = saveInputs(saveScript = true)
+                topicMenu = false
+                stopPreview()
+                onGenerateTopics(updated)
+            }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                Text(if (busy && project.stage == "topic") "正在选题…" else "AI帮我选题")
+            }
+            if (topicChoices.isNotEmpty()) {
+                Box(Modifier.fillMaxWidth()) {
+                    ChoiceTile("AI选题结果", title.takeIf { currentTitle ->
+                        topicChoices.any { it.title.trim() == currentTitle.trim() }
+                    } ?: "选择题目", onClick = { topicMenu = true }, enabled = !busy, dropdown = true)
+                    DropdownMenu(expanded = topicMenu && !busy, onDismissRequest = { topicMenu = false },
+                        modifier = Modifier.fillMaxWidth(0.85f).heightIn(max = 360.dp)) {
+                        topicChoices.forEach { idea ->
+                            DropdownMenuItem(text = { Text(idea.title, maxLines = 3, overflow = TextOverflow.Ellipsis) },
+                                onClick = {
+                                    topicMenu = false
+                                    saveInputs(saveScript = true, idea = idea)
+                                    title = idea.title.trim()
+                                })
+                        }
+                    }
+                }
+            }
+        }
     }
     InputTile("封面文案", coverText, { coverText = it }, enabled = !busy, maxLength = 40)
     Text("声音与配乐", style = MaterialTheme.typography.titleLarge)
@@ -2392,27 +2296,10 @@ private fun ScriptScreen(project: VideoProject,
         InputTile("BGM 音量 %", bgmVolume, { bgmVolume = it.filter(Char::isDigit).take(3) }, enabled = !busy, modifier = Modifier.weight(1f))
         InputTile("音效音量 %", sfxVolume, { sfxVolume = it.filter(Char::isDigit).take(3) }, enabled = !busy, modifier = Modifier.weight(1f))
     }
-    fun saveInputs(saveScript: Boolean = false) {
-        TopicIdeas.updateWritingIdea(project, title, topicDirection)
-        project.coverText = normalizeCoverText(coverText)
-        project.bgmId = bgmId; project.introSfxId = introSfxId
-        project.bgmVolume = ((bgmVolume.toFloatOrNull() ?: 18f) / 100f).coerceIn(0f, 1f)
-        project.introSfxVolume = ((sfxVolume.toFloatOrNull() ?: 100f) / 100f).coerceIn(0f, 2f)
-        if (saveScript && project.script != script) {
-            project.script = script
-            project.stage = "script"
-            project.status = "review"
-            project.detail = if (project.shots.isEmpty()) "正文已保存" else "正文已保存，请重新拆分镜头"
-            project.renderRevision = java.util.UUID.randomUUID().toString()
-            project.completed = 0; project.total = 0
-            project.duration = 0.0
-            project.transitionPlans.clear(); project.transitionPlanSignature = ""
-        }
-        onSave(project)
-    }
     Button(onClick = {
-        saveInputs()
-        onRun(project, GenerationService.SCRIPT, 0)
+        val updated = saveInputs(saveScript = true)
+        stopPreview()
+        onRun(updated, GenerationService.SCRIPT, 0)
     }, enabled = !busy && title.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
         Text(if (script.isBlank()) "生成正文" else "重新生成正文")
     }
@@ -2423,9 +2310,9 @@ private fun ScriptScreen(project: VideoProject,
             enabled = !busy && script.isNotBlank()) { Text("保存文案") }
         Button(onClick = {
             if (project.shots.isNotEmpty()) confirmSplit = true else {
-                saveInputs(saveScript = true)
+                val updated = saveInputs(saveScript = true)
                 stopPreview()
-                onRun(project, GenerationService.SHOTS, 0)
+                onRun(updated, GenerationService.SHOTS, 0)
             }
         }, enabled = !busy && script.isNotBlank()) { Text("拆分镜头") }
     }
@@ -2437,9 +2324,9 @@ private fun ScriptScreen(project: VideoProject,
             confirmButton = {
                 TextButton(onClick = {
                     confirmSplit = false
-                    saveInputs(saveScript = true)
+                    val updated = saveInputs(saveScript = true)
                     stopPreview()
-                    onRun(project, GenerationService.SHOTS, 0)
+                    onRun(updated, GenerationService.SHOTS, 0)
                 }, enabled = !busy) { Text("重新拆镜") }
             },
             dismissButton = { TextButton(onClick = { confirmSplit = false }) { Text("取消") } }

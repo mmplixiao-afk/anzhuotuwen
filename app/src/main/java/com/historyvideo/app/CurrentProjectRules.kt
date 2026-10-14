@@ -29,9 +29,9 @@ internal object CurrentProjectRules {
             "review", "done" -> "AI选题完成，请选择题目"
             "failed" -> project.detail.ifBlank { "AI选题失败，请重试" }
             "paused" -> "AI选题已暂停，可继续制作"
-            else -> project.detail.ifBlank { "待立题" }
+            else -> project.detail.ifBlank { "待成文" }
         }
     }
 
-    fun resumeScreen(project: VideoProject): String = if (project.stage == "topic") "topics" else "project"
+    fun resumeScreen(project: VideoProject): String = if (project.stage == "topic") "script" else "project"
 }

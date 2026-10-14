@@ -122,6 +122,21 @@ internal object TopicIdeas {
         project.topicCandidates = project.topicIdeas.map { it.title }.toMutableList()
     }
 
+    /** Selecting a title needs no outline or tags; manual replacements must detach stale metadata. */
+    fun updateWritingTitle(project: VideoProject, title: String, idea: TopicIdea? = null) {
+        require(!CurrentProjectRules.inProgress(project)) { "请等待当前任务完成后再修改题目" }
+        val trimmed = title.trim()
+        if (idea != null) require(trimmed.isNotBlank() && idea.title.trim() == trimmed) { "选题标题无效" }
+        project.title = trimmed
+        project.selectedTopic = idea?.copy(title = trimmed)
+            ?: project.selectedTopic?.takeIf { it.title.trim() == trimmed }
+        if (trimmed.isNotBlank() && project.stage == "topic") {
+            project.stage = "script"; project.status = "review"
+            project.detail = "题目已保存，可生成或编辑正文"
+            project.completed = 0; project.total = 0; project.taskStartedAt = 0L
+        }
+    }
+
     fun scriptInput(project: VideoProject): String = buildString {
         append("主题 / 口播第一句：").append(project.title.trim())
         project.selectedTopic?.let { idea ->

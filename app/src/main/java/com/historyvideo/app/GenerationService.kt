@@ -217,7 +217,7 @@ class GenerationService : Service() {
         )
         project.topicIdeas = ideas
         project.topicCandidates = ideas.map { it.title }.toMutableList()
-        update(project, "topic", "review", "选题生成成功，请选择并编辑题目")
+        update(project, "topic", "review", "选题生成成功，请在成文中选择题目")
     }
 
     private fun generateShots(project: VideoProject, promptOverride: String = "") {
