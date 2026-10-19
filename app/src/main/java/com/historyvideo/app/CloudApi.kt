@@ -197,20 +197,50 @@ class CloudApi {
     private fun parseShots(content: String, expectedScript: String): MutableList<Shot> {
         val raw = content.removePrefix("```json").removePrefix("```")
             .removeSuffix("```").trim()
-        val start = raw.indexOf('{')
-        val end = raw.lastIndexOf('}')
-        require(start >= 0 && end > start) { "分镜不是 JSON" }
-        val array = JSONObject(raw.substring(start, end + 1)).getJSONArray("shots")
+        val objectStart = raw.indexOf('{')
+        val arrayStart = raw.indexOf('[')
+        val start = listOf(objectStart, arrayStart).filter { it >= 0 }.minOrNull()
+        require(start != null) { "分镜不是 JSON 对象或数组" }
+        val parsed = try {
+            org.json.JSONTokener(raw.substring(start)).nextValue()
+        } catch (error: JSONException) {
+            throw IllegalArgumentException("分镜 JSON 格式错误：${error.message ?: "无法解析"}", error)
+        }
+        val array = when (parsed) {
+            is JSONArray -> parsed
+            is JSONObject -> parsed.optJSONArray("shots")
+                ?: parsed.optJSONObject("data")?.optJSONArray("shots")
+                ?: parsed.optJSONObject("result")?.optJSONArray("shots")
+                ?: error("分镜 JSON 缺少 shots 数组")
+            else -> error("分镜 JSON 根节点应为对象或数组")
+        }
         require(array.length() in 1..100) { "分镜数量无效" }
         val allowed = setOf("character_closeup", "character_medium", "environment", "prop_closeup",
             "building", "crowd", "food", "money", "document", "landscape")
         val shots = mutableListOf<Shot>()
         for (index in 0 until array.length()) {
-            val obj = array.getJSONObject(index)
+            val obj = array.optJSONObject(index) ?: error("第 ${index + 1} 镜应为 JSON 对象")
+            val voiceover = listOf("voiceover", "text")
+                .firstNotNullOfOrNull { key -> (obj.opt(key) as? String)?.takeIf { it.isNotBlank() } }
+                ?: error("第 ${index + 1} 镜缺少 voiceover/text 字段")
+            val visual = listOf("visual", "visual_description")
+                .firstNotNullOfOrNull { key -> (obj.opt(key) as? String)?.takeIf { it.isNotBlank() } }
+                ?: error("第 ${index + 1} 镜缺少 visual 字段")
+            val imagePrompt = listOf("image_prompt", "imagePrompt", "prompt")
+                .firstNotNullOfOrNull { key -> (obj.opt(key) as? String)?.takeIf { it.isNotBlank() } }
+                ?: error("第 ${index + 1} 镜缺少 image_prompt 字段")
+            val idValue = obj.opt("id").takeUnless { it == null || it == JSONObject.NULL }
+                ?: obj.opt("shot_id").takeUnless { it == null || it == JSONObject.NULL }
+            val id = when (idValue) {
+                is Number -> idValue.toInt().takeIf { idValue.toDouble() == it.toDouble() }
+                is String -> idValue.toIntOrNull()
+                else -> null
+            } ?: error("第 ${index + 1} 镜缺少有效的 id/shot_id 字段")
             val shot = Shot.from(obj).copy(
-                text = obj.getString("voiceover"),
-                visual = obj.getString("visual"),
-                imagePrompt = obj.getString("image_prompt"),
+                id = id,
+                text = voiceover,
+                visual = visual,
+                imagePrompt = imagePrompt,
                 imageStatus = "pending", audioStatus = "pending", error = "",
                 cutoutEnabled = false, motionPlan = null, cutoutMirrorX = null,
                 cutoutBackgroundPlan = null, cutoutForegroundPlan = null,

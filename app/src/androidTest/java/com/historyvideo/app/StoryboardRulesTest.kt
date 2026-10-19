@@ -152,6 +152,31 @@ class StoryboardRulesTest : Instrumentation() {
         assertEquals(1, validCalls)
     }
 
+    fun testLegacyShotFieldNamesAreAccepted() {
+        val parts = listOf(theme, hook) + rebuttal
+        val legacy = JSONObject().put("shots", JSONArray().apply {
+            parts.forEachIndexed { index, text ->
+                put(JSONObject().put("shot_id", index + 1).put("text", text)
+                    .put("visual", "画面$index").put("image_prompt", "提示词$index"))
+            }
+        }).toString()
+        val result = CloudApi().checkedShots(parts.joinToString("")) { legacy }
+        assertEquals(parts, result.map { it.text })
+        assertEquals(parts.indices.map { it + 1 }, result.map { it.id })
+    }
+
+    fun testMalformedStoryboardReportsTheMissingField() {
+        val parts = listOf(theme, hook) + rebuttal
+        val invalid = JSONObject().put("shots", JSONArray().put(JSONObject()
+            .put("id", 1).put("voiceover", theme).put("visual", "主题画面"))).toString()
+        try {
+            CloudApi().checkedShots(parts.joinToString("")) { invalid }
+            fail("Expected missing image_prompt to be rejected")
+        } catch (error: IllegalStateException) {
+            assertTrue(error.message.orEmpty().contains("缺少 image_prompt 字段"))
+        }
+    }
+
     fun testTwoBadResponsesAreRejectedAndNetworkAbortDoesNotRetry() {
         val parts = listOf(theme, hook) + rebuttal
         var calls = 0
