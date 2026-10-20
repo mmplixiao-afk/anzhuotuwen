@@ -163,6 +163,13 @@ private object HistoryColors {
     val ochre = Color(0xFF9D6729)
 }
 
+private data class ProjectContentItem(
+    val title: String,
+    val detail: String,
+    val action: () -> Unit,
+    val ready: Boolean
+)
+
 private val HistoryTypography = Typography().let { base ->
     base.copy(
         headlineLarge = base.headlineLarge.copy(fontSize = 28.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.sp),
@@ -2161,25 +2168,25 @@ private fun ProjectOverviewScreen(project: VideoProject,
         selectedCategory = "", onSelectCategory = onFilterCosts)
     Text("本卷内容", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 4.dp))
     val items = listOf(
-        Triple("成文", if (project.script.isBlank()) "题目、文案和封面文案" else "正文已保存 · ${project.script.length} 字", onOpenScript,
+        ProjectContentItem("成文", if (project.script.isBlank()) "题目、文案和封面文案" else "正文已保存 · ${project.script.length} 字", onOpenScript,
             project.script.isNotBlank()),
-        Triple("生图", "${project.shots.size} 个镜头 · 图片与配音", onOpenShots, project.shots.isNotEmpty()),
-        Triple("画面与章法", "字幕、转场、封面与开头节奏", onOpenEffects, project.shots.isNotEmpty())
+        ProjectContentItem("生图", "${project.shots.size} 个镜头 · 图片与配音", onOpenShots, project.shots.isNotEmpty()),
+        ProjectContentItem("画面与章法", "字幕、转场、封面与开头节奏", onOpenEffects, project.shots.isNotEmpty())
     )
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), border = BorderStroke(1.dp, HistoryColors.line),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column {
-            items.forEachIndexed { index, (title, detail, action, ready) ->
-                Row(Modifier.fillMaxWidth().clickable(onClick = action).padding(horizontal = 16.dp, vertical = 14.dp),
+            items.forEachIndexed { index, item ->
+                Row(Modifier.fillMaxWidth().clickable(onClick = item.action).padding(horizontal = 16.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(36.dp).background(if (ready) HistoryColors.tealSoft else HistoryColors.subcard, CircleShape),
+                    Box(Modifier.size(36.dp).background(if (item.ready) HistoryColors.tealSoft else HistoryColors.subcard, CircleShape),
                         contentAlignment = Alignment.Center) {
-                        if (ready) Icon(Icons.Filled.Check, contentDescription = null, tint = HistoryColors.green, modifier = Modifier.size(20.dp))
+                        if (item.ready) Icon(Icons.Filled.Check, contentDescription = null, tint = HistoryColors.green, modifier = Modifier.size(20.dp))
                         else Text("${index + 1}", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text(title, style = MaterialTheme.typography.titleMedium)
-                        Text(detail, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                        Text(item.title, style = MaterialTheme.typography.titleMedium)
+                        Text(item.detail, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
                     }
                     Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, tint = HistoryColors.line)
                 }
@@ -2697,6 +2704,7 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
                         onPlayVoice: (VideoProject) -> Unit,
                         onOpenShot: (Int) -> Unit,
                         onExport: (VideoProject) -> Unit) {
+    val audioLibrary = remember(store) { AudioLibrary(store.context()) }
     val busy = project.status == "running"
     var missingImagesOnly by rememberSaveable(project.id) { mutableStateOf(false) }
     val missingImageIds = project.shots.filter { shot ->
