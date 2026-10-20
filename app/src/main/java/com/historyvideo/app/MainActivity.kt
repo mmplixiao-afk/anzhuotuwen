@@ -1137,6 +1137,11 @@ private fun elapsedLabel(startedAt: Long, now: Long): String {
     else "%d:%02d".format(minutes, remain)
 }
 
+private fun limitCodePoints(value: String, limit: Int): String {
+    val count = value.codePointCount(0, value.length)
+    return if (count <= limit) value else value.substring(0, value.offsetByCodePoints(0, limit))
+}
+
 private fun stageLabel(stage: String) = when (stage) {
     "images" -> "生图"
     "tts" -> "配音"
@@ -2300,7 +2305,7 @@ private fun ScriptScreen(project: VideoProject,
                          onRun: (VideoProject, String, Int) -> Unit) {
     var title by key(project.title) { rememberSaveable { mutableStateOf(project.title) } }
     var script by key(project.script) { rememberSaveable { mutableStateOf(project.script) } }
-    var coverText by key(project.coverText) { rememberSaveable { mutableStateOf(project.coverText) } }
+    var coverText by key(project.coverText) { rememberSaveable { mutableStateOf(limitCodePoints(project.coverText, 5)) } }
     val audioLibrary = remember(store) { AudioLibrary(store.context()) }
     var bgmId by rememberSaveable(project.id, project.bgmId) { mutableStateOf(project.bgmId) }
     var bgmStartShotId by rememberSaveable(project.id, project.bgmStartShotId) { mutableStateOf(project.bgmStartShotId) }
@@ -2372,7 +2377,7 @@ private fun ScriptScreen(project: VideoProject,
         updated.title = title.trim()
         updated.selectedTopic = null
         updated.topicQuery = ""
-        updated.coverText = normalizeCoverText(coverText)
+        updated.coverText = limitCodePoints(normalizeCoverText(coverText), 5)
         updated.bgmId = bgmId
         updated.bgmStartShotId = project.shots.firstOrNull { it.id == bgmStartShotId }?.id
             ?: project.shots.firstOrNull()?.id ?: bgmStartShotId
@@ -2392,28 +2397,31 @@ private fun ScriptScreen(project: VideoProject,
         return updated
     }
     ProjectProgress(project)
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("题目", style = MaterialTheme.typography.titleLarge)
-            InputTile("", title, { title = it }, enabled = !busy, minLines = 2)
-        }
-    }
-    InputTile("封面文案", coverText, { coverText = it }, enabled = !busy, maxLength = 40)
+    Text("题目", style = MaterialTheme.typography.titleLarge)
+    InputTile("", title, { title = it }, enabled = !busy, minLines = 1)
+    InputTile("封面文案", coverText, { coverText = it }, enabled = !busy, minLines = 1,
+        maxLength = 5, modifier = Modifier.fillMaxWidth(0.55f))
     Text("背景音乐", style = MaterialTheme.typography.titleLarge)
-    Box(Modifier.fillMaxWidth()) {
-        ChoiceTile("BGM", bgmChoices.firstOrNull { it.first == bgmId }?.second ?: "无",
-            onClick = { bgmMenu = true }, enabled = !busy, dropdown = true)
-        DropdownMenu(expanded = bgmMenu, onDismissRequest = { bgmMenu = false }) {
-            (listOf("none" to "无") + bgmChoices).forEach { (id, label) ->
-                DropdownMenuItem(text = { Text(label) }, onClick = {
-                    bgmMenu = false
-                    bgmId = id
-                    saveInputs()
-                    preview(id)
-                })
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1.15f)) {
+            ChoiceTile("BGM", bgmChoices.firstOrNull { it.first == bgmId }?.second ?: "无",
+                onClick = { bgmMenu = true }, enabled = !busy, dropdown = true)
+            DropdownMenu(expanded = bgmMenu, onDismissRequest = { bgmMenu = false }) {
+                (listOf("none" to "无") + bgmChoices).forEach { (id, label) ->
+                    DropdownMenuItem(text = { Text(label) }, onClick = {
+                        bgmMenu = false
+                        bgmId = id
+                        saveInputs()
+                        preview(id)
+                    })
+                }
             }
         }
+        InputTile("音量 %", bgmVolume, { value ->
+            bgmVolume = value.filter(Char::isDigit).take(3)
+            saveInputs()
+        }, enabled = !busy, minLines = 1, modifier = Modifier.weight(0.85f))
     }
     if (project.shots.isNotEmpty()) {
         val startShot = project.shots.firstOrNull { it.id == bgmStartShotId } ?: project.shots.first()
@@ -2437,10 +2445,6 @@ private fun ScriptScreen(project: VideoProject,
     } else Text("拆分镜头后可选择 BGM 起播分镜", style = MaterialTheme.typography.bodySmall,
         color = HistoryColors.muted)
     if (previewError.isNotBlank()) Text(previewError, color = MaterialTheme.colorScheme.error)
-    InputTile("BGM 音量 %", bgmVolume, { value ->
-        bgmVolume = value.filter(Char::isDigit).take(3)
-        saveInputs()
-    }, enabled = !busy)
     Box(Modifier.fillMaxWidth()) {
         val granularityLabels = mapOf("coarse" to "粗", "balanced" to "平衡", "fine" to "细")
         ChoiceTile("分镜粒度", granularityLabels[granularity] ?: "平衡",
