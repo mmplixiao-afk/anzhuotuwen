@@ -1,28 +1,41 @@
 package com.historyvideo.app
 
+import android.content.Context
+import org.json.JSONArray
+import org.json.JSONObject
+
 internal object KeywordAudioChecks {
-    fun run() {
-        val shots = listOf(
-            "古代生活到底有多苦？",
-            "他娘的，你以为日子很轻松？",
-            "放屁！她每天劳作，后来又放屁也不能休息。"
-        )
-        val triggers = KeywordAudioRules.triggers(shots)
-        check(triggers.map { it.keyword } == listOf("他娘的", "放屁"))
-        check(triggers[0].shotIndex == 1 && triggers[0].charIndex == 0)
-        check(triggers[1].shotIndex == 2 && triggers[1].charIndex == 0)
+    fun run(context: Context) {
+        val original = Shot(4, "本镜口播。", "本镜画面提示词", soundEffects = mutableListOf(
+            ShotSoundEffect("user:impact", 0.75f), ShotSoundEffect("gong", 1.25f)
+        ), punch = "重点", videoPrompt = "轻微推近")
+        val restored = Shot.from(JSONObject(original.json().toString()))
+        check(restored.soundEffects == original.soundEffects)
+        check(restored.punch == "重点" && restored.videoPrompt == "轻微推近")
 
-        val thirdSentence = KeywordAudioRules.triggers(listOf("主题问题？普通正文结束。哼，第三句。"))
-        check(thirdSentence.none { it.keyword == "哼" })
-        val splitTheme = KeywordAudioRules.triggers(listOf("古代生活到底", "有多苦？哼你觉得呢？"))
-        check(splitTheme.single { it.keyword == "哼" }.let { it.shotIndex == 1 && it.charIndex == 4 })
+        val legacyProject = VideoProject("00000000-0000-0000-0000-000000000001", "旧音频迁移")
+        legacyProject.introSfxId = "gong"
+        legacyProject.introSfxVolume = 0.65f
+        legacyProject.shots = mutableListOf(Shot(1, "旧开头。", "旧画面"))
+        val migrated = VideoProject.from(JSONObject(legacyProject.json().toString()))
+        check(migrated.introSfxId == "none")
+        check(migrated.shots.first().soundEffects == listOf(ShotSoundEffect("gong", 0.65f)))
 
-        val events = listOf(
-            KeywordAudioRules.Event("放屁", offset = 2.467, duration = 0.862),
-            KeywordAudioRules.Event("他娘的", offset = 0.967, duration = 4.336)
-        )
-        check(KeywordAudioRules.bgmStart(events) == 2.467)
-        check(KeywordAudioRules.bgmStart(emptyList()) == 0.0)
-        check(KeywordAudioRules.semanticCount("文案A12，🙂") == 5)
+        val project = ProjectStore(context).create("音轨持久化检查")
+        try {
+            project.bgmId = "user:bgm"
+            project.bgmStartShotId = 4
+            project.storyboardGranularity = "fine"
+            project.shots = mutableListOf(original)
+            val loaded = VideoProject.from(JSONObject(project.json().toString()))
+            check(loaded.bgmId == "user:bgm" && loaded.bgmStartShotId == 4)
+            check(loaded.storyboardGranularity == "fine")
+
+            val next = Shot(4, "本镜口播。", "更新后的画面提示词")
+            ProjectStore(context).applyStoryboard(project, listOf(next))
+            check(project.shots.single().soundEffects == original.soundEffects)
+        } finally {
+            ProjectStore(context).delete(project.id)
+        }
     }
 }

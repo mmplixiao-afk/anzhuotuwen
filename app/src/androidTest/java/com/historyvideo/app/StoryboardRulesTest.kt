@@ -41,7 +41,7 @@ class StoryboardRulesTest : Instrumentation() {
     fun testCompletedCoverRules() = CompletedCoverChecks.run(targetContext)
     fun testProjectCostRules() = ProjectCostChecks.run(targetContext)
     fun testVideoTimelineRules() = VideoTimelineChecks.run()
-    fun testKeywordAudioRules() = KeywordAudioChecks.run()
+    fun testAudioAssetAndShotSettings() = KeywordAudioChecks.run(targetContext)
     fun testProjectEditingRules() = ProjectEditChecks.run(targetContext)
     fun testShotMotionRules() = ShotMotionChecks.run()
     fun testTopicIdeaRules() = TopicIdeaChecks.run(targetContext)
@@ -89,6 +89,50 @@ class StoryboardRulesTest : Instrumentation() {
         StoryboardRules.validate(source, result)
         assertEquals(before, result.map { it.json().toString() })
         assertEquals(source, result.joinToString("") { it.text })
+    }
+
+    fun testSourceUnitsPreserveExactCopyAndFixedOpeningAcrossGranularities() {
+        val source = "古代做县令到底有多难？哼，你以为只要升堂断案就行？放屁，先得应付师爷，再得安抚百姓。第一件事，你打开粮仓。第二件事，发现账册被改。"
+        for (granularity in listOf("coarse", "balanced", "fine")) {
+            val units = StoryboardRules.sourceUnits(source, granularity)
+            assertEquals(source, units.joinToString("") { it.text })
+            val fixed = units.filter { it.fixedShot }.map { it.text }
+            assertEquals(StoryboardRules.opening(source), fixed)
+            val grouped = units.map { listOf(it.id) }
+            assertEquals(units.map { it.text }, StoryboardRules.reconstruct(units, grouped))
+        }
+        val units = StoryboardRules.sourceUnits(source)
+        expectInvalid { StoryboardRules.reconstruct(units, listOf(listOf(1, 2)) + units.drop(2).map { listOf(it.id) }) }
+        expectInvalid { StoryboardRules.reconstruct(units, units.drop(1).map { listOf(it.id) }) }
+        expectInvalid { StoryboardRules.reconstruct(units, units.map { listOf(it.id) } + listOf(listOf(999))) }
+    }
+
+    fun testLegacyVoiceoverBoundariesRestorePunctuationFromSource() {
+        val source = "主题句。第一段口播，第二段口播！"
+        val restored = StoryboardRules.reconstructVoiceoverSegments(source,
+            listOf("主题句", "第一段口播", "第二段口播"))
+        assertEquals(listOf("主题句。", "第一段口播，", "第二段口播！"), restored)
+        assertEquals(source, restored.joinToString(""))
+        expectInvalid {
+            StoryboardRules.reconstructVoiceoverSegments(source,
+                listOf("主题句", "第一段旁白", "第二段口播"))
+        }
+    }
+
+    fun testLegacyModelVoiceoverResponseIsRebuiltFromOriginalCopy() {
+        val source = "主题句。第一段口播，第二段口播！"
+        val legacy = JSONObject().put("title", "主题句。")
+            .put("style_preset", "统一画风")
+            .put("shots", JSONArray().apply {
+                listOf("主题句", "第一段口播", "第二段口播").forEachIndexed { index, text ->
+                    put(JSONObject().put("id", index + 1).put("voiceover", text)
+                        .put("visual", "画面$index").put("image_prompt", "提示词$index"))
+                }
+            }).toString()
+        val units = StoryboardRules.sourceUnits(source)
+        val result = CloudApi().checkedStoryboard(source, units, enforceOriginalCopy = true) { legacy }
+        assertEquals(source, result.shots.joinToString("") { it.text })
+        assertEquals(listOf("主题句。", "第一段口播，", "第二段口播！"), result.shots.map { it.text })
     }
 
     fun testShortRebuttalRemainsOneShotWithItsFirstBeat() {
@@ -163,6 +207,34 @@ class StoryboardRulesTest : Instrumentation() {
         val result = CloudApi().checkedShots(parts.joinToString("")) { legacy }
         assertEquals(parts, result.map { it.text })
         assertEquals(parts.indices.map { it + 1 }, result.map { it.id })
+    }
+
+    fun testSourceUnitResponsesRebuildVoiceoverFromOriginalText() {
+        val source = "主题句。哼，完整钩子？放屁，这才是反驳。正文有前后两句。"
+        val units = StoryboardRules.sourceUnits(source)
+        val response = JSONObject().put("title", "主题句。")
+            .put("style_preset", "中国古代真人影视剧照质感")
+            .put("shots", JSONArray().apply {
+            units.forEachIndexed { index, unit ->
+                put(JSONObject().put("id", index + 1).put("source_unit_ids", JSONArray().put(unit.id))
+                    .put("subtitle_unit_groups", JSONArray().put(JSONArray().put(unit.id)))
+                    .put("visual", "独立画面$index").put("punch", "重点$index")
+                    .put("image_prompt", "独立生图提示词$index").put("video_prompt", "轻微推近"))
+            }
+        }).toString()
+        val result = CloudApi().checkedStoryboard(source, units, enforceOriginalCopy = true) { response }
+        assertEquals(source, result.shots.joinToString("") { it.text })
+        assertEquals(units.map { it.text }, result.shots.map { it.text })
+        assertEquals(units.map { listOf(it.text) }, result.shots.map { it.subtitleChunks })
+        assertEquals(units.indices.map { "重点$it" }, result.shots.map { it.punch })
+        assertEquals("中国古代真人影视剧照质感", result.stylePreset)
+        check(runCatching {
+            CloudApi().checkedStoryboard(source, units, enforceOriginalCopy = true) {
+                JSONObject().put("shots", JSONArray().put(JSONObject().put("id", 1)
+                    .put("source_unit_ids", JSONArray().put(1).put(1)).put("visual", "画面")
+                    .put("image_prompt", "提示词"))).toString()
+            }
+        }.isFailure)
     }
 
     fun testMalformedStoryboardReportsTheMissingField() {

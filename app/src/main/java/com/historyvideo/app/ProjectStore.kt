@@ -55,6 +55,23 @@ data class TransitionPlan(val type: String, val frames: Int) {
     }
 }
 
+data class ShotSoundEffect(
+    val assetId: String,
+    val volume: Float = 1.0f
+) {
+    fun json() = JSONObject().apply {
+        put("asset_id", assetId)
+        put("volume", volume.coerceIn(0f, 2f))
+    }
+
+    companion object {
+        fun from(value: JSONObject) = ShotSoundEffect(
+            assetId = value.optString("asset_id"),
+            volume = value.optDouble("volume", 1.0).toFloat().coerceIn(0f, 2f)
+        )
+    }
+}
+
 data class Shot(
     val id: Int,
     var text: String,
@@ -64,6 +81,7 @@ data class Shot(
     var hasPerson: Boolean = false,
     var cameraMotion: String = "static",
     var soundEffect: String = "",
+    var soundEffects: MutableList<ShotSoundEffect> = mutableListOf(),
     var transition: String = "cut",
     var imageStatus: String = "pending",
     var audioStatus: String = "pending",
@@ -75,6 +93,8 @@ data class Shot(
     var cutoutBackgroundPlan: MotionPlan? = null,
     var cutoutForegroundPlan: MotionPlan? = null,
     var visual: String = "",
+    var punch: String = "",
+    var videoPrompt: String = "",
     var imageRevision: String = "",
     var audioRevision: String = "",
     var motionSetting: ShotMotionSetting? = null,
@@ -84,6 +104,7 @@ data class Shot(
         put("shot_id", id); put("text", text); put("image_prompt", imagePrompt)
         put("duration", duration); put("shot_type", shotType); put("has_person", hasPerson)
         put("camera_motion", cameraMotion); put("sound_effect", soundEffect)
+        put("sound_effects", JSONArray().apply { soundEffects.forEach { put(it.json()) } })
         put("transition", transition); put("image_status", imageStatus)
         put("audio_status", audioStatus); put("error", error); put("cutout_enabled", cutoutEnabled)
         put("subtitle_chunks", JSONArray(subtitleChunks))
@@ -93,7 +114,8 @@ data class Shot(
         put("cutout_mirror_x", cutoutMirrorX ?: JSONObject.NULL)
         put("cutout_background_plan", cutoutBackgroundPlan?.json() ?: JSONObject.NULL)
         put("cutout_foreground_plan", cutoutForegroundPlan?.json() ?: JSONObject.NULL)
-        put("visual", visual); put("image_revision", imageRevision); put("audio_revision", audioRevision)
+        put("visual", visual); put("punch", punch); put("video_prompt", videoPrompt)
+        put("image_revision", imageRevision); put("audio_revision", audioRevision)
     }
 
     companion object {
@@ -106,6 +128,12 @@ data class Shot(
             hasPerson = value.optBoolean("has_person"),
             cameraMotion = value.optString("camera_motion", "static"),
             soundEffect = value.optString("sound_effect"),
+            soundEffects = mutableListOf<ShotSoundEffect>().apply {
+                val array = value.optJSONArray("sound_effects") ?: JSONArray()
+                for (index in 0 until array.length()) {
+                    array.optJSONObject(index)?.let { add(ShotSoundEffect.from(it)) }
+                }
+            },
             transition = value.optString("transition", "cut"),
             imageStatus = value.optString("image_status", "pending"),
             audioStatus = value.optString("audio_status", "pending"),
@@ -127,6 +155,8 @@ data class Shot(
             cutoutBackgroundPlan = value.optJSONObject("cutout_background_plan")?.let { MotionPlan.from(it) },
             cutoutForegroundPlan = value.optJSONObject("cutout_foreground_plan")?.let { MotionPlan.from(it) },
             visual = value.optString("visual"),
+            punch = value.optString("punch"),
+            videoPrompt = value.optString("video_prompt"),
             imageRevision = value.optString("image_revision"),
             audioRevision = value.optString("audio_revision"),
             motionSetting = if (value.optBoolean("cutout_enabled")) null else ShotMotionSetting.from(value.optJSONObject("motion_setting")),
@@ -161,11 +191,14 @@ data class VideoProject(
     var introImageSeconds: Float = 0.3f,
     var cutoutEnabled: Boolean = false,
     var bgmId: String = "none",
+    var bgmStartShotId: Int = 1,
     var introSfxId: String = "none",
     var bgmVolume: Float = 0.18f,
     var introSfxVolume: Float = 1.0f,
     var ttsVolume: Float = 1.0f,
+    var storyboardGranularity: String = "balanced",
     var storyboardScript: String = "",
+    var storyboardStylePreset: String = "",
     var renderRevision: String = "",
     var coverTitleDelaySeconds: Float = OpeningTiming.DEFAULT_DELAY,
     var topicQuery: String = "",
@@ -190,15 +223,17 @@ data class VideoProject(
         put("cover_title_delay_seconds", OpeningTiming.normalizeDelay(coverTitleDelaySeconds))
         put("opening_template", openingTemplate); put("intro_image_seconds", introImageSeconds)
         put("cutout_enabled", cutoutEnabled)
-        put("bgm_id", bgmId); put("intro_sfx_id", introSfxId)
+        put("bgm_id", bgmId); put("bgm_start_shot_id", bgmStartShotId); put("intro_sfx_id", introSfxId)
         put("bgm_volume", bgmVolume); put("intro_sfx_volume", introSfxVolume)
-        put("tts_volume", ttsVolume)
-        put("storyboard_script", storyboardScript); put("render_revision", renderRevision)
+        put("tts_volume", ttsVolume); put("storyboard_granularity", storyboardGranularity)
+        put("storyboard_script", storyboardScript); put("storyboard_style_preset", storyboardStylePreset)
+        put("render_revision", renderRevision)
         put("shots", JSONArray().apply { shots.forEach { put(it.json()) } })
     }
 
     companion object {
-        fun from(value: JSONObject) = VideoProject(
+        fun from(value: JSONObject): VideoProject {
+            val project = VideoProject(
             id = value.getString("id"), title = value.optString("title"),
             createdAt = value.optLong("created_at"), taskStartedAt = value.optLong("task_started_at"),
             stage = value.optString("stage", "topic"),
@@ -231,17 +266,31 @@ data class VideoProject(
             introImageSeconds = value.optDouble("intro_image_seconds", 0.3).toFloat().coerceIn(0.08f, 3f),
             cutoutEnabled = value.optBoolean("cutout_enabled", false),
             bgmId = value.optString("bgm_id", "none"),
+            bgmStartShotId = value.optInt("bgm_start_shot_id", 1),
             introSfxId = value.optString("intro_sfx_id", "none"),
             bgmVolume = value.optDouble("bgm_volume", 0.18).toFloat().coerceIn(0f, 1f),
             introSfxVolume = value.optDouble("intro_sfx_volume", 1.0).toFloat().coerceIn(0f, 2f),
             ttsVolume = value.optDouble("tts_volume", 1.0).toFloat().coerceIn(0f, 2f),
+            storyboardGranularity = value.optString("storyboard_granularity", "balanced")
+                .takeIf { it in setOf("coarse", "balanced", "fine") } ?: "balanced",
             storyboardScript = value.optString("storyboard_script", value.optString("script")),
+            storyboardStylePreset = value.optString("storyboard_style_preset"),
             renderRevision = value.optString("render_revision"),
             coverTitleDelaySeconds = OpeningTiming.normalizeDelay(value.optDouble("cover_title_delay_seconds", OpeningTiming.DEFAULT_DELAY.toDouble()).toFloat()),
             topicQuery = value.optString("topic_query"),
             topicIdeas = TopicIdeas.storedIdeas(value),
             selectedTopic = value.optJSONObject("selected_topic")?.let { TopicIdea.from(it, "selected-topic") }
-        )
+            )
+            if (project.introSfxId != "none" && project.shots.isNotEmpty()) {
+                val firstShot = project.shots.first()
+                if (firstShot.soundEffects.none { it.assetId == project.introSfxId }) {
+                    firstShot.soundEffects.add(ShotSoundEffect(project.introSfxId, project.introSfxVolume))
+                }
+                project.introSfxId = "none"
+                project.introSfxVolume = 1f
+            }
+            return project
+        }
     }
 }
 
@@ -321,6 +370,9 @@ class ProjectStore(context: Context) {
 
     fun applyStoryboard(project: VideoProject, generated: List<Shot>) {
         val previous = project.shots.associateBy { it.id }
+        val previousBgmStartText = previous[project.bgmStartShotId]?.text
+        val legacyIntroSfx = project.introSfxId.takeIf { it != "none" }
+            ?.let { ShotSoundEffect(it, project.introSfxVolume) }
         // Separate asset revisions prevent an old numbered file being used for a new beat.
         project.shots = generated.map { next ->
             val old = previous[next.id]
@@ -333,6 +385,8 @@ class ProjectStore(context: Context) {
                 audioStatus = if (sameVoice && old!!.audioStatus == "done") "done" else "pending",
                 duration = if (sameVoice) old!!.duration else next.duration,
                 cutoutEnabled = if (sameImage) old!!.cutoutEnabled else false,
+                soundEffects = if (sameVoice) old!!.soundEffects.toMutableList() else next.soundEffects,
+                soundEffect = if (sameVoice) old!!.soundEffect else next.soundEffect,
                 motionPlan = if (sameImage) old!!.motionPlan else null,
                 motionSetting = if (sameImage && !old!!.cutoutEnabled) ShotMotionRules.normalize(old!!.motionSetting) else null,
                 motionPlanSetting = if (sameImage && !old!!.cutoutEnabled) ShotMotionRules.normalize(old!!.motionPlanSetting) else null,
@@ -341,6 +395,15 @@ class ProjectStore(context: Context) {
                 cutoutForegroundPlan = if (sameImage) old!!.cutoutForegroundPlan else null
             )
         }.toMutableList()
+        project.bgmStartShotId = project.shots.firstOrNull { it.text == previousBgmStartText }?.id
+            ?: project.shots.firstOrNull()?.id ?: 1
+        if (legacyIntroSfx != null) {
+            project.shots.firstOrNull()?.let { firstShot ->
+                if (firstShot.soundEffects.none { it.assetId == legacyIntroSfx.assetId }) firstShot.soundEffects.add(legacyIntroSfx)
+            }
+            project.introSfxId = "none"
+            project.introSfxVolume = 1f
+        }
         project.storyboardScript = project.script
         project.renderRevision = UUID.randomUUID().toString()
         project.duration = 0.0

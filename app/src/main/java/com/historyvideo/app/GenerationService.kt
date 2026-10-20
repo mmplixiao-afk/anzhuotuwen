@@ -209,13 +209,23 @@ class GenerationService : Service() {
         require(project.script.isNotBlank()) { "请先输入或生成正文" }
         val prompt = configuredPrompt("shots", promptOverride)
         update(project, "shots", "running", "正在拆分分镜")
-        val storyboardInput = "主题：${project.title}\n\n完整口播文案：\n${project.script}"
-        val shots = api.shots(
+        val storyboardInput = "主题：${project.title}"
+        val storyboard = api.storyboard(
             settings.provider("text"), prompt, storyboardInput, project.script,
+            granularity = project.storyboardGranularity,
             onRetry = { update(project, "shots", "running", "分镜结果不合格，正在重试一次") },
             onUsage = { ProjectCosts(store).add(project.id, CostEntry.text("拆分镜头", it)) }
         )
-        store.applyStoryboard(project, shots)
+        val styleChanged = project.storyboardStylePreset != storyboard.stylePreset
+        project.storyboardStylePreset = storyboard.stylePreset
+        store.applyStoryboard(project, storyboard.shots)
+        if (styleChanged) {
+            project.shots.forEach { shot ->
+                shot.imageRevision = java.util.UUID.randomUUID().toString()
+                shot.imageStatus = "pending"
+                shot.error = ""
+            }
+        }
         update(project, "shots", "review", "分镜拆分成功，请生成变化镜头的图片和配音，并重新渲染视频",
             project.shots.size, project.shots.size)
     }
@@ -238,9 +248,11 @@ class GenerationService : Service() {
                         for (attempt in 0..2) {
                             if (!isActive) return@async
                             try {
+                                val finalPrompt = listOf(imagePrompt, project.storyboardStylePreset, shot.imagePrompt)
+                                    .filter(String::isNotBlank).joinToString("\n")
                                 val costEntry = CostEntry.image("第 ${project.shotNumber(shot.id)} 镜生图", imageUnitPrice,
-                                    shotId = shot.id, prompt = "$imagePrompt\n${shot.imagePrompt}")
-                                api.image(imageProvider, "$imagePrompt\n${shot.imagePrompt}", target,
+                                    shotId = shot.id, prompt = finalPrompt)
+                                api.image(imageProvider, finalPrompt, target,
                                     onGenerated = { ProjectCosts(store).add(project.id, costEntry) })
                                 ProjectCosts(store).attachMedia(project.id, costEntry.id, target)
                                 last = null
@@ -315,10 +327,12 @@ class GenerationService : Service() {
         val target = store.image(project, shot)
         val replacement = File(target.parentFile, target.name + ".new")
         val imageUnitPrice = settings.imageUnitPrice
+        val finalPrompt = listOf(imagePrompt, project.storyboardStylePreset, shotPrompt)
+            .filter(String::isNotBlank).joinToString("\n")
         val costEntry = CostEntry.image("第 ${project.shotNumber(shotId)} 镜重生图片", imageUnitPrice,
-            shotId = shotId, prompt = "$imagePrompt\n$shotPrompt")
+            shotId = shotId, prompt = finalPrompt)
         try {
-            api.image(settings.provider("image"), "$imagePrompt\n$shotPrompt", replacement,
+            api.image(settings.provider("image"), finalPrompt, replacement,
                 onGenerated = { ProjectCosts(store).add(project.id, costEntry) })
             ProjectCosts(store).attachMedia(project.id, costEntry.id, replacement)
             Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)

@@ -464,8 +464,19 @@ class MainActivity : ComponentActivity() {
         }
 
         fun playShot(project: VideoProject, shot: Shot) {
-            runCatching { play(project, shot) }.onSuccess { message = it }
-                .onFailure { message = it.message.orEmpty() }
+            message = "正在混合本镜配音和音效…"
+            scope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) {
+                        val output = File(store.directory(project.id), "temp/shot_${shot.id}_preview.m4a")
+                        VideoRenderer(store).previewShotAudio(project, shot.id, output)
+                    }
+                }
+                result.onSuccess { file ->
+                    runCatching { playFile(file, "正在试听第 ${project.shotNumber(shot.id)} 镜配音与音效") }
+                        .onFailure { message = it.message.orEmpty() }
+                }.onFailure { message = it.message.orEmpty() }
+            }
         }
 
         fun playVoice(project: VideoProject) {
@@ -475,7 +486,7 @@ class MainActivity : ComponentActivity() {
                     withContext(Dispatchers.IO) { buildVoicePreview(project) }
                 }
                 result.onSuccess { file ->
-                    runCatching { playFile(file, "正在试听配音完成版") }
+                    runCatching { playFile(file, "正在试听配音、BGM和镜头音效") }
                         .onSuccess { message = it }
                         .onFailure { message = it.message.orEmpty() }
                 }.onFailure { error -> message = error.message.orEmpty() }
@@ -510,6 +521,7 @@ class MainActivity : ComponentActivity() {
                                 "prompts" -> "提示词卷库"
                                 "prompt_editor" -> "提示词版本"
                                 "settings" -> "设置"
+                                "audio_library" -> "音频库"
                                 "cutout_models" -> "抠图模型"
                                 "result" -> "成片结果"
                                 "costs" -> "费用明细"
@@ -612,7 +624,9 @@ class MainActivity : ComponentActivity() {
                     "prompts" -> PromptListScreen(settings, onOpen = { selectedPromptType = it; navigate("prompt_editor") })
                     "prompt_editor" -> PromptEditorScreen(settings, selectedPromptType) { message = it }
                     "settings" -> SettingsScreen(onApi = { navigate("api") }, onPrompts = { navigate("prompts") },
-                        onModels = { navigate("cutout_models") })
+                        onModels = { navigate("cutout_models") }, onAudio = { navigate("audio_library") })
+                    "audio_library" -> AudioLibrarySettingsScreen(store, projects,
+                        busy = projects.any { it.status == "running" }, onMessage = { message = it })
                     "cutout_models" -> CutoutModelSettingsScreen(busy = projects.any { it.status == "running" })
                     "project" -> if (selected != null) ProjectOverviewScreen(
                         selected,
@@ -670,6 +684,12 @@ class MainActivity : ComponentActivity() {
                                         saveProject(updated)
                                         message = "镜头 ${updated.shotNumber(shot.id)} 的运动已保存，重新渲染后生效"
                                     }.onFailure { message = it.message.orEmpty() }
+                                }, onSoundEffectsChange = { effects ->
+                                    val updated = VideoProject.from(selected.json())
+                                    updated.shots.firstOrNull { it.id == shot.id }?.soundEffects = effects.toMutableList()
+                                    updated.renderRevision = java.util.UUID.randomUUID().toString()
+                                    saveProject(updated)
+                                    message = "本镜音效已保存，试听或重新渲染后生效"
                                 }, onCutoutChange = { enabled ->
                                     runCatching {
                                         if (enabled) CutoutProcessor(store).requireReady()
@@ -887,7 +907,7 @@ private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long
 }
 
 @Composable
-private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onModels: () -> Unit) {
+private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onModels: () -> Unit, onAudio: () -> Unit) {
     Text("工作台设置", style = MaterialTheme.typography.headlineSmall)
     Card(onClick = onApi, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
@@ -900,7 +920,7 @@ private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onModels: (
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("提示词卷库", style = MaterialTheme.typography.titleLarge)
-            Text("按选题、文案、分镜和生图提示词分别编辑", color = HistoryColors.muted)
+            Text("按文案、分镜和生图提示词分别编辑", color = HistoryColors.muted)
         }
     }
     Card(onClick = onModels, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
@@ -909,6 +929,137 @@ private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onModels: (
             Text("抠图模型", style = MaterialTheme.typography.titleLarge)
             Text("人物分割模型、背景修复模型", color = HistoryColors.muted)
         }
+    }
+    Card(onClick = onAudio, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("音频库", style = MaterialTheme.typography.titleLarge)
+            Text("导入和管理 BGM、镜头音效", color = HistoryColors.muted)
+        }
+    }
+}
+
+@Composable
+private fun AudioLibrarySettingsScreen(store: ProjectStore, projects: List<VideoProject>, busy: Boolean,
+                                       onMessage: (String) -> Unit) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val library = remember(context) { AudioLibrary(context) }
+    val scope = rememberCoroutineScope()
+    var kind by rememberSaveable { mutableStateOf(AudioKind.BGM) }
+    var revision by remember { mutableStateOf(0) }
+    var renameAsset by remember { mutableStateOf<AudioAsset?>(null) }
+    var renameValue by remember { mutableStateOf("") }
+    var player by remember { mutableStateOf<MediaPlayer?>(null) }
+    var previewJob by remember { mutableStateOf<Job?>(null) }
+    var importingKind by remember { mutableStateOf(AudioKind.BGM) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { library.importAudio(uri, importingKind) } }
+            result.onSuccess { asset -> revision++; onMessage("已导入：${asset.name}") }
+                .onFailure { error -> onMessage("导入失败：${error.message ?: error.javaClass.simpleName}") }
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            previewJob?.cancel()
+            player?.release()
+        }
+    }
+    fun stopPreview() {
+        previewJob?.cancel(); previewJob = null
+        player?.release(); player = null
+    }
+    fun preview(asset: AudioAsset) {
+        stopPreview()
+        val file = library.resolve(asset.id)
+        if (file == null) {
+            onMessage("音频文件不存在：${asset.name}")
+            return
+        }
+        runCatching {
+            val media = MediaPlayer()
+            player = media
+            media.setDataSource(file.absolutePath)
+            media.setOnPreparedListener { prepared ->
+                if (player === prepared) {
+                    prepared.start()
+                    previewJob = scope.launch {
+                        delay(3000)
+                        if (player === prepared) stopPreview()
+                    }
+                }
+            }
+            media.setOnCompletionListener { completed -> if (player === completed) stopPreview() }
+            media.setOnErrorListener { failed, _, _ ->
+                if (player === failed) stopPreview()
+                onMessage("音频试听失败：${asset.name}")
+                true
+            }
+            media.prepareAsync()
+        }.onFailure {
+            stopPreview()
+            onMessage("音频试听失败：${it.message ?: it.javaClass.simpleName}")
+        }
+    }
+    Text("音频库", style = MaterialTheme.typography.headlineSmall)
+    Text("导入的音频保存在应用私有目录，可在制作项目时选择。试听播放前 3 秒。",
+        style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(AudioKind.BGM, AudioKind.SFX).forEach { option ->
+            if (option == kind) Button(onClick = { kind = option }, modifier = Modifier.weight(1f)) {
+                Text(option.label)
+            } else OutlinedButton(onClick = { kind = option }, modifier = Modifier.weight(1f)) {
+                Text(option.label)
+            }
+        }
+    }
+    Button(onClick = {
+        importingKind = kind
+        picker.launch(arrayOf("audio/*"))
+    }, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(if (kind == AudioKind.BGM) "导入背景音乐" else "导入音效")
+    }
+    val assets = remember(kind, revision) { library.assets(kind) }
+    if (assets.isEmpty()) Text("暂无音频", color = HistoryColors.muted)
+    assets.forEach { asset ->
+        val inUse = library.isUsed(asset.id, projects)
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+            colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(asset.name, style = MaterialTheme.typography.titleMedium)
+                        Text(if (asset.builtIn) "内置音频" else if (inUse) "项目正在使用" else "已导入",
+                            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                    }
+                    OutlinedButton(onClick = { preview(asset) }, enabled = !busy) { Text("试听") }
+                }
+                if (!asset.builtIn) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { renameAsset = asset; renameValue = asset.name }, enabled = !busy) {
+                        Text("重命名")
+                    }
+                    TextButton(onClick = {
+                        runCatching { library.delete(asset.id, projects) }
+                            .onSuccess { revision++; onMessage("音频已删除") }
+                            .onFailure { onMessage(it.message.orEmpty()) }
+                    }, enabled = !busy && !inUse) { Text("删除") }
+                }
+            }
+        }
+    }
+    renameAsset?.let { asset ->
+        AlertDialog(onDismissRequest = { renameAsset = null }, title = { Text("重命名音频") },
+            text = { OutlinedTextField(renameValue, { renameValue = it.take(80) }, modifier = Modifier.fillMaxWidth()) },
+            confirmButton = {
+                TextButton(onClick = {
+                    runCatching { library.rename(asset.id, renameValue) }
+                        .onSuccess { revision++; onMessage("音频名称已更新"); renameAsset = null }
+                        .onFailure { onMessage(it.message.orEmpty()) }
+                }) { Text("保存") }
+            }, dismissButton = { TextButton(onClick = { renameAsset = null }) { Text("取消") } })
     }
 }
 
@@ -1274,6 +1425,7 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                              onNavigate: (Int) -> Unit,
                              onInsert: (String, String) -> Boolean,
                              onMotionChange: (ShotMotionSetting?) -> Unit,
+                             onSoundEffectsChange: (List<ShotSoundEffect>) -> Unit,
                              onCutoutChange: (Boolean) -> Unit) {
     var text by key(shot.text) { rememberSaveable { mutableStateOf(shot.text) } }
     var prompt by key(shot.imagePrompt) { rememberSaveable { mutableStateOf(shot.imagePrompt) } }
@@ -1285,6 +1437,10 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
     var showInsert by rememberSaveable(project.id, shot.id) { mutableStateOf(false) }
     var insertedText by rememberSaveable(project.id, shot.id) { mutableStateOf("") }
     var insertedPrompt by rememberSaveable(project.id, shot.id) { mutableStateOf("") }
+    val audioLibrary = remember(store) { AudioLibrary(store.context()) }
+    var soundMenu by remember(project.id, shot.id) { mutableStateOf(false) }
+    var selectedSoundEffects by remember(project.id, shot.id) { mutableStateOf(shot.soundEffects.toList()) }
+    LaunchedEffect(shot.soundEffects) { selectedSoundEffects = shot.soundEffects.toList() }
     fun saveInputs() {
         val textChanged = shot.text != text
         val promptChanged = shot.imagePrompt != prompt
@@ -1310,6 +1466,37 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         ShotMotionSettingsCard(project, shot, busy, onChange = onMotionChange, onCutoutChange = onCutoutChange)
+        Box(Modifier.fillMaxWidth()) {
+            val selectedLabel = selectedSoundEffects.mapNotNull { effect ->
+                audioLibrary.asset(effect.assetId)?.name
+            }.joinToString("、").ifBlank { "无" }
+            ChoiceTile("本镜音效", selectedLabel, onClick = { soundMenu = true },
+                enabled = !busy, dropdown = true)
+            DropdownMenu(expanded = soundMenu && !busy, onDismissRequest = { soundMenu = false },
+                modifier = Modifier.fillMaxWidth(0.88f).heightIn(max = 380.dp)) {
+                DropdownMenuItem(text = { Text("无") },
+                    leadingIcon = if (selectedSoundEffects.isEmpty()) {
+                        { Icon(Icons.Filled.Check, contentDescription = null) }
+                    } else null,
+                    onClick = {
+                    selectedSoundEffects = emptyList()
+                    onSoundEffectsChange(emptyList()); soundMenu = false
+                })
+                audioLibrary.assets(AudioKind.SFX).forEach { asset ->
+                    val selected = selectedSoundEffects.any { it.assetId == asset.id }
+                    DropdownMenuItem(text = { Text(asset.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        leadingIcon = if (selected) { { Icon(Icons.Filled.Check, contentDescription = null) } } else null,
+                        onClick = {
+                        val next = if (selected) selectedSoundEffects.filterNot { it.assetId == asset.id }
+                            else selectedSoundEffects + ShotSoundEffect(asset.id)
+                        selectedSoundEffects = next
+                        onSoundEffectsChange(next)
+                    })
+                }
+            }
+        }
+        Text("试听此段会混合本镜配音和已选音效；成片从本镜开始播放音效。",
+            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         Box(Modifier.fillMaxWidth().height(320.dp).clip(RoundedCornerShape(8.dp)).background(HistoryColors.subcard)) {
             ShotThumbnail(imageFile, Modifier.fillMaxSize().pointerInput(imageFile.lastModified(), imageFile.length()) {
                 detectTapGestures(onDoubleTap = { showImage = true })
@@ -2115,15 +2302,16 @@ private fun ScriptScreen(project: VideoProject,
     var title by key(project.title) { rememberSaveable { mutableStateOf(project.title) } }
     var script by key(project.script) { rememberSaveable { mutableStateOf(project.script) } }
     var coverText by key(project.coverText) { rememberSaveable { mutableStateOf(project.coverText) } }
+    val audioLibrary = remember(store) { AudioLibrary(store.context()) }
     var bgmId by rememberSaveable(project.id, project.bgmId) { mutableStateOf(project.bgmId) }
-    var introSfxId by rememberSaveable(project.id, project.introSfxId) { mutableStateOf(project.introSfxId) }
+    var bgmStartShotId by rememberSaveable(project.id, project.bgmStartShotId) { mutableStateOf(project.bgmStartShotId) }
+    var granularity by rememberSaveable(project.id, project.storyboardGranularity) { mutableStateOf(project.storyboardGranularity) }
     var bgmVolume by rememberSaveable(project.id, project.bgmVolume) { mutableStateOf((project.bgmVolume * 100).toInt().toString()) }
-    var sfxVolume by rememberSaveable(project.id, project.introSfxVolume) { mutableStateOf((project.introSfxVolume * 100).toInt().toString()) }
     val scope = rememberCoroutineScope()
     var bgmMenu by remember(project.id) { mutableStateOf(false) }
-    var introSfxMenu by remember(project.id) { mutableStateOf(false) }
-    val bgmChoices = listOf("none" to "无", "sad" to "悲伤 BGM", "爽文" to "爽文 BGM")
-    val introSfxChoices = listOf("none" to "无", "gong" to "铜锣")
+    var bgmStartMenu by remember(project.id) { mutableStateOf(false) }
+    var granularityMenu by remember(project.id) { mutableStateOf(false) }
+    val bgmChoices = audioLibrary.assets(AudioKind.BGM).map { it.id to it.name }
     var previewError by remember { mutableStateOf("") }
     var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var previewJob by remember { mutableStateOf<Job?>(null) }
@@ -2143,7 +2331,7 @@ private fun ScriptScreen(project: VideoProject,
         previewError = ""
         if (id == "none") return
         runCatching {
-            val file = store.bundledAudio(id) ?: error("找不到音频文件")
+            val file = audioLibrary.resolve(id) ?: error("找不到音频文件")
             val media = MediaPlayer()
             previewPlayer = media
             media.apply {
@@ -2186,9 +2374,11 @@ private fun ScriptScreen(project: VideoProject,
         updated.selectedTopic = null
         updated.topicQuery = ""
         updated.coverText = normalizeCoverText(coverText)
-        updated.bgmId = bgmId; updated.introSfxId = introSfxId
+        updated.bgmId = bgmId
+        updated.bgmStartShotId = project.shots.firstOrNull { it.id == bgmStartShotId }?.id
+            ?: project.shots.firstOrNull()?.id ?: bgmStartShotId
         updated.bgmVolume = ((bgmVolume.toFloatOrNull() ?: 18f) / 100f).coerceIn(0f, 1f)
-        updated.introSfxVolume = ((sfxVolume.toFloatOrNull() ?: 100f) / 100f).coerceIn(0f, 2f)
+        updated.storyboardGranularity = granularity
         if (saveScript && updated.script != script) {
             updated.script = script
             updated.stage = "script"
@@ -2211,39 +2401,57 @@ private fun ScriptScreen(project: VideoProject,
         }
     }
     InputTile("封面文案", coverText, { coverText = it }, enabled = !busy, maxLength = 40)
-    Text("声音与配乐", style = MaterialTheme.typography.titleLarge)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Box(Modifier.weight(1f)) {
-            ChoiceTile("背景音乐", bgmChoices.firstOrNull { it.first == bgmId }?.second ?: "无",
-                onClick = { bgmMenu = true }, enabled = !busy, dropdown = true)
-            DropdownMenu(expanded = bgmMenu, onDismissRequest = { bgmMenu = false }) {
-                bgmChoices.forEach { (id, label) ->
-                    DropdownMenuItem(text = { Text(label) }, onClick = {
-                        bgmMenu = false
-                        bgmId = id
-                        preview(id)
-                    })
-                }
-            }
-        }
-        Box(Modifier.weight(1f)) {
-            ChoiceTile("开头音效", introSfxChoices.firstOrNull { it.first == introSfxId }?.second ?: "无",
-                onClick = { introSfxMenu = true }, enabled = !busy, dropdown = true)
-            DropdownMenu(expanded = introSfxMenu, onDismissRequest = { introSfxMenu = false }) {
-                introSfxChoices.forEach { (id, label) ->
-                    DropdownMenuItem(text = { Text(label) }, onClick = {
-                        introSfxMenu = false
-                        introSfxId = id
-                        preview(id)
-                    })
-                }
+    Text("背景音乐", style = MaterialTheme.typography.titleLarge)
+    Box(Modifier.fillMaxWidth()) {
+        ChoiceTile("BGM", bgmChoices.firstOrNull { it.first == bgmId }?.second ?: "无",
+            onClick = { bgmMenu = true }, enabled = !busy, dropdown = true)
+        DropdownMenu(expanded = bgmMenu, onDismissRequest = { bgmMenu = false }) {
+            (listOf("none" to "无") + bgmChoices).forEach { (id, label) ->
+                DropdownMenuItem(text = { Text(label) }, onClick = {
+                    bgmMenu = false
+                    bgmId = id
+                    saveInputs()
+                    preview(id)
+                })
             }
         }
     }
+    if (project.shots.isNotEmpty()) {
+        val startShot = project.shots.firstOrNull { it.id == bgmStartShotId } ?: project.shots.first()
+        Box(Modifier.fillMaxWidth()) {
+            ChoiceTile("BGM 起播分镜", "第 ${project.shotNumber(startShot.id)} 镜 · ${startShot.text.take(18)}",
+                onClick = { bgmStartMenu = true }, enabled = !busy && bgmId != "none", dropdown = true)
+            DropdownMenu(expanded = bgmStartMenu && !busy, onDismissRequest = { bgmStartMenu = false },
+                modifier = Modifier.fillMaxWidth(0.88f).heightIn(max = 360.dp)) {
+                project.shots.forEach { shot ->
+                    DropdownMenuItem(text = {
+                        Text("第 ${project.shotNumber(shot.id)} 镜 · ${shot.text.take(32)}",
+                            maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }, onClick = {
+                        bgmStartShotId = shot.id
+                        bgmStartMenu = false
+                        saveInputs()
+                    })
+                }
+            }
+        }
+    } else Text("拆分镜头后可选择 BGM 起播分镜", style = MaterialTheme.typography.bodySmall,
+        color = HistoryColors.muted)
     if (previewError.isNotBlank()) Text(previewError, color = MaterialTheme.colorScheme.error)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        InputTile("BGM 音量 %", bgmVolume, { bgmVolume = it.filter(Char::isDigit).take(3) }, enabled = !busy, modifier = Modifier.weight(1f))
-        InputTile("音效音量 %", sfxVolume, { sfxVolume = it.filter(Char::isDigit).take(3) }, enabled = !busy, modifier = Modifier.weight(1f))
+    InputTile("BGM 音量 %", bgmVolume, { value ->
+        bgmVolume = value.filter(Char::isDigit).take(3)
+        saveInputs()
+    }, enabled = !busy)
+    Box(Modifier.fillMaxWidth()) {
+        val granularityLabels = mapOf("coarse" to "粗", "balanced" to "平衡", "fine" to "细")
+        ChoiceTile("分镜粒度", granularityLabels[granularity] ?: "平衡",
+            onClick = { granularityMenu = true }, enabled = !busy, dropdown = true)
+        DropdownMenu(expanded = granularityMenu, onDismissRequest = { granularityMenu = false }) {
+            listOf("coarse" to "粗 · 40–65字", "balanced" to "平衡 · 20–35字", "fine" to "细 · 12–22字")
+                .forEach { (id, label) -> DropdownMenuItem(text = { Text(label) }, onClick = {
+                    granularity = id; granularityMenu = false; saveInputs()
+                }) }
+        }
     }
     Button(onClick = {
         val updated = saveInputs(saveScript = true)
@@ -2328,7 +2536,7 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
         val voiceReady = project.shots.all { it.audioStatus == "done" }
         OutlinedButton(onClick = { onPlayVoice(project) },
             enabled = !busy && voiceReady, modifier = Modifier.fillMaxWidth()) {
-            Text(if (voiceReady) "试听配音完成版" else "配音完成后可试听完整版本")
+            Text(if (voiceReady) "试听配音、BGM和镜头音效" else "配音完成后可试听完整混音")
         }
         if (missingImagesOnly && visibleShots.isEmpty()) {
             Text("所有镜头图片均已生成", modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),

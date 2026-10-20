@@ -73,6 +73,8 @@ private fun imageRatioInstruction(size: String): String = when (imageAspect(size
     else -> ""
 }
 
+data class StoryboardResult(val title: String, val stylePreset: String, val shots: MutableList<Shot>)
+
 class CloudApi {
     private val client = OkHttpClient.Builder()
         .connectTimeout(45, TimeUnit.SECONDS)
@@ -167,23 +169,48 @@ class CloudApi {
     }
 
     fun shots(config: ProviderConfig, prompt: String, input: String, expectedScript: String = input,
+              granularity: String = "balanced",
               onRetry: () -> Unit = {}, onUsage: (TextUsage) -> Unit = {}): MutableList<Shot> {
-        val taskPrompt = prompt + StoryboardRules.instruction(expectedScript)
-        return checkedShots(expectedScript, onRetry) { retryInstruction ->
-            text(config, taskPrompt + retryInstruction, input, onUsage = onUsage)
+        return storyboard(config, prompt, input, expectedScript, granularity, onRetry, onUsage).shots
+    }
+
+    fun storyboard(config: ProviderConfig, prompt: String, input: String, expectedScript: String = input,
+                   granularity: String = "balanced",
+                   onRetry: () -> Unit = {}, onUsage: (TextUsage) -> Unit = {}): StoryboardResult {
+        val units = StoryboardRules.sourceUnits(expectedScript, granularity)
+        val taskPrompt = prompt + StoryboardRules.instruction(expectedScript, units, granularity)
+        val sourceInput = buildString {
+            append(input.trim())
+            append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
+            append(JSONArray().apply {
+                units.forEach { unit -> put(JSONObject().put("id", unit.id)
+                    .put("text", unit.text).put("fixed_shot", unit.fixedShot)) }
+            }.toString())
+        }
+        return checkedStoryboard(expectedScript, units, onRetry, enforceOriginalCopy = true) { retryInstruction ->
+            text(config, taskPrompt + retryInstruction, sourceInput, onUsage = onUsage)
         }
     }
 
     internal fun checkedShots(expectedScript: String, onRetry: () -> Unit = {},
-                              request: (String) -> String): MutableList<Shot> {
+                              request: (String) -> String): MutableList<Shot> =
+        checkedShots(expectedScript, StoryboardRules.sourceUnits(expectedScript), onRetry, request)
+
+    internal fun checkedShots(expectedScript: String, units: List<StoryboardRules.SourceUnit>,
+                              onRetry: () -> Unit = {}, request: (String) -> String): MutableList<Shot> =
+        checkedStoryboard(expectedScript, units, onRetry, request = request).shots
+
+    internal fun checkedStoryboard(expectedScript: String, units: List<StoryboardRules.SourceUnit>,
+                                   onRetry: () -> Unit = {}, enforceOriginalCopy: Boolean = false,
+                                   request: (String) -> String): StoryboardResult {
         var lastFailure = ""
         for (attempt in 0..1) {
             val retryInstruction = if (attempt == 0) "" else
-                "\n上次分镜不合格：$lastFailure。严格按上述原文边界输出，每镜生成独立画面，原文不得增删。"
+                "\n上次分镜不合格：$lastFailure。请只为每镜返回连续完整的source_unit_ids编号分组和PC格式画面字段，不要输出或重写voiceover；每个source unit必须按顺序恰好覆盖一次。"
             // Only invalid model output is retried. A transport error may already be billed.
             val content = request(retryInstruction)
             try {
-                return parseShots(content, expectedScript)
+                return parseStoryboard(content, expectedScript, units, enforceOriginalCopy)
             } catch (error: JSONException) {
                 lastFailure = "分镜JSON不完整或字段格式无效"
             } catch (error: IllegalArgumentException) {
@@ -194,7 +221,9 @@ class CloudApi {
         error("分镜重试一次后仍不合格：$lastFailure。未保存错误分镜，正文和原分镜已保留")
     }
 
-    private fun parseShots(content: String, expectedScript: String): MutableList<Shot> {
+    private fun parseStoryboard(content: String, expectedScript: String,
+                                units: List<StoryboardRules.SourceUnit>,
+                                enforceOriginalCopy: Boolean): StoryboardResult {
         val raw = content.removePrefix("```json").removePrefix("```")
             .removeSuffix("```").trim()
         val objectStart = raw.indexOf('{')
@@ -206,41 +235,93 @@ class CloudApi {
         } catch (error: JSONException) {
             throw IllegalArgumentException("分镜 JSON 格式错误：${error.message ?: "无法解析"}", error)
         }
+        val root = parsed as? JSONObject
         val array = when (parsed) {
             is JSONArray -> parsed
             is JSONObject -> parsed.optJSONArray("shots")
                 ?: parsed.optJSONObject("data")?.optJSONArray("shots")
                 ?: parsed.optJSONObject("result")?.optJSONArray("shots")
-                ?: error("分镜 JSON 缺少 shots 数组")
-            else -> error("分镜 JSON 根节点应为对象或数组")
+                ?: throw IllegalArgumentException("分镜 JSON 缺少 shots 数组")
+            else -> throw IllegalArgumentException("分镜 JSON 根节点应为对象或数组")
         }
-        require(array.length() in 1..100) { "分镜数量无效" }
+        require(array.length() in 1..300) { "分镜数量无效" }
         val allowed = setOf("character_closeup", "character_medium", "environment", "prop_closeup",
             "building", "crowd", "food", "money", "document", "landscape")
         val shots = mutableListOf<Shot>()
-        for (index in 0 until array.length()) {
-            val obj = array.optJSONObject(index) ?: error("第 ${index + 1} 镜应为 JSON 对象")
-            val voiceover = listOf("voiceover", "text")
+        val objects = (0 until array.length()).map { index ->
+            array.optJSONObject(index) ?: throw IllegalArgumentException("第 ${index + 1} 镜应为 JSON 对象")
+        }
+        val hasUnitGroups = objects.any { it.has("source_unit_ids") || it.has("source_segments") }
+        val unitGroups = if (hasUnitGroups) {
+            require(!root?.optString("title").isNullOrBlank()) { "PC格式分镜缺少title字段" }
+            require(!root?.optString("style_preset").isNullOrBlank()) { "PC格式分镜缺少style_preset字段" }
+            objects.mapIndexed { index, obj ->
+                val ids = obj.optJSONArray("source_unit_ids") ?: obj.optJSONArray("source_segments")
+                    ?: throw IllegalArgumentException("第 ${index + 1} 镜缺少source_unit_ids")
+                (0 until ids.length()).map { idIndex ->
+                    when (val value = ids.opt(idIndex)) {
+                        is Number -> value.toInt().takeIf { value.toDouble() == it.toDouble() }
+                        is String -> value.toIntOrNull()
+                        else -> null
+                    } ?: throw IllegalArgumentException("第 ${index + 1} 镜包含无效source unit编号")
+                }
+            }
+        } else null
+        val reconstructed = when {
+            unitGroups != null -> StoryboardRules.reconstruct(units, unitGroups)
+            enforceOriginalCopy -> {
+                val legacyVoiceovers = objects.mapIndexed { index, obj ->
+                    listOf("voiceover", "text")
+                        .firstNotNullOfOrNull { key -> (obj.opt(key) as? String)?.takeIf { it.isNotBlank() } }
+                        ?: throw IllegalArgumentException("第 ${index + 1} 镜缺少voiceover/source_unit_ids")
+                }
+                StoryboardRules.reconstructVoiceoverSegments(expectedScript, legacyVoiceovers)
+            }
+            else -> null
+        }
+        for (index in objects.indices) {
+            val obj = objects[index]
+            val voiceover = reconstructed?.get(index) ?: listOf("voiceover", "text")
                 .firstNotNullOfOrNull { key -> (obj.opt(key) as? String)?.takeIf { it.isNotBlank() } }
-                ?: error("第 ${index + 1} 镜缺少 voiceover/text 字段")
+                ?: throw IllegalArgumentException("第 ${index + 1} 镜缺少 voiceover/text 字段")
             val visual = listOf("visual", "visual_description")
                 .firstNotNullOfOrNull { key -> (obj.opt(key) as? String)?.takeIf { it.isNotBlank() } }
-                ?: error("第 ${index + 1} 镜缺少 visual 字段")
+                ?: throw IllegalArgumentException("第 ${index + 1} 镜缺少 visual 字段")
             val imagePrompt = listOf("image_prompt", "imagePrompt", "prompt")
                 .firstNotNullOfOrNull { key -> (obj.opt(key) as? String)?.takeIf { it.isNotBlank() } }
-                ?: error("第 ${index + 1} 镜缺少 image_prompt 字段")
+                ?: throw IllegalArgumentException("第 ${index + 1} 镜缺少 image_prompt 字段")
             val idValue = obj.opt("id").takeUnless { it == null || it == JSONObject.NULL }
                 ?: obj.opt("shot_id").takeUnless { it == null || it == JSONObject.NULL }
             val id = when (idValue) {
                 is Number -> idValue.toInt().takeIf { idValue.toDouble() == it.toDouble() }
                 is String -> idValue.toIntOrNull()
                 else -> null
-            } ?: error("第 ${index + 1} 镜缺少有效的 id/shot_id 字段")
-            val shot = Shot.from(obj).copy(
+            } ?: throw IllegalArgumentException("第 ${index + 1} 镜缺少有效的 id/shot_id 字段")
+            val subtitleChunks = if (unitGroups != null) {
+                val subtitleUnitArray = obj.optJSONArray("subtitle_unit_groups")
+                    ?: throw IllegalArgumentException("第 ${index + 1} 镜缺少subtitle_unit_groups字段")
+                val subtitleGroups = (0 until subtitleUnitArray.length()).map { groupIndex ->
+                    val group = subtitleUnitArray.optJSONArray(groupIndex)
+                        ?: throw IllegalArgumentException("第 ${index + 1} 镜的字幕分组格式无效")
+                    (0 until group.length()).map { unitIndex ->
+                        when (val value = group.opt(unitIndex)) {
+                            is Number -> value.toInt().takeIf { value.toDouble() == it.toDouble() }
+                            is String -> value.toIntOrNull()
+                            else -> null
+                        } ?: throw IllegalArgumentException("第 ${index + 1} 镜字幕分组含有无效source unit编号")
+                    }
+                }
+                StoryboardRules.reconstructSubtitleChunks(units, unitGroups[index], subtitleGroups)
+            } else null
+            val baseShot = Shot.from(obj)
+            val shot = baseShot.copy(
                 id = id,
                 text = voiceover,
                 visual = visual,
+                punch = obj.optString("punch"),
+                videoPrompt = obj.optString("video_prompt"),
                 imagePrompt = imagePrompt,
+                subtitleChunks = subtitleChunks?.toMutableList() ?: baseShot.subtitleChunks,
                 imageStatus = "pending", audioStatus = "pending", error = "",
                 cutoutEnabled = false, motionPlan = null, cutoutMirrorX = null,
                 cutoutBackgroundPlan = null, cutoutForegroundPlan = null,
@@ -251,10 +332,16 @@ class CloudApi {
             }
             require(shot.shotType in allowed) { "第 ${index + 1} 镜的画面类型无效" }
             require(shot.duration in 0.5..30.0) { "第 ${index + 1} 镜时长无效" }
+            if (hasUnitGroups) {
+                require(shot.punch.codePointCount(0, shot.punch.length) in 2..6) {
+                    "第 ${index + 1} 镜punch应为2到6个字符"
+                }
+                require(shot.videoPrompt.isNotBlank()) { "第 ${index + 1} 镜缺少video_prompt字段" }
+            }
             shots.add(shot)
         }
         StoryboardRules.validate(expectedScript, shots)
-        return shots
+        return StoryboardResult(root?.optString("title").orEmpty(), root?.optString("style_preset").orEmpty(), shots)
     }
 
     fun image(config: ProviderConfig, prompt: String, out: File, onGenerated: () -> Unit = {}) {

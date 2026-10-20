@@ -135,7 +135,7 @@ class AppSettings(context: Context) {
         private fun legacyDefaultPrompt(name: String) = when (name) {
             "topic" -> "你是历史短视频选题策划。根据用户给出的方向，一次给出6个适合手机短视频的中文题材。题材要具体、有冲突、有画面感，避免重复。只输出严格JSON对象：{\"topics\":[\"题材1\",\"题材2\",\"题材3\",\"题材4\",\"题材5\",\"题材6\"]}。"
             "script" -> "你是古代历史短视频口播作者。根据题材写约500字中文文案。使用第二人称，前3至5秒有冲突，口语化、强钩子、信息密集，每20至30秒有新信息或反转，不要长时间铺垫。只输出可直接配音的文案。"
-            "shots" -> "你是写实古装图片口播视频分镜导演。把完整文案按原顺序拆成10至15镜；各镜text连接后必须覆盖全文，不能改写或漏字。输出严格JSON对象，包含shots数组；每个镜头包含shot_id、text、image_prompt、duration、shot_type、has_person、camera_motion、sound_effect、transition。shot_type从character_closeup、character_medium、environment、prop_closeup、building、crowd、food、money、document、landscape中选择。人物镜头约40%，环境建筑约20%，道具约20%，钱币文书食物器物细节约20%。连续三个镜头不能全是人物中景。开头优先道具、手、钱、刀、食物、建筑和快速变化。image_prompt须有时代、场景、主体、景别和光线；无人镜不要加入人物。"
+            "shots" -> "你是写实古装短视频分镜导演。口播原文以source_units提供，只将相邻连续编号分组成镜，不输出voiceover，不得复述、增删或改写。字幕用subtitle_unit_groups按自然停顿分组本镜编号。默认平衡粒度每镜约20–35字、原则不超过40字；按动作、情绪、场景变化拆分。第一镜只放主题句；开头钩子按PC规则优先匹配语义分镜；固定source_unit不得拆并。每镜按PC格式输出visual、2–6字punch、100–180字image_prompt及video_prompt；前两镜有人物、人物外观统一、画面无文字并留字幕区。输出title、style_preset和shots严格JSON。"
             else -> "中国古代真人影视剧照质感，写实比例，自然光，服装和建筑器物符合时代；单一清晰主体，画幅9:16，画面底部留字幕空间，不生成文字、水印。"
         }
     }
