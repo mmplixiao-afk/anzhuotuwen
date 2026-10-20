@@ -118,7 +118,8 @@ internal object StoryboardRules {
         return pieces.mapIndexed { index, (text, fixed) -> SourceUnit(index + 1, text, fixed) }
     }
 
-    fun instruction(source: String, units: List<SourceUnit>, granularity: String = "balanced"): String = buildString {
+    fun instruction(source: String, units: List<SourceUnit>, granularity: String = "balanced",
+                    firstBatch: Boolean = true): String = buildString {
         val rules = when (granularity) {
             "coarse" -> "粗粒度：每镜约40–65个有效口播字符，可覆盖同场景连续2–3句；不合并不同场景。"
             "fine" -> "细粒度：每镜约12–22个有效口播字符，原则上不超过28字；动作、物件对比、情绪和场景变化可分别成镜。"
@@ -126,10 +127,15 @@ internal object StoryboardRules {
         }
         append("\n\n【移动端分镜约束，优先于前文冲突规则】\n")
         append("普通正文使用$rules 短反应句可更短；不要按固定镜头数量拆分。\n")
-        append("下面提供的source_units是原文唯一权威来源。只返回相邻、连续的source unit编号分组，不要复述或改写口播文字。每个编号必须且只能出现一次，按升序、连续覆盖全部编号；不能跳号、重复、调序。程序会从原文按编号还原voiceover。\n")
-        append("固定镜头单元fixed_shot=true必须独立成镜，不能与其他编号合并或拆开。第1镜是口播第一句。若主题后以他娘的或哼开头且后面出现放屁，钩子和反驳边界按固定单元执行；放屁不可独占镜头。长反驳按PC规则切分。\n")
-        append("每镜必须有对应的visual、punch、image_prompt、video_prompt。visual用中文描述时代、地点、主体、动作和情绪；image_prompt是独立可生图的写实古装提示词，约100–180个中文字符，人物外观保持一致。前两镜须有清晰可辨人物。\n")
+        append("下面提供的source_units是原文唯一权威来源。只返回相邻、连续的source unit编号分组，不要复述或改写口播文字。每个编号必须且只能出现一次，按升序、连续覆盖本次提供的全部编号；不能跳号、重复、调序。程序会从原文按编号还原voiceover。\n")
+        append("固定镜头单元fixed_shot=true必须独立成镜，不能与其他编号合并或拆开。")
+        if (firstBatch) append("第1镜是口播第一句。若主题后以他娘的或哼开头且后面出现放屁，钩子和反驳边界按固定单元执行；放屁不可独占镜头。长反驳按PC规则切分。")
+        append("\n")
+        append("每镜必须有对应的visual、punch、image_prompt、video_prompt。visual用中文描述时代、地点、主体、动作和情绪；image_prompt是独立可生图的写实古装提示词，约100–180个中文字符，人物外观保持一致。")
+        if (firstBatch) append("前两镜须有清晰可辨人物。")
+        append("\n")
         append("subtitle_chunks也由程序从原文还原。你只需为每镜返回subtitle_unit_groups：每个子数组是一个字幕自然停顿对应的source unit编号组；按原顺序分完本镜source_unit_ids中的所有编号，不漏、不重、不调序。style_preset填写全局画风。不得输出voiceover或字幕文字副本。\n")
+        append("JSON 必须紧凑（不要换行缩进），并且必须完整闭合；输出被截断会导致本次分镜失败。\n")
         append("""只输出严格JSON，结构为：{"title":"原主题","style_preset":"统一全局画风","shots":[{"id":1,"source_unit_ids":[1],"subtitle_unit_groups":[[1]],"visual":"","punch":"2到6字","image_prompt":"","video_prompt":""}]}""")
     }
 

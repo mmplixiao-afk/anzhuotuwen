@@ -902,7 +902,8 @@ class VideoRenderer(private val store: ProjectStore) {
     private fun audioMixPlan(project: VideoProject, voiceDuration: Double,
                              soundEvents: List<AudioPlayback>, voiceInputIndex: Int = 0,
                              timelineOffset: Double = 0.0,
-                             shotDurations: List<Double> = project.shots.map { it.duration }): AudioMixPlan {
+                             shotDurations: List<Double> = project.shots.map { it.duration },
+                             includeBgm: Boolean = true): AudioMixPlan {
         var outputDuration = voiceDuration.coerceAtLeast(0.0)
         soundEvents.forEach { event ->
             val relative = event.offset - timelineOffset
@@ -912,7 +913,10 @@ class VideoRenderer(private val store: ProjectStore) {
         val labels = mutableListOf("[voice]")
         val inputs = mutableListOf<String>()
         var inputIndex = voiceInputIndex + 1
-        val bgm = runCatching { AudioLibrary(store.context()).resolve(project.bgmId) }.getOrNull()
+        // 单镜试听只关心本镜配音与音效，不混入 BGM；完整试听与成片仍按起播镜头混入。
+        val bgm = if (includeBgm) {
+            runCatching { AudioLibrary(store.context()).resolve(project.bgmId) }.getOrNull()
+        } else null
         val bgmAbsoluteStart = bgmStartSeconds(project, shotDurations)
         val bgmStart = bgmAbsoluteStart - timelineOffset
         if (bgm != null && bgmAbsoluteStart < timelineOffset + voiceDuration) {
@@ -1008,7 +1012,7 @@ class VideoRenderer(private val store: ProjectStore) {
         val soundEvents = shotAudioEvents(project, actualDurations)
             .filter { it.offset >= timelineOffset && it.offset < timelineOffset + actualDurations[index].coerceAtLeast(0.1) }
         val plan = audioMixPlan(project, duration(voice), soundEvents, timelineOffset = timelineOffset,
-            shotDurations = actualDurations)
+            shotDurations = actualDurations, includeBgm = false)
         val pending = File(output.parentFile, "${output.nameWithoutExtension}.pending.m4a")
         run("混合本镜配音和音效", "-y", "-i", voice.absolutePath, *plan.inputs.toTypedArray(),
             "-filter_complex", plan.graph(), "-map", "[aout]", "-t", String.format(Locale.US, "%.6f", plan.duration),

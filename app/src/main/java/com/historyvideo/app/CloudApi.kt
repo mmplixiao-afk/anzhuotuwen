@@ -17,6 +17,9 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import kotlin.math.abs
 
+/** 单次分镜请求覆盖的 source unit 数量：分批控制输出长度，避免被服务端 max_tokens 截断。 */
+private const val STORYBOARD_UNITS_PER_CALL = 40
+
 private data class DoubaoResponseParts(
     val codes: List<Int>,
     val messages: List<String>,
@@ -178,7 +181,45 @@ class CloudApi {
                    granularity: String = "balanced",
                    onRetry: () -> Unit = {}, onUsage: (TextUsage) -> Unit = {}): StoryboardResult {
         val units = StoryboardRules.sourceUnits(expectedScript, granularity)
-        val taskPrompt = prompt + StoryboardRules.instruction(expectedScript, units, granularity)
+        // 服务端 max_tokens 会在约 8k tokens（中文一万三千字符左右）处截断输出，
+        // 长文一次生成必然半截 JSON；按 source unit 分批，每批独立校验，最后合并统一校验。
+        val batches = if (units.size <= STORYBOARD_UNITS_PER_CALL) listOf(units)
+        else units.chunked(STORYBOARD_UNITS_PER_CALL)
+        val merged = mutableListOf<Shot>()
+        var title = ""
+        var stylePreset = ""
+        batches.forEachIndexed { batchIndex, batch ->
+            // 批次内编号从 1 开始，模型只需要看本批的原文分段。
+            val localUnits = batch.mapIndexed { index, unit ->
+                StoryboardRules.SourceUnit(index + 1, unit.text, unit.fixedShot)
+            }
+            val result = try {
+                storyboardBatch(config, prompt, input, expectedScript, localUnits, granularity,
+                    batchIndex, batches.size, units.size, onRetry, onUsage)
+            } catch (error: IllegalStateException) {
+                throw IllegalStateException(
+                    "第 ${batchIndex + 1}/${batches.size} 批分镜失败：${error.message}", error)
+            }
+            if (title.isBlank()) title = result.title
+            if (stylePreset.isBlank()) stylePreset = result.stylePreset
+            result.shots.forEach { shot -> merged += shot.copy(id = merged.size + 1) }
+        }
+        StoryboardRules.validate(expectedScript, merged)
+        return StoryboardResult(title, stylePreset, merged)
+    }
+
+    private fun storyboardBatch(config: ProviderConfig, prompt: String, input: String,
+                                expectedScript: String, units: List<StoryboardRules.SourceUnit>,
+                                granularity: String, batchIndex: Int, batchCount: Int, totalUnits: Int,
+                                onRetry: () -> Unit, onUsage: (TextUsage) -> Unit): StoryboardResult {
+        val header = if (batchCount <= 1) "" else buildString {
+            append("\n\n【分批生成】全文共 $totalUnits 个 source unit，本批是第 ${batchIndex + 1}/$batchCount 批，")
+            append("对应全文第 ${batchIndex * STORYBOARD_UNITS_PER_CALL + 1}–")
+            append(batchIndex * STORYBOARD_UNITS_PER_CALL + units.size)
+            append(" 段；本批编号已从 1 重新开始。只输出本批的镜头，不要补全其他段落。\n")
+        }
+        val taskPrompt = prompt + header +
+            StoryboardRules.instruction(expectedScript, units, granularity, firstBatch = batchIndex == 0)
         val sourceInput = buildString {
             append(input.trim())
             append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
@@ -187,7 +228,9 @@ class CloudApi {
                     .put("text", unit.text).put("fixed_shot", unit.fixedShot)) }
             }.toString())
         }
-        return checkedStoryboard(expectedScript, units, onRetry, enforceOriginalCopy = true) { retryInstruction ->
+        // 每批只解析、不校验全文；合并后再由调用方做一次完整校验。
+        return checkedStoryboard(expectedScript, units, onRetry, enforceOriginalCopy = true,
+            validateResult = false) { retryInstruction ->
             text(config, taskPrompt + retryInstruction, sourceInput, onUsage = onUsage)
         }
     }
@@ -202,6 +245,7 @@ class CloudApi {
 
     internal fun checkedStoryboard(expectedScript: String, units: List<StoryboardRules.SourceUnit>,
                                    onRetry: () -> Unit = {}, enforceOriginalCopy: Boolean = false,
+                                   validateResult: Boolean = true,
                                    request: (String) -> String): StoryboardResult {
         var lastFailure = ""
         for (attempt in 0..1) {
@@ -210,7 +254,7 @@ class CloudApi {
             // Only invalid model output is retried. A transport error may already be billed.
             val content = request(retryInstruction)
             try {
-                return parseStoryboard(content, expectedScript, units, enforceOriginalCopy)
+                return parseStoryboard(content, expectedScript, units, enforceOriginalCopy, validateResult)
             } catch (error: JSONException) {
                 lastFailure = "分镜JSON不完整或字段格式无效"
             } catch (error: IllegalArgumentException) {
@@ -223,7 +267,8 @@ class CloudApi {
 
     private fun parseStoryboard(content: String, expectedScript: String,
                                 units: List<StoryboardRules.SourceUnit>,
-                                enforceOriginalCopy: Boolean): StoryboardResult {
+                                enforceOriginalCopy: Boolean,
+                                validateResult: Boolean = true): StoryboardResult {
         val raw = content.removePrefix("```json").removePrefix("```")
             .removeSuffix("```").trim()
         val objectStart = raw.indexOf('{')
@@ -340,7 +385,7 @@ class CloudApi {
             }
             shots.add(shot)
         }
-        StoryboardRules.validate(expectedScript, shots)
+        if (validateResult) StoryboardRules.validate(expectedScript, shots)
         return StoryboardResult(root?.optString("title").orEmpty(), root?.optString("style_preset").orEmpty(), shots)
     }
 
