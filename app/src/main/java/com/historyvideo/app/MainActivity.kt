@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -68,6 +69,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -509,8 +511,14 @@ class MainActivity : ComponentActivity() {
                             actionIconContentColor = HistoryColors.cinnabar
                         ),
                         title = {
-                            Text(when (screen) {
-                                "home" -> "史镜 · 图文创作台（$appVersion）"
+                            if (screen == "home") {
+                                Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                                    Text("史镜 · 图文创作台", style = MaterialTheme.typography.headlineSmall,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("AI 短剧成片 · $appVersion", style = MaterialTheme.typography.labelLarge,
+                                        color = HistoryColors.muted)
+                                }
+                            } else Text(when (screen) {
                                 "project" -> "制作此卷"
                                 "script" -> "成文"
                                 "shots" -> "生图"
@@ -536,8 +544,13 @@ class MainActivity : ComponentActivity() {
                             }
                         }, actions = {
                             if (screen == "home") {
-                                IconButton(onClick = { navigate("settings") }) {
-                                    Icon(Icons.Filled.Settings, contentDescription = "设置")
+                                Surface(onClick = { navigate("settings") }, shape = RoundedCornerShape(18.dp),
+                                    color = HistoryColors.card, border = BorderStroke(1.dp, HistoryColors.line),
+                                    modifier = Modifier.padding(end = 12.dp).size(52.dp)) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Filled.Settings, contentDescription = "设置", tint = HistoryColors.cinnabar,
+                                            modifier = Modifier.size(26.dp))
+                                    }
                                 }
                             }
                             if (screen == "history") {
@@ -556,6 +569,14 @@ class MainActivity : ComponentActivity() {
                                 OutlinedButton(onClick = { saveProject(selected); message = "草稿已保存" },
                                     enabled = selected.status != "running", shape = RoundedCornerShape(8.dp),
                                     modifier = Modifier.padding(end = 12.dp)) { Text("保存草稿") }
+                            }
+                            if ((screen == "script" || screen == "effects") && selected != null) {
+                                OutlinedButton(onClick = { saveProject(selected); message = "草稿已保存" },
+                                    enabled = selected.status != "running", shape = RoundedCornerShape(24.dp),
+                                    modifier = Modifier.padding(end = 10.dp),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 7.dp)) {
+                                    Text(if (screen == "script") "保存草稿" else "保存")
+                                }
                             }
                             if (screen == "shot" && selected != null) {
                                 val shotIndex = selected.shots.indexOfFirst { it.id == selectedShotId }
@@ -591,13 +612,18 @@ class MainActivity : ComponentActivity() {
                 }
                 when (screen) {
                     "home" -> {
-                        HomeScreen(currentProject, runningProject, now,
+                        HomeScreen(currentProject, runningProject, now, store,
+                            projects.filter { it.title.isNotBlank() },
                             onNew = ::newProject, onHistory = { navigate("history") }, onCurrent = {
                                 currentProject?.let {
                                     selectedId = it.id
                                     store.markCurrentProject(it.id); preferredCurrentId = it.id
                                     navigate(CurrentProjectRules.resumeScreen(it))
                                 }
+                            }, onRecent = { recent ->
+                                selectedId = recent.id
+                                store.markCurrentProject(recent.id); preferredCurrentId = recent.id
+                                navigate("project")
                             })
                     }
 
@@ -857,50 +883,104 @@ private fun HistoryScreen(projects: List<VideoProject>, store: ProjectStore, sea
 
 @Composable
 private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long,
-                       onNew: () -> Unit, onHistory: () -> Unit, onCurrent: () -> Unit) {
+                       store: ProjectStore, recentProjects: List<VideoProject>,
+                       onNew: () -> Unit, onHistory: () -> Unit, onCurrent: () -> Unit,
+                       onRecent: (VideoProject) -> Unit) {
     val task = CurrentProjectRules.taskLabel(running ?: current)
-    val elapsed = running?.taskStartedAt?.takeIf { it > 0L }?.let { " · 已执行 ${elapsedLabel(it, now)}" }.orEmpty()
-    Card(
-        onClick = onCurrent,
-        enabled = current != null,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
-    ) {
-        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("当前项目", style = MaterialTheme.typography.titleLarge, color = HistoryColors.ink)
-                Text(if (running != null) "制片中" else "待继续",
-                    color = if (running != null) HistoryColors.copper else HistoryColors.teal,
-                    fontWeight = FontWeight.Bold)
-            }
-            if (current == null) Text("尚未建立项目", style = MaterialTheme.typography.headlineSmall)
-            else if (current.title.isNotBlank()) Text(current.title, style = MaterialTheme.typography.headlineSmall)
-            Text("当前任务：$task$elapsed", color = HistoryColors.muted)
-            if (current != null) {
-                Button(onClick = onCurrent, modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) {
-                    Text("继续制片")
+    val active = running ?: current
+    val progress = active?.takeIf { it.total > 0 }?.let {
+        (it.completed.toFloat() / it.total.toFloat()).coerceIn(0f, 1f)
+    }
+    Card(onClick = onCurrent, enabled = current != null, modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp), border = BorderStroke(1.dp, HistoryColors.line),
+        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("当前项目", modifier = Modifier.weight(1f), color = HistoryColors.muted,
+                    style = MaterialTheme.typography.titleMedium)
+                Surface(shape = RoundedCornerShape(14.dp), color = if (running != null) HistoryColors.cinnabarSoft else HistoryColors.tealSoft) {
+                    Text(if (running != null) "制作中" else if (current?.status == "done") "已完成" else "待继续",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                        color = if (running != null) HistoryColors.cinnabar else HistoryColors.teal,
+                        fontWeight = FontWeight.Bold)
                 }
+            }
+            Text(current?.title?.takeIf { it.isNotBlank() } ?: "尚未建立项目",
+                style = MaterialTheme.typography.headlineMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            val elapsed = active?.taskStartedAt?.takeIf { it > 0L }?.let { " · 已执行 ${elapsedLabel(it, now)}" }.orEmpty()
+            Text("当前任务 · $task$elapsed", color = HistoryColors.muted, style = MaterialTheme.typography.bodyLarge)
+            if (progress != null && active != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(if (active.stage == "render" || active.status == "done") "合成进度" else "制作进度",
+                        style = MaterialTheme.typography.titleSmall, color = HistoryColors.muted)
+                    Text("${active.completed}/${active.total} · ${(progress * 100).toInt()}%",
+                        color = HistoryColors.cinnabar, fontWeight = FontWeight.Bold)
+                }
+                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(8.dp),
+                    color = HistoryColors.cinnabar, trackColor = HistoryColors.subcard)
+            }
+            Button(onClick = onCurrent, enabled = current != null, modifier = Modifier.fillMaxWidth().height(58.dp),
+                shape = RoundedCornerShape(30.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) {
+                Text(if (running != null) "继续制片" else "继续制作", style = MaterialTheme.typography.titleLarge)
             }
         }
     }
-    Text("快速入口", style = MaterialTheme.typography.titleLarge, color = HistoryColors.ink)
+    Text("快速入口", style = MaterialTheme.typography.headlineSmall, color = HistoryColors.ink)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Card(onClick = onNew, modifier = Modifier.weight(1f).height(132.dp), shape = RoundedCornerShape(8.dp),
+        Card(onClick = onNew, modifier = Modifier.weight(1f).height(174.dp), shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, HistoryColors.line),
             colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Filled.Add, contentDescription = null, tint = HistoryColors.cinnabar)
+            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(52.dp).background(HistoryColors.cinnabarSoft, RoundedCornerShape(18.dp)), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Add, contentDescription = null, tint = HistoryColors.cinnabar, modifier = Modifier.size(30.dp))
+                }
                 Text("新建一卷", style = MaterialTheme.typography.titleLarge)
                 Text("从题材、文案到成片", color = HistoryColors.muted)
             }
         }
-        Card(onClick = onHistory, modifier = Modifier.weight(1f).height(132.dp), shape = RoundedCornerShape(8.dp),
+        Card(onClick = onHistory, modifier = Modifier.weight(1f).height(174.dp), shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, HistoryColors.line),
             colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(painterResource(R.drawable.ic_image), contentDescription = null, tint = HistoryColors.muted)
+            Column(Modifier.fillMaxSize().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(52.dp).background(HistoryColors.subcard, RoundedCornerShape(18.dp)), contentAlignment = Alignment.Center) {
+                    Icon(painterResource(R.drawable.ic_image), contentDescription = null, tint = HistoryColors.muted, modifier = Modifier.size(28.dp))
+                }
                 Text("旧作存档", style = MaterialTheme.typography.titleLarge)
                 Text("继续编辑已有项目", color = HistoryColors.muted)
+            }
+        }
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text("最近创作", modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+        Text("共 ${recentProjects.size} 卷", color = HistoryColors.muted, style = MaterialTheme.typography.titleMedium)
+    }
+    val recent = recentProjects.take(2)
+    if (recent.isEmpty()) {
+        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, HistoryColors.line), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+            Text("还没有历史项目", modifier = Modifier.padding(20.dp), color = HistoryColors.muted)
+        }
+    } else Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, HistoryColors.line), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+        Column {
+            recent.forEachIndexed { index, project ->
+                Row(Modifier.fillMaxWidth().clickable { onRecent(project) }.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val firstShot = project.shots.firstOrNull()
+                    if (firstShot != null) ShotThumbnail(store.image(project, firstShot),
+                        Modifier.size(68.dp).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop)
+                    else Box(Modifier.size(68.dp).background(HistoryColors.subcard, RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
+                        Icon(painterResource(R.drawable.ic_image), contentDescription = null, tint = HistoryColors.muted)
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(project.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text("${DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(project.createdAt))} · ${projectStatusLabel(project.status)}",
+                            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                    }
+                    Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, tint = HistoryColors.line)
+                }
+                if (index < recent.lastIndex) HorizontalDivider(color = HistoryColors.line)
             }
         }
     }
@@ -1469,115 +1549,105 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
         },
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        ShotMotionSettingsCard(project, shot, busy, onChange = onMotionChange, onCutoutChange = onCutoutChange)
-        Box(Modifier.fillMaxWidth()) {
-            val selectedLabel = selectedSoundEffects.mapNotNull { effect ->
-                audioLibrary.asset(effect.assetId)?.name
-            }.joinToString("、").ifBlank { "无" }
-            ChoiceTile("本镜音效", selectedLabel, onClick = { soundMenu = true },
-                enabled = !busy, dropdown = true)
-            DropdownMenu(expanded = soundMenu && !busy, onDismissRequest = { soundMenu = false },
-                modifier = Modifier.fillMaxWidth(0.88f).heightIn(max = 380.dp)) {
-                DropdownMenuItem(text = { Text("无") },
-                    leadingIcon = if (selectedSoundEffects.isEmpty()) {
-                        { Icon(Icons.Filled.Check, contentDescription = null) }
-                    } else null,
-                    onClick = {
-                    selectedSoundEffects = emptyList()
-                    onSoundEffectsChange(emptyList()); soundMenu = false
-                })
-                audioLibrary.assets(AudioKind.SFX).forEach { asset ->
-                    val selected = selectedSoundEffects.any { it.assetId == asset.id }
-                    DropdownMenuItem(text = { Text(asset.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        leadingIcon = if (selected) { { Icon(Icons.Filled.Check, contentDescription = null) } } else null,
-                        onClick = {
-                        val next = if (selected) selectedSoundEffects.filterNot { it.assetId == asset.id }
-                            else selectedSoundEffects + ShotSoundEffect(asset.id)
-                        selectedSoundEffects = next
-                        onSoundEffectsChange(next)
-                    })
-                }
-            }
-        }
-        Text("试听此段会混合本镜配音和已选音效；成片从本镜开始播放音效。",
-            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-        Box(Modifier.fillMaxWidth().height(320.dp).clip(RoundedCornerShape(8.dp)).background(HistoryColors.subcard)) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1.02f).clip(RoundedCornerShape(26.dp)).background(HistoryColors.subcard)) {
             ShotThumbnail(imageFile, Modifier.fillMaxSize().pointerInput(imageFile.lastModified(), imageFile.length()) {
                 detectTapGestures(onDoubleTap = { showImage = true })
             })
+            Text("镜头 ${project.shotNumber(shot.id).toString().padStart(2, '0')}",
+                modifier = Modifier.align(Alignment.TopStart).padding(12.dp)
+                    .background(Color.Black.copy(alpha = 0.56f), RoundedCornerShape(14.dp))
+                    .padding(horizontal = 11.dp, vertical = 6.dp),
+                color = Color.White, style = MaterialTheme.typography.labelLarge)
+            Text("${"%.1f".format(shot.duration)} 秒",
+                modifier = Modifier.align(Alignment.BottomStart).padding(12.dp)
+                    .background(Color.Black.copy(alpha = 0.56f), RoundedCornerShape(14.dp))
+                    .padding(horizontal = 11.dp, vertical = 6.dp),
+                color = Color.White, style = MaterialTheme.typography.labelLarge)
             IconButton(onClick = { showImage = true }, enabled = imageFile.isFile,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp)
                     .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(8.dp))) {
                 Icon(painterResource(R.drawable.ic_fullscreen), contentDescription = "全屏看图", tint = Color.White)
             }
         }
-        Row(Modifier.fillMaxWidth().background(HistoryColors.card, RoundedCornerShape(8.dp)).padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically) {
-            Text("镜头 ${(shotIndex + 1).toString().padStart(2, '0')}", modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
-            Text("时长 ${"%.1f".format(shot.duration)} 秒", style = MaterialTheme.typography.labelMedium, color = HistoryColors.muted)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("画面已生成", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            StatusPill(imageSizeLabel(project.imageSize), HistoryColors.green)
         }
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(painterResource(R.drawable.ic_voice), contentDescription = null, modifier = Modifier.size(20.dp))
-            Text("配音文字", style = MaterialTheme.typography.titleMedium)
-        }
-        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
-            colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                BasicTextField(text, { text = it }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 8,
-                    enabled = !busy, textStyle = MaterialTheme.typography.bodyLarge)
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = { saveInputs(); onRun(project, GenerationService.AUDIO, shot.id) },
-                        enabled = !busy, shape = RoundedCornerShape(8.dp)) {
-                        Icon(painterResource(R.drawable.ic_voice), contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp)); Text("重配此段")
-                    }
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { clipboard.setText(AnnotatedString(text)) }) {
-                        Icon(painterResource(R.drawable.ic_copy), contentDescription = "复制配音文字", tint = HistoryColors.muted)
-                    }
-                    IconButton(onClick = { onPlay(project, shot) }, enabled = !busy,
-                        modifier = Modifier.background(HistoryColors.cinnabarSoft, CircleShape)) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = "试听此段", tint = HistoryColors.cinnabar)
-                    }
+        Text("配音", style = MaterialTheme.typography.titleLarge)
+        FormCard {
+            CompactInput(text, { text = it }, enabled = !busy, minLines = 2)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { saveInputs(); onRun(project, GenerationService.AUDIO, shot.id) },
+                    enabled = !busy, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(24.dp)) {
+                    Text("重新配此段")
+                }
+                IconButton(onClick = { clipboard.setText(AnnotatedString(text)) }) {
+                    Icon(painterResource(R.drawable.ic_copy), contentDescription = "复制配音文字", tint = HistoryColors.muted)
+                }
+                IconButton(onClick = { onPlay(project, shot) }, enabled = !busy,
+                    modifier = Modifier.background(HistoryColors.cinnabarSoft, CircleShape)) {
+                    Icon(Icons.Filled.PlayArrow, contentDescription = "试听配音和音效", tint = HistoryColors.cinnabar)
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(painterResource(R.drawable.ic_image), contentDescription = null, modifier = Modifier.size(20.dp))
-            Text("生图提示词", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-            IconButton(onClick = { clipboard.setText(AnnotatedString(prompt)) }) {
-                Icon(painterResource(R.drawable.ic_copy), contentDescription = "复制生图提示词", tint = HistoryColors.muted)
-            }
-        }
-        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
-            colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                BasicTextField(prompt, { prompt = it }, modifier = Modifier.fillMaxWidth(), minLines = 4, maxLines = 12,
-                    enabled = !busy, textStyle = MaterialTheme.typography.bodyLarge)
-                OutlinedButton(onClick = {
-                    saveInputs(); shot.error = ""; onSave(project)
-                    onRun(project, GenerationService.IMAGE, shot.id)
-                }, enabled = !busy, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
-                    Icon(painterResource(R.drawable.ic_image), contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(6.dp)); Text("生成新图片")
+        Text("画面设置", style = MaterialTheme.typography.titleLarge)
+        ShotMotionSettingsCard(project, shot, busy, onChange = onMotionChange, onCutoutChange = onCutoutChange)
+        FormCard {
+            Text("本镜音效", style = MaterialTheme.typography.titleLarge)
+            Box(Modifier.fillMaxWidth()) {
+                val selectedLabel = selectedSoundEffects.mapNotNull { effect -> audioLibrary.asset(effect.assetId)?.name }
+                    .joinToString("、").ifBlank { "无" }
+                ChoiceTile("音效", selectedLabel, onClick = { soundMenu = true }, enabled = !busy, dropdown = true)
+                DropdownMenu(expanded = soundMenu && !busy, onDismissRequest = { soundMenu = false },
+                    modifier = Modifier.fillMaxWidth(0.88f).heightIn(max = 380.dp)) {
+                    DropdownMenuItem(text = { Text("无") },
+                        leadingIcon = if (selectedSoundEffects.isEmpty()) ({ Icon(Icons.Filled.Check, contentDescription = null) }) else null,
+                        onClick = {
+                            selectedSoundEffects = emptyList()
+                            onSoundEffectsChange(emptyList()); soundMenu = false
+                        })
+                    audioLibrary.assets(AudioKind.SFX).forEach { asset ->
+                        val selected = selectedSoundEffects.any { it.assetId == asset.id }
+                        DropdownMenuItem(text = { Text(asset.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            leadingIcon = if (selected) ({ Icon(Icons.Filled.Check, contentDescription = null) }) else null,
+                            onClick = {
+                                val next = if (selected) selectedSoundEffects.filterNot { it.assetId == asset.id }
+                                    else selectedSoundEffects + ShotSoundEffect(asset.id)
+                                selectedSoundEffects = next
+                                onSoundEffectsChange(next)
+                            })
+                    }
                 }
+            }
+            Text("试听本镜会同步播放已选音效。", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+        }
+        FormCard {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("生图提示词", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+                IconButton(onClick = { clipboard.setText(AnnotatedString(prompt)) }) {
+                    Icon(painterResource(R.drawable.ic_copy), contentDescription = "复制生图提示词", tint = HistoryColors.muted)
+                }
+            }
+            CompactInput(prompt, { prompt = it }, enabled = !busy, minLines = 5)
+            OutlinedButton(onClick = {
+                saveInputs(); shot.error = ""; onSave(project)
+                onRun(project, GenerationService.IMAGE, shot.id)
+            }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(25.dp)) {
+                Text("生成新图片")
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { onNavigate(project.shots[shotIndex - 1].id) },
                 enabled = !busy && shotIndex > 0, modifier = Modifier.weight(1f), contentPadding = PaddingValues(6.dp),
-                shape = RoundedCornerShape(8.dp)) {
+                shape = RoundedCornerShape(24.dp)) {
                 Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = null, modifier = Modifier.size(18.dp))
                 Text("上一镜", style = MaterialTheme.typography.labelMedium, maxLines = 1)
             }
             Button(onClick = ::saveInputs, enabled = !busy, modifier = Modifier.weight(1.3f),
-                contentPadding = PaddingValues(6.dp), shape = RoundedCornerShape(8.dp)) { Text("保存本段", maxLines = 1) }
+                contentPadding = PaddingValues(6.dp), shape = RoundedCornerShape(24.dp)) { Text("保存本段", maxLines = 1) }
             OutlinedButton(onClick = { onNavigate(project.shots[shotIndex + 1].id) },
                 enabled = !busy && shotIndex >= 0 && shotIndex < project.shots.lastIndex,
-                modifier = Modifier.weight(1f), contentPadding = PaddingValues(6.dp), shape = RoundedCornerShape(8.dp)) {
+                modifier = Modifier.weight(1f), contentPadding = PaddingValues(6.dp), shape = RoundedCornerShape(24.dp)) {
                 Text("下一镜", style = MaterialTheme.typography.labelMedium, maxLines = 1)
                 Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, modifier = Modifier.size(18.dp))
             }
@@ -1641,34 +1711,34 @@ private fun ShotMotionSettingsCard(project: VideoProject, shot: Shot, busy: Bool
     var directionMenu by remember(shot.id) { mutableStateOf(false) }
     var zoomMenu by remember(shot.id) { mutableStateOf(false) }
     val modeChoices = listOf("default" to "使用默认运动") + ShotMotionRules.modes
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    FormCard {
+        Text("运动类型", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("本镜图片运动", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                OutlinedButton(onClick = { onCutoutChange(!shot.cutoutEnabled) },
-                    enabled = !busy && (shot.cutoutEnabled || modelsReady)) {
-                    Text(if (shot.cutoutEnabled) "取消抠图" else "开启抠图")
-                }
-            }
-            Box(Modifier.fillMaxWidth()) {
-                ChoiceTile("运动类型", if (shot.cutoutEnabled) "人物抠图已启用" else
-                    modeChoices.firstOrNull { it.first == mode }?.second ?: "使用默认运动",
-                    onClick = { modeMenu = true }, enabled = enabled, dropdown = true)
-                DropdownMenu(expanded = modeMenu && enabled, onDismissRequest = { modeMenu = false }) {
-                    modeChoices.forEach { (id, label) ->
-                        DropdownMenuItem(text = { Text(label) }, onClick = {
-                            modeMenu = false
-                            val next = if (id == "default") null else {
-                                val direction = setting?.direction?.takeIf { value ->
-                                    ShotMotionRules.directions.any { it.first == value }
-                                } ?: "left_to_right"
-                                ShotMotionSetting(id, direction,
-                                    if (id == "zoom_pan") setting?.zoomDirection ?: "in" else "in")
-                            }
-                            if (ShotMotionRules.normalize(next) != setting) onChange(next)
-                        })
+                Box(Modifier.weight(1f)) {
+                    ChoiceTile("", if (shot.cutoutEnabled) "人物抠图已启用" else
+                        modeChoices.firstOrNull { it.first == mode }?.second ?: "使用默认运动",
+                        onClick = { modeMenu = true }, enabled = enabled, dropdown = true)
+                    DropdownMenu(expanded = modeMenu && enabled, onDismissRequest = { modeMenu = false }) {
+                        modeChoices.forEach { (id, label) ->
+                            DropdownMenuItem(text = { Text(label) }, onClick = {
+                                modeMenu = false
+                                val next = if (id == "default") null else {
+                                    val direction = setting?.direction?.takeIf { value ->
+                                        ShotMotionRules.directions.any { it.first == value }
+                                    } ?: "left_to_right"
+                                    ShotMotionSetting(id, direction,
+                                        if (id == "zoom_pan") setting?.zoomDirection ?: "in" else "in")
+                                }
+                                if (ShotMotionRules.normalize(next) != setting) onChange(next)
+                            })
+                        }
                     }
+                }
+                OutlinedButton(onClick = { onCutoutChange(!shot.cutoutEnabled) },
+                    enabled = !busy && (shot.cutoutEnabled || modelsReady),
+                    shape = RoundedCornerShape(24.dp)) {
+                    Text(if (shot.cutoutEnabled) "关闭抠图" else "人物抠图")
                 }
             }
             if (!shot.cutoutEnabled && (mode == "pan" || mode == "zoom_pan")) {
@@ -1776,16 +1846,16 @@ private fun FlowStepBar(project: VideoProject) {
         project.stage in setOf("shots", "images", "tts") -> 1
         else -> 0
     }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         steps.forEachIndexed { index, label ->
             val done = index < current || project.status == "done"
             val active = index == current
             Column(Modifier.weight(1f), horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Box(
-                    modifier = Modifier.size(32.dp)
-                        .background(if (done) HistoryColors.green else if (active) HistoryColors.cinnabar else HistoryColors.subcard,
-                            CircleShape),
+                    modifier = Modifier.size(38.dp).background(
+                        if (done) HistoryColors.green else if (active) HistoryColors.cinnabar else HistoryColors.subcard,
+                        CircleShape),
                     contentAlignment = androidx.compose.ui.Alignment.Center
                 ) {
                     if (done) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White)
@@ -2048,70 +2118,109 @@ private fun ProjectOverviewScreen(project: VideoProject,
     val busy = project.status == "running"
     val firstImage = project.shots.firstOrNull()?.let { store.image(project, it) }
     var confirmCancel by remember { mutableStateOf(false) }
-    Box(Modifier.fillMaxWidth().height(126.dp).clip(RoundedCornerShape(8.dp)).background(HistoryColors.ink)) {
+    Box(Modifier.fillMaxWidth().aspectRatio(1.72f).clip(RoundedCornerShape(24.dp)).background(HistoryColors.subcard)) {
         if (firstImage != null && firstImage.isFile) ShotThumbnail(firstImage, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)))
-        Column(Modifier.align(Alignment.CenterStart).padding(16.dp).padding(end = 62.dp)) {
-            Text(project.title.ifBlank { "未命名项目" }, color = Color.White, style = MaterialTheme.typography.titleLarge,
-                maxLines = 3, overflow = TextOverflow.Ellipsis)
-        }
-        IconButton(onClick = onOpenScript, enabled = !busy, modifier = Modifier.align(Alignment.BottomEnd)) {
-            Icon(Icons.Filled.Edit, contentDescription = "编辑题材", tint = Color.White)
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)))
+        Text(project.title.ifBlank { "未命名项目" }, modifier = Modifier.align(Alignment.BottomStart).padding(18.dp).padding(end = 64.dp),
+            color = Color.White, style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        IconButton(onClick = onOpenScript, enabled = !busy,
+            modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp).background(Color.White, RoundedCornerShape(14.dp))) {
+            Icon(Icons.Filled.Edit, contentDescription = "编辑题目", tint = HistoryColors.ink)
         }
     }
     FlowStepBar(project)
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), border = BorderStroke(1.dp, HistoryColors.line),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(if (project.stage == "render" || project.status == "done") "合成进度" else "制作进度",
-                style = MaterialTheme.typography.titleMedium)
-            ProjectProgress(project)
-            if (hasOutput) TextButton(onClick = onOpenResults) { Text("查看视频与封面") }
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(11.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(if (project.stage == "render" || project.status == "done") "合成进度" else "制作进度",
+                        style = MaterialTheme.typography.titleLarge)
+                    Text(project.detail.ifBlank { "继续完成本卷内容" }, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                StatusPill(projectStatusLabel(project.status),
+                    if (project.status == "done") HistoryColors.green else if (busy) HistoryColors.cinnabar else HistoryColors.teal)
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("${project.completed} / ${project.total.coerceAtLeast(project.shots.size)} 镜",
+                    modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+                val percent = if (project.total > 0) (project.completed * 100 / project.total).coerceIn(0, 100) else 0
+                StatusPill("$percent%", HistoryColors.cinnabar)
+            }
+            val progress = if (project.total > 0) (project.completed.toFloat() / project.total).coerceIn(0f, 1f) else 0f
+            LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(7.dp),
+                color = HistoryColors.cinnabar, trackColor = HistoryColors.subcard)
+            if (hasOutput) Row(Modifier.fillMaxWidth().clickable(onClick = onOpenResults), verticalAlignment = Alignment.CenterVertically) {
+                Text("查看视频与封面", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, tint = HistoryColors.muted)
+            }
         }
     }
     ProjectCostSummary(project, store, onOpenDetails = onOpenCosts,
         selectedCategory = "", onSelectCategory = onFilterCosts)
-    Text("本卷内容", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 4.dp))
+    Text("本卷内容", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 4.dp))
     val items = listOf(
-        Triple("成文", if (project.script.isBlank()) "选题、正文与封面文案" else "正文已保存", onOpenScript),
-        Triple("生图", "${project.shots.size} 个镜头 · 图片与配音", onOpenShots),
-        Triple("画面与章法", "字幕、转场、封面与开头模板", onOpenEffects)
+        Triple("成文", if (project.script.isBlank()) "题目、文案和封面文案" else "正文已保存 · ${project.script.length} 字", onOpenScript,
+            project.script.isNotBlank()),
+        Triple("生图", "${project.shots.size} 个镜头 · 图片与配音", onOpenShots, project.shots.isNotEmpty()),
+        Triple("画面与章法", "字幕、转场、封面与开头节奏", onOpenEffects, project.shots.isNotEmpty())
     )
-    items.forEachIndexed { index, (title, detail, action) ->
-        Row(Modifier.fillMaxWidth().clickable(onClick = action).padding(vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            val ready = when (index) {
-                0 -> project.script.isNotBlank()
-                1 -> project.shots.isNotEmpty()
-                else -> project.shots.isNotEmpty()
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), border = BorderStroke(1.dp, HistoryColors.line),
+        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+        Column {
+            items.forEachIndexed { index, (title, detail, action, ready) ->
+                Row(Modifier.fillMaxWidth().clickable(onClick = action).padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(36.dp).background(if (ready) HistoryColors.tealSoft else HistoryColors.subcard, CircleShape),
+                        contentAlignment = Alignment.Center) {
+                        if (ready) Icon(Icons.Filled.Check, contentDescription = null, tint = HistoryColors.green, modifier = Modifier.size(20.dp))
+                        else Text("${index + 1}", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(title, style = MaterialTheme.typography.titleMedium)
+                        Text(detail, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+                    }
+                    Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, tint = HistoryColors.line)
+                }
+                if (index < items.lastIndex) HorizontalDivider(color = HistoryColors.line)
             }
-            Box(Modifier.size(26.dp).background(if (ready) HistoryColors.green else HistoryColors.subcard, CircleShape),
-                contentAlignment = Alignment.Center) {
-                if (ready) Icon(Icons.Filled.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                else Text("${index + 1}", style = MaterialTheme.typography.labelSmall)
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(title, style = MaterialTheme.typography.titleSmall)
-                Text(detail, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-            }
-            Icon(Icons.Filled.KeyboardArrowRight, contentDescription = null, tint = HistoryColors.muted)
         }
-        if (index < items.lastIndex) HorizontalDivider(color = HistoryColors.line)
     }
     Button(onClick = onRender, enabled = !busy && project.shots.isNotEmpty(),
-        modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(8.dp)) {
+        modifier = Modifier.fillMaxWidth().height(56.dp), shape = RoundedCornerShape(30.dp)) {
         Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
         Spacer(Modifier.width(8.dp))
         Text(if (busy) "正在制作中…" else if (hasOutput) "重新渲染视频" else "渲染视频")
     }
     if (busy) OutlinedButton(onClick = { confirmCancel = true }, modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp)) { Text("暂停制作") }
+        shape = RoundedCornerShape(24.dp)) { Text("暂停制作") }
     if (hasOutput) {
-        Card(onClick = onOpenResults, modifier = Modifier.fillMaxWidth().height(82.dp), shape = RoundedCornerShape(8.dp),
+        Card(onClick = onOpenResults, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, HistoryColors.line),
             colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("成片结果", style = MaterialTheme.typography.titleMedium)
-                Text("视频与主页封面", color = HistoryColors.muted)
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Text("成片结果", style = MaterialTheme.typography.titleLarge)
+                Box(Modifier.fillMaxWidth().aspectRatio(1.65f).clip(RoundedCornerShape(18.dp)).background(HistoryColors.subcard)) {
+                    val coverFile = store.cover(project)
+                    val previewFile = coverFile.takeIf { it.isFile && it.length() > 1000 } ?: firstImage
+                    if (previewFile != null && previewFile.isFile) ShotThumbnail(previewFile, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    Box(Modifier.align(Alignment.Center).size(54.dp).background(Color.White.copy(alpha = 0.92f), CircleShape),
+                        contentAlignment = Alignment.Center) { Icon(Icons.Filled.PlayArrow, contentDescription = "打开成片", tint = HistoryColors.cinnabar) }
+                    Text(if (project.status == "done") "已生成" else "待更新",
+                        modifier = Modifier.align(Alignment.TopEnd).padding(9.dp)
+                            .background(if (project.status == "done") HistoryColors.tealSoft else HistoryColors.subcard, RoundedCornerShape(12.dp))
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        color = if (project.status == "done") HistoryColors.green else HistoryColors.muted,
+                        style = MaterialTheme.typography.labelMedium)
+                }
+                Text("成片 · ${imageSizeLabel(project.imageSize)}", style = MaterialTheme.typography.titleMedium)
+                Text("${store.output(project).length() / 1_048_576} MB · ${videoDurationLabel(project.duration)}",
+                    color = HistoryColors.muted, style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onOpenResults, modifier = Modifier.weight(1f), shape = RoundedCornerShape(24.dp)) { Text("播放成片") }
+                    OutlinedButton(onClick = onOpenResults, modifier = Modifier.weight(1f), shape = RoundedCornerShape(24.dp)) { Text("下载") }
+                }
             }
         }
     }
@@ -2244,6 +2353,49 @@ private fun CompletedVideoPreview(file: File, imageSize: String) {
         Text("${(position / 1000).toInt()} / ${(videoDuration / 1000).toInt()}秒", style = MaterialTheme.typography.labelSmall)
     }
     if (error.isNotBlank()) Text(error, color = HistoryColors.ochre, style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+private fun FormCard(content: @Composable ColumnScope.() -> Unit) {
+    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
+        border = BorderStroke(1.dp, HistoryColors.line),
+        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
+    }
+}
+
+@Composable
+private fun StepCaption(step: Int, text: String, modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(shape = RoundedCornerShape(12.dp), color = HistoryColors.cinnabarSoft) {
+            Text("第 $step 步", modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelLarge, color = HistoryColors.cinnabar, fontWeight = FontWeight.Bold)
+        }
+        Text(text, color = HistoryColors.muted, style = MaterialTheme.typography.bodySmall,
+            maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun StatusPill(text: String, color: Color) {
+    val background = when (color) {
+        HistoryColors.green -> HistoryColors.tealSoft
+        HistoryColors.cinnabar -> HistoryColors.cinnabarSoft
+        else -> HistoryColors.subcard
+    }
+    Surface(shape = RoundedCornerShape(12.dp), color = background) {
+        Text(text, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            color = color, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun CompactInput(value: String, onValueChange: (String) -> Unit, enabled: Boolean = true,
+                        minLines: Int = 1, textStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyLarge) {
+    BasicTextField(value, onValueChange, enabled = enabled,
+        modifier = Modifier.fillMaxWidth().background(HistoryColors.subcard, RoundedCornerShape(14.dp)).padding(14.dp),
+        textStyle = textStyle, minLines = minLines, maxLines = if (minLines == 1) 1 else maxOf(minLines, 10),
+        singleLine = minLines == 1)
 }
 
 @Composable
@@ -2397,84 +2549,127 @@ private fun ScriptScreen(project: VideoProject,
         return updated
     }
     ProjectProgress(project)
-    Text("题目", style = MaterialTheme.typography.titleLarge)
-    InputTile("", title, { title = it }, enabled = !busy, minLines = 1)
-    InputTile("封面文案", coverText, { coverText = it }, enabled = !busy, minLines = 1,
-        maxLength = 5, modifier = Modifier.fillMaxWidth(0.55f))
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        StepCaption(1, "定题目、写文案，再拆成镜头", Modifier.weight(1f))
+        OutlinedButton(onClick = { saveInputs(saveScript = true) }, enabled = !busy,
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp), shape = RoundedCornerShape(22.dp)) {
+            Text("保存草稿")
+        }
+    }
+    FormCard {
+        Text("题目", style = MaterialTheme.typography.titleSmall, color = HistoryColors.muted)
+        CompactInput(title, { title = it }, enabled = !busy, minLines = 1, textStyle = MaterialTheme.typography.titleMedium)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("建议 12–22 字，越具体越容易出爆款", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            Text("${title.codePointCount(0, title.length)} 字", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+        }
+    }
+    FormCard {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("封面文案", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, color = HistoryColors.muted)
+            Surface(shape = RoundedCornerShape(10.dp), color = HistoryColors.subcard) {
+                Text("可选", modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    style = MaterialTheme.typography.labelSmall, color = HistoryColors.muted)
+            }
+        }
+        CompactInput(coverText, { coverText = limitCodePoints(it, 5) }, enabled = !busy, minLines = 1)
+        Text("会在封面与开头 0.5 秒处同步出现，建议 2–6 字。",
+            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+    }
     Text("背景音乐", style = MaterialTheme.typography.titleLarge)
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp),
-        verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.weight(1.15f)) {
-            ChoiceTile("BGM", bgmChoices.firstOrNull { it.first == bgmId }?.second ?: "无",
+    FormCard {
+        Text("BGM", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
+        Box(Modifier.fillMaxWidth()) {
+            ChoiceTile("", bgmChoices.firstOrNull { it.first == bgmId }?.second ?: "无",
                 onClick = { bgmMenu = true }, enabled = !busy, dropdown = true)
             DropdownMenu(expanded = bgmMenu, onDismissRequest = { bgmMenu = false }) {
                 (listOf("none" to "无") + bgmChoices).forEach { (id, label) ->
                     DropdownMenuItem(text = { Text(label) }, onClick = {
-                        bgmMenu = false
-                        bgmId = id
-                        saveInputs()
-                        preview(id)
+                        bgmMenu = false; bgmId = id; saveInputs(); preview(id)
                     })
                 }
             }
         }
-        InputTile("音量 %", bgmVolume, { value ->
-            bgmVolume = value.filter(Char::isDigit).take(3)
-            saveInputs()
-        }, enabled = !busy, minLines = 1, modifier = Modifier.weight(0.85f))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("音量", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
+            Text("${(bgmVolume.toFloatOrNull() ?: 18f).toInt()}%", color = HistoryColors.cinnabar,
+                style = MaterialTheme.typography.titleSmall)
+        }
+        Slider(value = ((bgmVolume.toFloatOrNull() ?: 18f) / 100f).coerceIn(0f, 1f),
+            onValueChange = { value -> bgmVolume = (value * 100).toInt().toString() },
+            onValueChangeFinished = { saveInputs() }, enabled = !busy, colors = androidx.compose.material3.SliderDefaults.colors(
+                thumbColor = HistoryColors.card, activeTrackColor = HistoryColors.cinnabar,
+                inactiveTrackColor = HistoryColors.line))
+        if (project.shots.isNotEmpty()) {
+            val startShot = project.shots.firstOrNull { it.id == bgmStartShotId } ?: project.shots.first()
+            Text("BGM 起播分镜", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
+            Box(Modifier.fillMaxWidth()) {
+                ChoiceTile("", "第 ${project.shotNumber(startShot.id)} 镜 · ${startShot.text.take(24)}",
+                    onClick = { bgmStartMenu = true }, enabled = !busy && bgmId != "none", dropdown = true)
+                DropdownMenu(expanded = bgmStartMenu && !busy, onDismissRequest = { bgmStartMenu = false },
+                    modifier = Modifier.fillMaxWidth(0.9f).heightIn(max = 360.dp)) {
+                    project.shots.forEach { shot ->
+                        DropdownMenuItem(text = { Text("第 ${project.shotNumber(shot.id)} 镜 · ${shot.text.take(36)}",
+                            maxLines = 2, overflow = TextOverflow.Ellipsis) }, onClick = {
+                            bgmStartShotId = shot.id; bgmStartMenu = false; saveInputs()
+                        })
+                    }
+                }
+            }
+        } else Text("拆分镜头后选择起播位置", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
     }
-    if (project.shots.isNotEmpty()) {
-        val startShot = project.shots.firstOrNull { it.id == bgmStartShotId } ?: project.shots.first()
-        Box(Modifier.fillMaxWidth()) {
-            ChoiceTile("BGM 起播分镜", "第 ${project.shotNumber(startShot.id)} 镜 · ${startShot.text.take(18)}",
-                onClick = { bgmStartMenu = true }, enabled = !busy && bgmId != "none", dropdown = true)
-            DropdownMenu(expanded = bgmStartMenu && !busy, onDismissRequest = { bgmStartMenu = false },
-                modifier = Modifier.fillMaxWidth(0.88f).heightIn(max = 360.dp)) {
-                project.shots.forEach { shot ->
-                    DropdownMenuItem(text = {
-                        Text("第 ${project.shotNumber(shot.id)} 镜 · ${shot.text.take(32)}",
-                            maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    }, onClick = {
-                        bgmStartShotId = shot.id
-                        bgmStartMenu = false
-                        saveInputs()
-                    })
-                }
-            }
-        }
-    } else Text("拆分镜头后可选择 BGM 起播分镜", style = MaterialTheme.typography.bodySmall,
-        color = HistoryColors.muted)
     if (previewError.isNotBlank()) Text(previewError, color = MaterialTheme.colorScheme.error)
-    Box(Modifier.fillMaxWidth()) {
-        val granularityLabels = mapOf("coarse" to "粗", "balanced" to "平衡", "fine" to "细")
-        ChoiceTile("分镜粒度", granularityLabels[granularity] ?: "平衡",
-            onClick = { granularityMenu = true }, enabled = !busy, dropdown = true)
-        DropdownMenu(expanded = granularityMenu, onDismissRequest = { granularityMenu = false }) {
-            listOf("coarse" to "粗 · 40–65字", "balanced" to "平衡 · 20–35字", "fine" to "细 · 12–22字")
-                .forEach { (id, label) -> DropdownMenuItem(text = { Text(label) }, onClick = {
-                    granularity = id; granularityMenu = false; saveInputs()
-                }) }
-        }
-    }
-    Button(onClick = {
-        val updated = saveInputs(saveScript = true)
-        stopPreview()
-        onRun(updated, GenerationService.SCRIPT, 0)
-    }, enabled = !busy && title.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
-        Text(if (script.isBlank()) "生成正文" else "重新生成正文")
-    }
-    Text(if (script.isBlank()) "正文" else "正文 · ${script.length} 字", style = MaterialTheme.typography.titleLarge)
-    InputTile("口播文案", script, { script = it }, enabled = !busy, minLines = 6)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = { saveInputs(saveScript = true) },
-            enabled = !busy && script.isNotBlank()) { Text("保存文案") }
-        Button(onClick = {
-            if (project.shots.isNotEmpty()) confirmSplit = true else {
-                val updated = saveInputs(saveScript = true)
-                stopPreview()
-                onRun(updated, GenerationService.SHOTS, 0)
+    FormCard {
+        Text("生成设置", style = MaterialTheme.typography.titleLarge)
+        Text("分镜粒度", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
+        val options = listOf("fine" to "精细", "balanced" to "平衡", "coarse" to "粗略")
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(HistoryColors.subcard).padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            options.forEach { (id, label) ->
+                val selected = granularity == id
+                Surface(onClick = { granularity = id; saveInputs() }, enabled = !busy,
+                    modifier = Modifier.weight(1f).height(42.dp), shape = RoundedCornerShape(20.dp),
+                    color = if (selected) HistoryColors.card else Color.Transparent,
+                    shadowElevation = if (selected) 1.dp else 0.dp) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(label, color = if (selected) HistoryColors.ink else HistoryColors.muted,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium)
+                    }
+                }
             }
-        }, enabled = !busy && script.isNotBlank()) { Text("拆分镜头") }
+        }
+        Text(when (granularity) {
+            "fine" -> "精细：每镜约 12–22 字，节奏更快。"
+            "coarse" -> "粗略：每镜约 40–65 字，减少镜头数量。"
+            else -> "平衡：按语义切 20–35 字，适合口播短剧。"
+        }, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+    }
+    FormCard {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("正文", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            Text("${script.codePointCount(0, script.length)} 字", color = HistoryColors.muted)
+        }
+        CompactInput(script, { script = it }, enabled = !busy, minLines = 7)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedButton(onClick = { saveInputs(saveScript = true) },
+                enabled = !busy && script.isNotBlank(), modifier = Modifier.weight(1f).height(52.dp),
+                shape = RoundedCornerShape(28.dp)) { Text("保存文案") }
+            Button(onClick = {
+                if (project.shots.isNotEmpty()) confirmSplit = true else {
+                    val updated = saveInputs(saveScript = true)
+                    stopPreview(); onRun(updated, GenerationService.SHOTS, 0)
+                }
+            }, enabled = !busy && script.isNotBlank(), modifier = Modifier.weight(1f).height(52.dp),
+                shape = RoundedCornerShape(28.dp)) { Text("拆分镜头") }
+        }
+        Button(onClick = {
+            val updated = saveInputs(saveScript = true)
+            stopPreview(); onRun(updated, GenerationService.SCRIPT, 0)
+        }, enabled = !busy && title.isNotBlank(), modifier = Modifier.fillMaxWidth().height(52.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.card, contentColor = HistoryColors.ink),
+            shape = RoundedCornerShape(28.dp), border = BorderStroke(1.dp, HistoryColors.line)) {
+            Text(if (script.isBlank()) "生成文案" else "重新生成正文")
+        }
     }
     if (confirmSplit) {
         AlertDialog(
@@ -2510,18 +2705,22 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
     }.map { it.id }.toSet()
     val visibleShots = if (missingImagesOnly) project.shots.filter { it.id in missingImageIds } else project.shots
     ProjectProgress(project)
-    Text("${project.shots.size} 镜", style = MaterialTheme.typography.titleLarge)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        StepCaption(2, "图片按镜头逐张生成，配音按正文批量生成", Modifier.weight(1f))
+        Text("${project.shots.size} 镜", style = MaterialTheme.typography.titleMedium, color = HistoryColors.muted)
+    }
     if (project.shots.isEmpty()) {
-        Text("尚未拆镜，请先在成文页面输入或生成正文。", color = HistoryColors.muted)
+        FormCard { Text("尚未拆镜，请先在成文页拆分镜头。", color = HistoryColors.muted) }
     } else {
-        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(HistoryColors.subcard).padding(4.dp),
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(24.dp)).background(HistoryColors.subcard).padding(4.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf(false to "全部镜头 · ${project.shots.size}", true to "未生成图片 · ${missingImageIds.size}")
                 .forEach { (missingOnly, label) ->
                     val selected = missingImagesOnly == missingOnly
-                    Surface(modifier = Modifier.weight(1f).height(48.dp)
+                    Surface(modifier = Modifier.weight(1f).height(46.dp)
                         .selectable(selected = selected, role = Role.Tab, onClick = { missingImagesOnly = missingOnly }),
-                        shape = RoundedCornerShape(6.dp), color = if (selected) HistoryColors.card else Color.Transparent) {
+                        shape = RoundedCornerShape(22.dp), color = if (selected) HistoryColors.card else Color.Transparent,
+                        shadowElevation = if (selected) 1.dp else 0.dp) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1,
                                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
@@ -2530,16 +2729,17 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
                     }
                 }
         }
-        Button(onClick = { onRun(project, GenerationService.VOICE_ALL, 0) },
-            enabled = !busy, modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) { Text("生成配音") }
-        Button(onClick = { onRun(project, GenerationService.IMAGE_ALL, 0) },
-            enabled = !busy, modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.teal)) { Text("生成图片") }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { onRun(project, GenerationService.IMAGE_ALL, 0) },
+                enabled = !busy, modifier = Modifier.weight(1f).height(54.dp), shape = RoundedCornerShape(28.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) { Text("生成图片") }
+            OutlinedButton(onClick = { onRun(project, GenerationService.VOICE_ALL, 0) },
+                enabled = !busy, modifier = Modifier.weight(1f).height(54.dp), shape = RoundedCornerShape(28.dp)) { Text("生成配音") }
+        }
         val voiceReady = project.shots.all { it.audioStatus == "done" }
         OutlinedButton(onClick = { onPlayVoice(project) },
-            enabled = !busy && voiceReady, modifier = Modifier.fillMaxWidth()) {
-            Text(if (voiceReady) "试听配音、BGM和镜头音效" else "配音完成后可试听完整混音")
+            enabled = !busy && voiceReady, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+            Text("试听全部 · 配音、BGM和镜头音效")
         }
         if (missingImagesOnly && visibleShots.isEmpty()) {
             Text("所有镜头图片均已生成", modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
@@ -2547,7 +2747,7 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
         }
         visibleShots.forEach { shot ->
             key(project.id, shot.id) {
-                ShotListItem(shot, project.shotNumber(shot.id), store.image(project, shot), busy,
+                ShotListItem(shot, project.shotNumber(shot.id), store.image(project, shot), busy, audioLibrary,
                     onClick = { onOpenShot(shot.id) }, onPlay = { onPlay(project, shot) })
             }
         }
@@ -2561,32 +2761,45 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
 
 @Composable
 private fun ShotListItem(shot: Shot, displayNumber: Int, imageFile: File, busy: Boolean,
-                         onClick: () -> Unit, onPlay: () -> Unit) {
+                         audioLibrary: AudioLibrary, onClick: () -> Unit, onPlay: () -> Unit) {
     val imageReady = shot.imageStatus == "done" && imageFile.isFile && imageFile.length() > 1000
+    val soundLabel = shot.soundEffects.mapNotNull { audioLibrary.asset(it.assetId)?.name }.joinToString("、").ifBlank { "无人声效" }
     Card(
         onClick = onClick,
         enabled = !busy,
-        modifier = Modifier.fillMaxWidth().border(1.dp, HistoryColors.line, RoundedCornerShape(8.dp)),
-        shape = RoundedCornerShape(8.dp),
+        modifier = Modifier.fillMaxWidth().border(1.dp, HistoryColors.line, RoundedCornerShape(24.dp)),
+        shape = RoundedCornerShape(24.dp),
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)
     ) {
-        Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Box(Modifier.width(82.dp).height(104.dp).clip(RoundedCornerShape(8.dp)).background(HistoryColors.subcard)) {
+        Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(102.dp).clip(RoundedCornerShape(18.dp)).background(HistoryColors.subcard)) {
                 ShotThumbnail(imageFile, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                Text(displayNumber.toString().padStart(2, '0'), modifier = Modifier.align(Alignment.TopStart)
+                    .padding(6.dp).background(Color.Black.copy(alpha = 0.58f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp), color = Color.White, style = MaterialTheme.typography.labelLarge)
             }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("镜头 ${displayNumber.toString().padStart(2, '0')}", style = MaterialTheme.typography.titleLarge, color = HistoryColors.cinnabar)
-                Text(shot.text.take(70), maxLines = 2, style = MaterialTheme.typography.bodySmall)
-                if (shot.cutoutEnabled || shot.motionSetting != null) Text(
-                    if (shot.cutoutEnabled) "人物抠图" else ShotMotionRules.label(shot.motionSetting),
-                    style = MaterialTheme.typography.labelSmall, color = HistoryColors.muted)
-                Text(when {
-                    shot.imageStatus == "failed" -> "图片生成失败"
-                    imageReady -> "画面已生成"
-                    else -> "画面待生成"
-                }, color = if (imageReady) HistoryColors.green else if (shot.imageStatus == "failed") HistoryColors.cinnabar else HistoryColors.muted,
-                    style = MaterialTheme.typography.labelSmall)
-                TextButton(onClick = onPlay, enabled = !busy) { Text("试听此段") }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("镜头 ${displayNumber.toString().padStart(2, '0')}", modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.titleLarge)
+                    StatusPill(when {
+                        shot.imageStatus == "failed" -> "待重生成"
+                        imageReady -> "已生成"
+                        else -> "未生成"
+                    }, if (imageReady) HistoryColors.green else HistoryColors.muted)
+                }
+                Text(shot.text, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                Text("${"%.1f".format(shot.duration)} 秒 · $soundLabel", style = MaterialTheme.typography.bodySmall,
+                    color = HistoryColors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onPlay, enabled = !busy, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                        Text("试听 ›", color = HistoryColors.cinnabar)
+                    }
+                    TextButton(onClick = onClick, enabled = !busy, contentPadding = PaddingValues(horizontal = 6.dp)) {
+                        Text(if (imageReady) "查看 ›" else "生成 ›", color = HistoryColors.cinnabar)
+                    }
+                }
             }
         }
     }
@@ -2605,17 +2818,21 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     val transitionChoices = listOf("random" to "逐镜随机", "none" to "无", "fade" to "柔和叠化",
         "dissolve" to "颗粒溶解", "smoothleft" to "平滑左推", "zoomin" to "推近切换", "fadeblack" to "黑场淡化")
     val busy = project.status == "running"
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("字幕", style = MaterialTheme.typography.titleLarge)
-            ChoiceTile("当前状态", if (subtitle) "开启" else "关闭", onClick = {
-                subtitle = !subtitle; project.subtitlesEnabled = subtitle; onSave(project)
+    StepCaption(3, "字幕、转场、封面与开头节奏")
+    FormCard {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("字幕", style = MaterialTheme.typography.titleMedium)
+                Text("成片自动烧录，随配音逐句出现", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            }
+            Switch(checked = subtitle, onCheckedChange = {
+                subtitle = it; project.subtitlesEnabled = it; onSave(project)
             }, enabled = !busy)
         }
     }
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("画面动势", style = MaterialTheme.typography.titleLarge)
+    Text("画面动势", style = MaterialTheme.typography.titleLarge)
+    FormCard {
+        Text("转场特效", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
             Box(Modifier.fillMaxWidth()) {
                 val normalized = if (transition == "slideleft") "smoothleft" else transition
                 ChoiceTile("转场特效", transitionChoices.firstOrNull { it.first == normalized }?.second ?: "逐镜随机",
@@ -2633,34 +2850,31 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                     }
                 }
             }
-        }
     }
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("封面", style = MaterialTheme.typography.titleLarge)
+    Text("封面", style = MaterialTheme.typography.titleLarge)
+    FormCard {
             val coverShot = project.shots.firstOrNull { it.id == project.coverShotId }
             if (coverShot != null) ShotThumbnail(ProjectStore(context).image(project, coverShot),
-                Modifier.fillMaxWidth().height(180.dp))
-            Button(onClick = { showCoverPicker = true }, enabled = !busy && project.shots.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth()) {
+                Modifier.fillMaxWidth().aspectRatio(1.55f).clip(RoundedCornerShape(20.dp)), contentScale = ContentScale.Crop)
+            OutlinedButton(onClick = { showCoverPicker = true }, enabled = !busy && project.shots.isNotEmpty(),
+                modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(25.dp)) {
                 Text(if (coverShot == null) "选择封面图片" else "选择封面图片 · 镜头 ${project.shotNumber(coverShot.id)}")
             }
-            InputTile("文案与人物出现时间（秒）", coverDelay, { value ->
-                coverDelay = value.filter { it.isDigit() || it == '.' }.take(5)
-            }, enabled = !busy)
             val delayValue = coverDelay.toFloatOrNull()
             val validDelay = delayValue != null && delayValue.isFinite() && delayValue in 0f..OpeningTiming.MAX_DELAY
-            if (!validDelay) Text("请输入 0–5 秒", color = HistoryColors.cinnabar,
-                style = MaterialTheme.typography.bodySmall)
-            OutlinedButton(onClick = {
-                delayValue?.let {
-                    project.coverTitleDelaySeconds = OpeningTiming.normalizeDelay(it)
-                    onSave(project)
-                    coverDelay = project.coverTitleDelaySeconds.toString()
-                }
-            }, enabled = !busy && validDelay, modifier = Modifier.fillMaxWidth()) {
-                Text(if (validDelay && delayValue == project.coverTitleDelaySeconds) "出现时间已保存" else "保存出现时间")
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("文案与人物出现时间", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
+                    color = HistoryColors.muted)
+                Text("${"%.1f".format(delayValue ?: project.coverTitleDelaySeconds)} 秒", color = HistoryColors.cinnabar,
+                    style = MaterialTheme.typography.titleSmall)
             }
+            Slider(value = (delayValue ?: project.coverTitleDelaySeconds).coerceIn(0f, OpeningTiming.MAX_DELAY),
+                onValueChange = { coverDelay = "%.1f".format(it) }, onValueChangeFinished = {
+                    delayValue?.let { value ->
+                        project.coverTitleDelaySeconds = OpeningTiming.normalizeDelay(value)
+                        onSave(project); coverDelay = project.coverTitleDelaySeconds.toString()
+                    }
+                }, enabled = !busy, valueRange = 0f..OpeningTiming.MAX_DELAY)
             Text("从首镜开始计时，封面文字与首镜抠图人物同步弹出；默认 0.5 秒，重新渲染后生效。",
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
             val firstShot = project.shots.firstOrNull()
@@ -2671,11 +2885,9 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                         style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
                 }
             }
-        }
     }
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("开头模板", style = MaterialTheme.typography.titleLarge)
+    Text("开头模板", style = MaterialTheme.typography.titleLarge)
+    FormCard {
             val templates = listOf(
                 "none" to "无",
                 "life_copy_fast_cut" to "快速切图",
@@ -2694,17 +2906,20 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
                 project.openingTemplate = openingTemplate
                 onSave(project)
             }, enabled = !busy)
-            InputTile("每张图片节奏（秒）", introImageSeconds, { value ->
-                introImageSeconds = value.filter { it.isDigit() || it == '.' }.take(4)
-                introImageSeconds.toFloatOrNull()?.let {
-                    project.introImageSeconds = it.coerceIn(0.08f, 3f)
-                    onSave(project)
-                }
-            }, enabled = !busy)
+            val tempo = introImageSeconds.toFloatOrNull()?.coerceIn(0.08f, 3f) ?: project.introImageSeconds
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("每张图片节奏", modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
+                    color = HistoryColors.muted)
+                Text("${"%.1f".format(tempo)} 秒", color = HistoryColors.cinnabar, style = MaterialTheme.typography.titleSmall)
+            }
+            Slider(value = tempo, onValueChange = { introImageSeconds = "%.2f".format(it) },
+                onValueChangeFinished = {
+                    val value = introImageSeconds.toFloatOrNull()?.coerceIn(0.08f, 3f) ?: project.introImageSeconds
+                    project.introImageSeconds = value; onSave(project); introImageSeconds = value.toString()
+                }, enabled = !busy, valueRange = 0.08f..3f)
             Text("模板最多使用前 5 张分镜图；节奏范围 0.08–3 秒，默认 0.3 秒。",
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         }
-    }
     if (showCoverPicker) {
         ImagePickerDialog("选择封面图片", project, multiSelect = false,
             selected = setOf(project.coverShotId), onDismiss = { showCoverPicker = false },
