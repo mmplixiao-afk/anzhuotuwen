@@ -945,7 +945,6 @@ private fun AudioLibrarySettingsScreen(store: ProjectStore, projects: List<Video
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val library = remember(context) { AudioLibrary(context) }
-    val scope = rememberCoroutineScope()
     var kind by rememberSaveable { mutableStateOf(AudioKind.BGM) }
     var revision by remember { mutableStateOf(0) }
     var renameAsset by remember { mutableStateOf<AudioAsset?>(null) }
