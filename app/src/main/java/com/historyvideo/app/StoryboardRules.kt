@@ -9,6 +9,14 @@ internal object StoryboardRules {
     private val punch = Regex("^放屁[。！!，,；;]?")
     private val clauses = Regex("[^，,；;：:。！？!?]+(?:[，,；;：:。！？!?]+|$)")
     private val sceneStarts = listOf("不仅", "在外", "在内", "而在", "到了")
+    private val closingQuotes = "”’\"'」』）》】)]}〉〕〗〙〛"
+
+    private data class OpeningPlan(
+        val title: String,
+        val rebuttalStart: Int? = null,
+        val rebuttalEnd: Int? = null,
+        val rebuttalParts: List<String> = emptyList()
+    )
 
     private fun spokenCount(text: String): Int {
         var count = 0
@@ -21,47 +29,95 @@ internal object StoryboardRules {
         return count
     }
 
-    // Port of the PC adapter's _opening_shots; retain original whitespace as well.
-    fun opening(source: String): List<String> {
-        val titleEnd = sentenceEnd.find(source)?.range?.last?.plus(1) ?: return emptyList()
+    private fun isCutPunctuation(codePoint: Int): Boolean =
+        codePoint == '\n'.code || codePoint == '\r'.code ||
+            codePoint.toChar() in "，,；;：:。！？!?、…—"
+
+    private fun boundaryFollowsPunctuation(source: String, offset: Int): Boolean {
+        var cursor = offset
+        while (cursor > 0) {
+            val codePoint = source.codePointBefore(cursor)
+            if (isCutPunctuation(codePoint)) return true
+            if (Character.isWhitespace(codePoint) || codePoint.toChar() in closingQuotes) {
+                cursor -= Character.charCount(codePoint)
+            } else {
+                return false
+            }
+        }
+        return false
+    }
+
+    fun endsAtPunctuation(text: String): Boolean {
+        var cursor = text.length
+        while (cursor > 0) {
+            val codePoint = text.codePointBefore(cursor)
+            if (isCutPunctuation(codePoint)) return true
+            if (Character.isWhitespace(codePoint) || codePoint.toChar() in closingQuotes) {
+                cursor -= Character.charCount(codePoint)
+            } else {
+                return false
+            }
+        }
+        return false
+    }
+
+    private fun hasInternalCutPunctuation(text: String): Boolean {
+        var cursor = 0
+        while (cursor < text.length) {
+            val codePoint = text.codePointAt(cursor)
+            cursor += Character.charCount(codePoint)
+            if (!isCutPunctuation(codePoint)) continue
+            var next = cursor
+            while (next < text.length) {
+                val following = text.codePointAt(next)
+                if (!Character.isWhitespace(following) && following.toChar() !in closingQuotes) break
+                next += Character.charCount(following)
+            }
+            if (next < text.length &&
+                text.substring(0, cursor).filter(Char::isLetterOrDigit) !in setOf("哼", "他娘的")) return true
+        }
+        return false
+    }
+
+    private fun openingPlan(source: String): OpeningPlan? {
+        val titleEnd = sentenceEnd.find(source)?.range?.last?.plus(1) ?: return null
         var hookOffset = titleEnd
         while (hookOffset < source.length && source[hookOffset].isWhitespace()) hookOffset++
         val title = source.substring(0, hookOffset)
         val afterTitle = source.substring(hookOffset)
-        if (!hookStart.containsMatchIn(afterTitle)) return listOf(title)
-        val start = rebuttalStart.find(afterTitle) ?: return listOf(title)
-        if (afterTitle.substring(0, start.range.first).isBlank()) return listOf(title)
+        if (!hookStart.containsMatchIn(afterTitle)) return OpeningPlan(title)
+        val start = rebuttalStart.find(afterTitle) ?: return OpeningPlan(title)
+        if (afterTitle.substring(0, start.range.first).isBlank()) return OpeningPlan(title)
         val offset = hookOffset + start.range.first
         val afterHook = source.substring(offset)
-        val punchEnd = punch.find(afterHook)?.range?.last?.plus(1) ?: return listOf(title)
-        val end = sentenceEnd.find(afterHook, punchEnd)?.range?.last?.plus(1) ?: return listOf(title)
+        val punchEnd = punch.find(afterHook)?.range?.last?.plus(1) ?: return OpeningPlan(title)
+        val end = sentenceEnd.find(afterHook, punchEnd)?.range?.last?.plus(1) ?: return OpeningPlan(title)
         val rebuttal = afterHook.substring(0, end)
-        val prefix = listOf(title, source.substring(hookOffset, offset))
-        if (spokenCount(rebuttal) <= 32) return prefix + rebuttal
+        return OpeningPlan(title, offset, offset + end, splitRebuttal(rebuttal))
+    }
 
+    // The topic stays fixed as the first shot; the hook remains flexible and uses the selected granularity.
+    fun opening(source: String): List<String> = openingPlan(source)?.let { listOf(it.title) }.orEmpty()
+
+    private fun splitRebuttal(rebuttal: String): List<String> {
+        if (spokenCount(rebuttal) <= 32) return listOf(rebuttal)
         val parts = mutableListOf<String>()
         var current = ""
         for (match in clauses.findAll(rebuttal)) {
-            var clause = match.value
+            val clause = match.value
             val changesScene = sceneStarts.any { clause.trimStart().startsWith(it) }
-            if (current.isNotEmpty() && (spokenCount(current + clause) > 32 ||
+            val keepsPunchWithFirstBeat = parts.isEmpty() && current.startsWith("放屁") &&
+                spokenCount(current) <= 2
+            if (current.isNotEmpty() && !keepsPunchWithFirstBeat &&
+                (spokenCount(current + clause) > 32 ||
                     (changesScene && spokenCount(current) > 2))) {
                 parts += current
                 current = ""
             }
-            while (spokenCount(clause) > 32) {
-                if (current.isNotEmpty()) {
-                    parts += current
-                    current = ""
-                }
-                parts += clause.take(28)
-                clause = clause.drop(28)
-            }
             current += clause
         }
         if (current.isNotEmpty()) {
-            if (parts.isNotEmpty() && spokenCount(current) < 8 &&
-                spokenCount(parts.last() + current) <= 40) {
+            if (parts.isNotEmpty() && spokenCount(current) < 8) {
                 parts[parts.lastIndex] += current
             } else parts += current
         }
@@ -69,7 +125,7 @@ internal object StoryboardRules {
             parts[1] = parts[0] + parts[1]
             parts.removeAt(0)
         }
-        return prefix + parts
+        return parts
     }
 
     fun sourceUnits(source: String, granularity: String = "balanced"): List<SourceUnit> {
@@ -78,42 +134,55 @@ internal object StoryboardRules {
             "fine" -> 12
             else -> 16
         }
-        val fixedOpening = opening(source)
-        val prefix = fixedOpening.joinToString("").takeIf { source.startsWith(it) }.orEmpty()
         val pieces = mutableListOf<Pair<String, Boolean>>()
-        fixedOpening.forEach { pieces += it to true }
-        var start = prefix.length
-        var spoken = 0
-        var index = start
-        val closingQuotes = """”’"'」』）》】)]}〉〕〗〙〛"""
-        fun flush(end: Int) {
-            if (end > start) pieces += source.substring(start, end) to false
-            start = end
-            spoken = 0
+        val plan = openingPlan(source)
+        var cursor = 0
+        if (plan != null) {
+            pieces += plan.title to true
+            cursor = plan.title.length
         }
-        while (index < source.length) {
-            val codePoint = source.codePointAt(index)
-            val end = index + Character.charCount(codePoint)
-            if (Character.isLetterOrDigit(codePoint)) spoken++
-            val punctuation = codePoint == '\n'.code || codePoint == '\r'.code ||
-                codePoint.toChar() in "，,；;：:。！？!?"
-            if (punctuation) {
-                var boundary = end
-                while (boundary < source.length && source[boundary] in closingQuotes) boundary++
-                flush(boundary)
-                index = boundary
-                continue
+        fun appendFlexibleRange(rangeStart: Int, rangeEnd: Int) {
+            var start = rangeStart
+            var spoken = 0
+            var index = rangeStart
+            fun flush(end: Int) {
+                if (end > start) pieces += source.substring(start, end) to false
+                start = end
+                spoken = 0
             }
-            if (spoken >= maxUnitLength) {
-                var boundary = end
-                while (boundary < source.length && source[boundary] in closingQuotes) boundary++
-                flush(boundary)
-                index = boundary
-                continue
+            while (index < rangeEnd) {
+                val codePoint = source.codePointAt(index)
+                val end = index + Character.charCount(codePoint)
+                if (Character.isLetterOrDigit(codePoint)) spoken++
+                val punctuation = codePoint == '\n'.code || codePoint == '\r'.code ||
+                    codePoint.toChar() in "，,；;：:。！？!?、…—"
+                if (punctuation) {
+                    var boundary = end
+                    while (boundary < rangeEnd && source[boundary] in closingQuotes) boundary++
+                    flush(boundary)
+                    index = boundary
+                    continue
+                }
+                if (spoken >= maxUnitLength) {
+                    var boundary = end
+                    while (boundary < rangeEnd && source[boundary] in closingQuotes) boundary++
+                    flush(boundary)
+                    index = boundary
+                    continue
+                }
+                index = end
             }
-            index = end
+            flush(rangeEnd)
         }
-        flush(source.length)
+
+        val rebuttalStart = plan?.rebuttalStart
+        val rebuttalEnd = plan?.rebuttalEnd
+        if (rebuttalStart != null && rebuttalEnd != null && plan.rebuttalParts.isNotEmpty()) {
+            appendFlexibleRange(cursor, rebuttalStart)
+            plan.rebuttalParts.forEach { pieces += it to true }
+            cursor = rebuttalEnd
+        }
+        appendFlexibleRange(cursor, source.length)
         require(pieces.joinToString("") { it.first } == source) { "原文分段未能完整覆盖输入" }
         return pieces.mapIndexed { index, (text, fixed) -> SourceUnit(index + 1, text, fixed) }
     }
@@ -126,10 +195,10 @@ internal object StoryboardRules {
             else -> "平衡粒度：每镜约20–35个有效口播字符，原则上不超过40字；完整语义优先。"
         }
         append("\n\n【移动端分镜约束，优先于前文冲突规则】\n")
-        append("普通正文使用$rules 短反应句可更短；不要按固定镜头数量拆分。\n")
+        append("普通正文使用$rules 短反应句可更短，字数是目标范围；所有镜头边界必须落在标点之后，不得在句子中间截断。没有自然标点可切的长句保持完整。不要按固定镜头数量拆分。\n")
         append("下面提供的source_units是原文唯一权威来源。只返回相邻、连续的source unit编号分组，不要复述或改写口播文字。每个编号必须且只能出现一次，按升序、连续覆盖本次提供的全部编号；不能跳号、重复、调序。程序会从原文按编号还原voiceover。\n")
         append("固定镜头单元fixed_shot=true必须独立成镜，不能与其他编号合并或拆开。")
-        if (firstBatch) append("第1镜是口播第一句。若主题后以他娘的或哼开头且后面出现放屁，钩子和反驳边界按固定单元执行；放屁不可独占镜头。长反驳按PC规则切分。")
+        if (firstBatch) append("第1镜是口播第一句。若主题后以他娘的或哼开头且后面出现放屁，放屁前的钩子按所选粒度、自然语义和画面变化拆分，切分点必须在标点之后；“哼/他娘的”不能单独成镜，需并入后续钩子内容。钩子内没有自然标点可切的长句保持完整，不得把多句钩子固定成一个镜头。放屁反驳段仍按标点边界拆分，放屁不可独占镜头。")
         append("\n")
         append("每镜必须有对应的visual、punch、image_prompt、video_prompt。visual用中文描述时代、地点、主体、动作和情绪；image_prompt是独立可生图的写实古装提示词，约100–180个中文字符，人物外观保持一致。")
         if (firstBatch) append("前两镜须有清晰可辨人物。")
@@ -207,13 +276,53 @@ internal object StoryboardRules {
         }
     }
 
-    fun validate(source: String, shots: List<Shot>) {
+    fun validate(source: String, shots: List<Shot>, granularity: String = "balanced") {
         require(shots.joinToString("") { it.text } == source) {
             "分镜口播与原文不一致，存在漏字、重复或标点改动"
         }
-        val expected = opening(source)
-        require(shots.take(expected.size).map { it.text } == expected) {
-            "开头反驳未按原文短镜边界拆分"
+        var boundaryOffset = 0
+        shots.dropLast(1).forEachIndexed { index, shot ->
+            boundaryOffset += shot.text.length
+            require(boundaryFollowsPunctuation(source, boundaryOffset)) {
+                "第${index + 1}镜与第${index + 2}镜之间不能从句子中间切分，镜头边界必须落在标点之后"
+            }
+        }
+        val plan = openingPlan(source)
+        val expectedTitle = plan?.title
+        if (expectedTitle != null) require(shots.firstOrNull()?.text == expectedTitle) {
+            "第1镜必须只包含原文主题句"
+        }
+        val maxHookLength = when (granularity) {
+            "coarse" -> 65
+            "fine" -> 28
+            else -> 40
+        }
+        var rebuttalStartShot: Int? = null
+        if (plan?.rebuttalStart != null && plan.rebuttalParts.isNotEmpty()) {
+            var offset = 0
+            for (index in 0..shots.size) {
+                if (offset == plan.rebuttalStart) {
+                    rebuttalStartShot = index
+                    break
+                }
+                if (index < shots.size) offset += shots[index].text.length
+            }
+            val startIndex = rebuttalStartShot
+                ?: throw IllegalArgumentException("放屁反驳段未从独立镜头边界开始")
+            require(startIndex > 0 && shots.size >= startIndex + plan.rebuttalParts.size &&
+                shots.take(startIndex).joinToString("") == source.substring(0, plan.rebuttalStart) &&
+                shots.drop(startIndex).take(plan.rebuttalParts.size).map { it.text } == plan.rebuttalParts) {
+                "开头反驳未按原文短镜边界拆分"
+            }
+            val hookShots = shots.subList(1, startIndex)
+            require(hookShots.none { it.text.filter(Char::isLetterOrDigit) in setOf("哼", "他娘的") }) {
+                "开头钩子的语气词不能单独占一镜"
+            }
+            require(hookShots.all {
+                spokenCount(it.text) <= maxHookLength || !hasInternalCutPunctuation(it.text)
+            }) {
+                "开头钩子超过所选粒度上限且含可切分标点，必须按标点拆成多个镜头"
+            }
         }
         require(shots.none { it.text.filter(Char::isLetterOrDigit) == "放屁" }) {
             "放屁不能单独占一镜，必须接上第一拍反驳"
@@ -226,7 +335,9 @@ internal object StoryboardRules {
                 shot.subtitleChunks = mutableListOf(shot.text)
             }
         }
-        val rebuttalShots = if (expected.size >= 3) shots.subList(2, expected.size) else emptyList()
+        val rebuttalShots = rebuttalStartShot?.let { start ->
+            shots.subList(start, start + (plan?.rebuttalParts?.size ?: 0))
+        }.orEmpty()
         for (values in listOf(rebuttalShots.map { it.visual }, rebuttalShots.map { it.imagePrompt })) {
             val keys = values.map { it.filterNot(Char::isWhitespace) }
             require(keys.distinct().size == keys.size) {

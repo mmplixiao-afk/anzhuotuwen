@@ -181,10 +181,18 @@ class CloudApi {
                    granularity: String = "balanced",
                    onRetry: () -> Unit = {}, onUsage: (TextUsage) -> Unit = {}): StoryboardResult {
         val units = StoryboardRules.sourceUnits(expectedScript, granularity)
-        // 服务端 max_tokens 会在约 8k tokens（中文一万三千字符左右）处截断输出，
-        // 长文一次生成必然半截 JSON；按 source unit 分批，每批独立校验，最后合并统一校验。
-        val batches = if (units.size <= STORYBOARD_UNITS_PER_CALL) listOf(units)
-        else units.chunked(STORYBOARD_UNITS_PER_CALL)
+        // 长文按 source unit 分批；每批只在标点边界结束，合并后再校验全文分镜边界。
+        val batches = mutableListOf<List<StoryboardRules.SourceUnit>>()
+        var pendingBatch = mutableListOf<StoryboardRules.SourceUnit>()
+        for (unit in units) {
+            pendingBatch += unit
+            if (pendingBatch.size >= STORYBOARD_UNITS_PER_CALL && StoryboardRules.endsAtPunctuation(unit.text)) {
+                batches += pendingBatch.toList()
+                pendingBatch = mutableListOf()
+            }
+        }
+        if (pendingBatch.isNotEmpty()) batches += pendingBatch.toList()
+        if (batches.isEmpty()) batches += units
         val merged = mutableListOf<Shot>()
         var title = ""
         var stylePreset = ""
@@ -204,7 +212,7 @@ class CloudApi {
             if (stylePreset.isBlank()) stylePreset = result.stylePreset
             result.shots.forEach { shot -> merged += shot.copy(id = merged.size + 1) }
         }
-        StoryboardRules.validate(expectedScript, merged)
+        StoryboardRules.validate(expectedScript, merged, granularity)
         return StoryboardResult(title, stylePreset, merged)
     }
 
@@ -228,9 +236,11 @@ class CloudApi {
                     .put("text", unit.text).put("fixed_shot", unit.fixedShot)) }
             }.toString())
         }
-        // 每批只解析、不校验全文；合并后再由调用方做一次完整校验。
-        return checkedStoryboard(expectedScript, units, onRetry, enforceOriginalCopy = true,
-            validateResult = false) { retryInstruction ->
+        // 首批用本批原文校验开头边界和钩子长度；完整结果合并后再做一次全文校验。
+        val validateBatch = batchIndex == 0
+        val batchScript = if (validateBatch) units.joinToString("") { it.text } else expectedScript
+        return checkedStoryboard(batchScript, units, onRetry, enforceOriginalCopy = true,
+            validateResult = validateBatch, granularity = granularity) { retryInstruction ->
             text(config, taskPrompt + retryInstruction, sourceInput, onUsage = onUsage)
         }
     }
@@ -246,6 +256,7 @@ class CloudApi {
     internal fun checkedStoryboard(expectedScript: String, units: List<StoryboardRules.SourceUnit>,
                                    onRetry: () -> Unit = {}, enforceOriginalCopy: Boolean = false,
                                    validateResult: Boolean = true,
+                                   granularity: String = "balanced",
                                    request: (String) -> String): StoryboardResult {
         var lastFailure = ""
         for (attempt in 0..1) {
@@ -254,7 +265,8 @@ class CloudApi {
             // Only invalid model output is retried. A transport error may already be billed.
             val content = request(retryInstruction)
             try {
-                return parseStoryboard(content, expectedScript, units, enforceOriginalCopy, validateResult)
+                return parseStoryboard(content, expectedScript, units, enforceOriginalCopy,
+                    validateResult, granularity)
             } catch (error: JSONException) {
                 lastFailure = "分镜JSON不完整或字段格式无效"
             } catch (error: IllegalArgumentException) {
@@ -268,7 +280,8 @@ class CloudApi {
     private fun parseStoryboard(content: String, expectedScript: String,
                                 units: List<StoryboardRules.SourceUnit>,
                                 enforceOriginalCopy: Boolean,
-                                validateResult: Boolean = true): StoryboardResult {
+                                validateResult: Boolean = true,
+                                granularity: String = "balanced"): StoryboardResult {
         val raw = content.removePrefix("```json").removePrefix("```")
             .removeSuffix("```").trim()
         val objectStart = raw.indexOf('{')
@@ -385,7 +398,7 @@ class CloudApi {
             }
             shots.add(shot)
         }
-        if (validateResult) StoryboardRules.validate(expectedScript, shots)
+        if (validateResult) StoryboardRules.validate(expectedScript, shots, granularity)
         return StoryboardResult(root?.optString("title").orEmpty(), root?.optString("style_preset").orEmpty(), shots)
     }
 
