@@ -116,6 +116,37 @@ internal object ShotMotionChecks {
         check(runCatching { ShotMotionRules.setShot(detailProject, 11, preset) }.isFailure)
         check(detailSecond.json().toString() == secondBefore)
 
+        val sequenceManual = Shot(4, "手动运动。", "手动图片", motionSetting = preset)
+        val sequenceCutout = Shot(6, "抠图镜头。", "人物图片", cutoutEnabled = true)
+        val sequenceProject = VideoProject(UUID.randomUUID().toString(), "依次拉近推远验收",
+            shots = mutableListOf(
+                Shot(1, "序列前。", "画面1"),
+                Shot(2, "序列起点。", "画面2"),
+                Shot(3, "默认镜头。", "画面3"),
+                sequenceManual,
+                Shot(5, "继续默认。", "画面5"),
+                sequenceCutout,
+                Shot(7, "抠图后默认。", "画面7")
+            ))
+        val sequence = ShotMotionSetting(ShotMotionRules.sequenceMode)
+        ShotMotionRules.setShot(sequenceProject, 2, sequence)
+        check(ShotMotionRules.sequenceSettingFor(sequenceProject, 1) == null)
+        check(ShotMotionRules.sequenceSettingFor(sequenceProject, 2)?.mode == "zoom_in")
+        check(ShotMotionRules.sequenceSettingFor(sequenceProject, 3)?.mode == "zoom_out")
+        check(ShotMotionRules.sequenceSettingFor(sequenceProject, 4) == null)
+        check(ShotMotionRules.sequenceSettingFor(sequenceProject, 5)?.mode == "zoom_in")
+        check(ShotMotionRules.effectiveSettingFor(sequenceProject, 4) == preset)
+        check(ShotMotionRules.effectiveSettingFor(sequenceProject, 5)?.mode == "zoom_in")
+        check(ShotMotionRules.sequenceSettingFor(sequenceProject, 6) == null)
+        check(ShotMotionRules.effectiveSettingFor(sequenceProject, 6) == null)
+        check(ShotMotionRules.sequenceSettingFor(sequenceProject, 7)?.mode == "zoom_out")
+        check(ShotMotionRules.label(Shot.from(sequenceProject.shots[1].json()).motionSetting) == "依次拉近推远")
+        ShotMotionRules.setShot(sequenceProject, 5, sequence)
+        check(ShotMotionRules.sequenceSettingFor(sequenceProject, 5)?.mode == "zoom_in")
+        check(ShotMotionRules.sequenceSettingFor(sequenceProject, 7)?.mode == "zoom_out")
+        val restoredSequence = VideoProject.from(sequenceProject.json())
+        check(ShotMotionRules.sequenceSettingFor(restoredSequence, 2)?.mode == "zoom_in")
+
         ShotMotionRules.selectCutouts(project, setOf(1, 3))
         check(original.cutoutEnabled && original.motionSetting == null && original.motionPlanSetting == null && original.motionPlan == null)
         check(cutout.cutoutEnabled && project.cutoutEnabled)

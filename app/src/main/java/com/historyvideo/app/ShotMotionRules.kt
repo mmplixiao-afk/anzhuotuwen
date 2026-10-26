@@ -23,13 +23,16 @@ data class ShotMotionSetting(
 }
 
 internal object ShotMotionRules {
+    const val sequenceMode = "zoom_sequence"
     val modes = listOf("zoom_in" to "推近", "zoom_out" to "拉远",
         "pan" to "平移", "zoom_pan" to "边推拉边平移")
     val directions = listOf("left_to_right" to "左 → 右", "right_to_left" to "右 → 左",
         "top_to_bottom" to "上 → 下", "bottom_to_top" to "下 → 上")
 
     fun normalize(setting: ShotMotionSetting?): ShotMotionSetting? {
-        if (setting == null || modes.none { it.first == setting.mode }) return null
+        if (setting == null) return null
+        if (setting.mode == sequenceMode) return ShotMotionSetting(sequenceMode)
+        if (modes.none { it.first == setting.mode }) return null
         val moving = setting.mode == "pan" || setting.mode == "zoom_pan"
         val direction = if (moving && directions.any { it.first == setting.direction }) setting.direction else "random"
         val zoom = if (setting.mode == "zoom_out" || (setting.mode == "zoom_pan" && setting.zoomDirection == "out")) "out" else "in"
@@ -38,12 +41,46 @@ internal object ShotMotionRules {
 
     fun label(setting: ShotMotionSetting?): String {
         val valid = normalize(setting) ?: return "默认运动"
+        if (valid.mode == sequenceMode) return "依次拉近推远"
         val modeLabel = modes.first { it.first == valid.mode }.second
         if (valid.mode != "pan" && valid.mode != "zoom_pan") return modeLabel
         val directionLabel = directions.firstOrNull { it.first == valid.direction }?.second ?: "随机方向"
         return if (valid.mode == "zoom_pan")
             "${if (valid.zoomDirection == "out") "拉远" else "推近"} + $directionLabel"
         else "$modeLabel · $directionLabel"
+    }
+
+    /** Resolve this shot's place in the latest detail-page zoom sequence, skipping manual and cutout shots. */
+    fun sequenceSettingFor(project: VideoProject, shotId: Int): ShotMotionSetting? {
+        val targetIndex = project.shots.indexOfFirst { it.id == shotId }
+        if (targetIndex < 0) return null
+        var active = false
+        var sequenceIndex = 0
+        for (index in 0..targetIndex) {
+            val shot = project.shots[index]
+            val setting = if (shot.cutoutEnabled) null else normalize(shot.motionSetting)
+            val isAnchor = setting?.mode == sequenceMode
+            if (isAnchor) {
+                active = true
+                sequenceIndex = 0
+            }
+            if (!active || shot.cutoutEnabled) continue
+            if (isAnchor || setting == null) {
+                if (index == targetIndex) {
+                    return ShotMotionSetting(if (sequenceIndex % 2 == 0) "zoom_in" else "zoom_out")
+                }
+                sequenceIndex++
+            }
+        }
+        return null
+    }
+
+    fun effectiveSettingFor(project: VideoProject, shotId: Int): ShotMotionSetting? {
+        val shot = project.shots.firstOrNull { it.id == shotId } ?: return null
+        if (shot.cutoutEnabled) return null
+        val saved = normalize(shot.motionSetting)
+        if (saved != null && saved.mode != sequenceMode) return saved
+        return sequenceSettingFor(project, shotId)
     }
 
     fun clear(shot: Shot) {
@@ -105,6 +142,7 @@ internal object ShotMotionRules {
     /** Directions describe picture movement in the rendered zoompan canvas, not crop movement. */
     fun createPlan(setting: ShotMotionSetting, random: Random = Random.Default): MotionPlan {
         val normalized = requireNotNull(normalize(setting)) { "图片运动类型无效" }
+        require(normalized.mode != sequenceMode) { "依次拉近推远需要按镜头序列解析" }
         val low = random.nextDouble(1.02, 1.0600001)
         val high = random.nextDouble(1.45, 1.6000001)
         val startZoom = when {

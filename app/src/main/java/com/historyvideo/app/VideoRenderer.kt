@@ -181,13 +181,13 @@ class VideoRenderer(private val store: ProjectStore) {
     }
 
     private fun motionPlanFor(project: VideoProject, shot: Shot): MotionPlan {
-        val manual = if (shot.cutoutEnabled) null else ShotMotionRules.normalize(shot.motionSetting)
+        val effective = ShotMotionRules.effectiveSettingFor(project, shot.id)
         val current = shot.motionPlan
-        if (manual != null) {
-            if (current != null && shot.motionPlanSetting == manual && current.mode == manual.mode) return current
-            return ShotMotionRules.createPlan(manual).also {
+        if (effective != null) {
+            if (current != null && shot.motionPlanSetting == effective && current.mode == effective.mode) return current
+            return ShotMotionRules.createPlan(effective).also {
                 shot.motionPlan = it
-                shot.motionPlanSetting = manual
+                shot.motionPlanSetting = effective
             }
         }
         val requested = requestedMotionMode(project, shot)

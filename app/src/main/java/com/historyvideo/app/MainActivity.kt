@@ -1717,7 +1717,8 @@ private fun ShotMotionSettingsCard(project: VideoProject, shot: Shot, busy: Bool
     var modeMenu by remember(shot.id) { mutableStateOf(false) }
     var directionMenu by remember(shot.id) { mutableStateOf(false) }
     var zoomMenu by remember(shot.id) { mutableStateOf(false) }
-    val modeChoices = listOf("default" to "使用默认运动") + ShotMotionRules.modes
+    val modeChoices = listOf("default" to "使用默认运动") + ShotMotionRules.modes +
+        listOf(ShotMotionRules.sequenceMode to "依次拉近推远")
     FormCard {
         Text("运动类型", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1783,6 +1784,7 @@ private fun ShotMotionSettingsCard(project: VideoProject, shot: Shot, busy: Bool
                 }
             }
             Text(if (shot.cutoutEnabled) "已选择成片抠图，取消抠图后可设置普通图片运动" else
+                if (mode == ShotMotionRules.sequenceMode) "从本镜开始：本镜拉近，后续默认运动镜头交替推远、拉近；手动运动和抠图镜头跳过" else
                 if (!modelsReady) "普通运动选择后自动保存；如需抠图，请先在设置中导入模型" else
                 "选择后自动保存，仅影响当前镜头，重新渲染后生效",
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
