@@ -74,6 +74,15 @@ class StoryboardRulesTest : Instrumentation() {
         return groups
     }
 
+    private fun takeThroughFirstSentence(units: List<StoryboardRules.SourceUnit>): List<StoryboardRules.SourceUnit> {
+        val result = mutableListOf<StoryboardRules.SourceUnit>()
+        for (unit in units) {
+            result += unit
+            if (unit.text.any { it in "。！？!?" }) break
+        }
+        return result
+    }
+
     private fun response(parts: List<String>, duplicate: Boolean = false) = JSONObject().put(
         "shots", JSONArray().apply {
             parts.forEachIndexed { index, text ->
@@ -105,17 +114,29 @@ class StoryboardRulesTest : Instrumentation() {
         assertEquals(source, result.joinToString("") { it.text })
     }
 
-    fun testSourceUnitsPreserveExactCopyAndOnlyFixTopicAndRebuttal() {
+    fun testLongRebuttalAcceptsAlternativePunctuationGrouping() {
+        val title = "主题句。"
+        val hookText = "哼，钩子？"
+        val rebuttalFirst = "放屁，先问诊观察脉象，再细看舌苔判断病因，"
+        val rebuttalSecond = "接着开出药方稳住病情，患者当场转危为安。"
+        val source = title + hookText + rebuttalFirst + rebuttalSecond + "正文继续。"
+        val expected = listOf(title, hookText, rebuttalFirst, rebuttalSecond, "正文继续。")
+        val result = shots(expected)
+        StoryboardRules.validate(source, result)
+        assertEquals(expected, result.map { it.text })
+    }
+
+    fun testSourceUnitsPreserveExactCopyAndOnlyFixTopic() {
         val source = "古代做县令到底有多难？哼，你以为只要升堂断案、清查账册、安抚百姓就行吗？放屁，先得应付师爷，再得安抚百姓。第一件事，你打开粮仓。第二件事，发现账册被改。"
         for (granularity in listOf("coarse", "balanced", "fine")) {
             val units = StoryboardRules.sourceUnits(source, granularity)
             assertEquals(source, units.joinToString("") { it.text })
             val fixed = units.filter { it.fixedShot }.map { it.text }
-            assertEquals(StoryboardRules.opening(source).first(), fixed.first())
-            val hookUnits = units.drop(1).takeWhile { !it.fixedShot }
+            assertEquals(listOf(StoryboardRules.opening(source).first()), fixed)
+            val hookUnits = units.drop(1).takeWhile { !it.text.startsWith("放屁") }
             assertTrue(hookUnits.size > 1)
             assertTrue(hookUnits.all { !it.fixedShot })
-            assertTrue(fixed.drop(1).first().startsWith("放屁"))
+            assertFalse(units.drop(1 + hookUnits.size).first().fixedShot)
             val grouped = units.map { listOf(it.id) }
             assertEquals(units.map { it.text }, StoryboardRules.reconstruct(units, grouped))
         }
@@ -128,13 +149,15 @@ class StoryboardRulesTest : Instrumentation() {
     fun testLongOpeningHookCanBeGroupedIntoMultipleShots() {
         val source = "主题句。哼，你以为她只是个摇手帕招客的俗气女人？她手里还有整座城的权贵隐私，能让达官贵人把银子奉上，还得恭恭敬敬喊她妈妈！放屁，先摆出她的手段。"
         val units = StoryboardRules.sourceUnits(source)
-        val hookUnits = units.drop(1).takeWhile { !it.fixedShot }
+        val hookUnits = units.drop(1).takeWhile { !it.text.startsWith("放屁") }
         assertTrue(hookUnits.size > 1)
-        val rebuttalUnits = units.drop(1 + hookUnits.size)
+        val afterHook = units.drop(1 + hookUnits.size)
+        val rebuttalUnits = takeThroughFirstSentence(afterHook)
         val hookText = hookUnits.joinToString("") { it.text }
         expectInvalid {
             StoryboardRules.validate(source,
-                shots(listOf(units.first().text, hookText) + rebuttalUnits.map { it.text }))
+                shots(listOf(units.first().text, hookText, rebuttalUnits.joinToString("") { it.text }) +
+                    afterHook.drop(rebuttalUnits.size).map { it.text }))
         }
         val hookGroups = groupAtPunctuation(hookUnits).toMutableList()
         if (hookGroups.size > 1 && hookGroups.first().joinToString("") == "哼，") {
@@ -142,18 +165,20 @@ class StoryboardRulesTest : Instrumentation() {
         }
         val groups = mutableListOf(listOf(units.first().id))
         hookGroups.forEach { group -> groups += group.map { it.id } }
-        rebuttalUnits.forEach { groups += listOf(it.id) }
+        groups += listOf(rebuttalUnits.map { it.id })
+        afterHook.drop(rebuttalUnits.size).forEach { groups += listOf(it.id) }
         val groupedShots = StoryboardRules.reconstruct(units, groups)
         assertTrue(groupedShots.size > 3)
         assertEquals(source, groupedShots.joinToString(""))
         StoryboardRules.validate(source, shots(groupedShots))
 
-        val fixedRebuttalIndex = units.indexOfFirst { it.fixedShot && it.text.startsWith("放屁") }
+        val rebuttalStartIndex = units.indexOfFirst { it.text.startsWith("放屁") }
         val oversized = listOf(units.first().text, hookText) +
-            units.drop(fixedRebuttalIndex).map { it.text }
+            units.drop(rebuttalStartIndex).map { it.text }
         val correctlySplit = listOf(units.first().text) + hookGroups.map { group ->
             group.joinToString("") { it.text }
-        } + units.drop(fixedRebuttalIndex).map { it.text }
+        } + listOf(rebuttalUnits.joinToString("") { it.text }) +
+            afterHook.drop(rebuttalUnits.size).map { it.text }
         var attempts = 0
         val retried = CloudApi().checkedStoryboard(source, units, enforceOriginalCopy = true) {
             attempts++
@@ -197,7 +222,7 @@ class StoryboardRulesTest : Instrumentation() {
         assertEquals(listOf(expected.first()), StoryboardRules.opening(source))
         val units = StoryboardRules.sourceUnits(source)
         assertFalse(units[1].fixedShot)
-        assertTrue(units.first { it.text.startsWith("放屁") }.fixedShot)
+        assertFalse(units.first { it.text.startsWith("放屁") }.fixedShot)
     }
 
     fun testOpeningPreservesWhitespaceAndLeavesOtherStylesAlone() {
@@ -210,12 +235,13 @@ class StoryboardRulesTest : Instrumentation() {
 
     fun testLongClauseAndSmallTailDoNotCreateAnIsolatedPunch() {
         val source = theme + hook + "放屁，" + "富贵人家衣食无忧".repeat(8) + "，真好。"
-        val fixed = StoryboardRules.sourceUnits(source).filter { it.fixedShot }.map { it.text }
-        val rebuttalParts = fixed.drop(1)
-        assertTrue(rebuttalParts.first().startsWith("放屁，富贵"))
-        assertEquals(1, rebuttalParts.size)
-        assertTrue(rebuttalParts.single().endsWith("真好。"))
-        assertTrue(rebuttalParts.single().count(Char::isLetterOrDigit) > 40)
+        val units = StoryboardRules.sourceUnits(source)
+        val hookUnits = units.drop(1).takeWhile { !it.text.startsWith("放屁") }
+        val rebuttal = takeThroughFirstSentence(units.drop(1 + hookUnits.size)).joinToString("") { it.text }
+        assertTrue(rebuttal.startsWith("放屁，富贵"))
+        assertTrue(rebuttal.endsWith("真好。"))
+        assertTrue(rebuttal.count(Char::isLetterOrDigit) > 40)
+        StoryboardRules.validate(source, shots(listOf(theme, hook, rebuttal)))
     }
 
     fun testShotBoundariesMustFollowPunctuation() {
@@ -281,9 +307,11 @@ class StoryboardRulesTest : Instrumentation() {
     fun testSourceUnitResponsesRebuildVoiceoverFromOriginalText() {
         val source = "主题句。哼，完整钩子？放屁，这才是反驳。正文有前后两句。"
         val units = StoryboardRules.sourceUnits(source)
-        val hookUnits = units.drop(1).takeWhile { !it.fixedShot }
-        val rebuttalStart = 1 + hookUnits.size
-        val groups = listOf(listOf(units.first()), hookUnits) + units.drop(rebuttalStart).map { listOf(it) }
+        val hookUnits = units.drop(1).takeWhile { !it.text.startsWith("放屁") }
+        val afterHook = units.drop(1 + hookUnits.size)
+        val rebuttalUnits = takeThroughFirstSentence(afterHook)
+        val groups = listOf(listOf(units.first()), hookUnits, rebuttalUnits) +
+            afterHook.drop(rebuttalUnits.size).map { listOf(it) }
         val expectedShots = groups.map { group -> group.joinToString("") { it.text } }
         val response = JSONObject().put("title", "主题句。")
             .put("style_preset", "中国古代真人影视剧照质感")

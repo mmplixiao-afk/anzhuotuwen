@@ -74,7 +74,7 @@ internal object StoryboardRules {
                 next += Character.charCount(following)
             }
             if (next < text.length &&
-                text.substring(0, cursor).filter(Char::isLetterOrDigit) !in setOf("哼", "他娘的")) return true
+                text.substring(0, cursor).filter(Char::isLetterOrDigit) !in setOf("哼", "他娘的", "放屁")) return true
         }
         return false
     }
@@ -179,7 +179,7 @@ internal object StoryboardRules {
         val rebuttalEnd = plan?.rebuttalEnd
         if (rebuttalStart != null && rebuttalEnd != null && plan.rebuttalParts.isNotEmpty()) {
             appendFlexibleRange(cursor, rebuttalStart)
-            plan.rebuttalParts.forEach { pieces += it to true }
+            plan.rebuttalParts.forEach { pieces += it to false }
             cursor = rebuttalEnd
         }
         appendFlexibleRange(cursor, source.length)
@@ -298,21 +298,26 @@ internal object StoryboardRules {
             else -> 40
         }
         var rebuttalStartShot: Int? = null
-        if (plan?.rebuttalStart != null && plan.rebuttalParts.isNotEmpty()) {
+        var rebuttalEndShot: Int? = null
+        if (plan?.rebuttalStart != null && plan.rebuttalEnd != null && plan.rebuttalParts.isNotEmpty()) {
             var offset = 0
             for (index in 0..shots.size) {
                 if (offset == plan.rebuttalStart) {
                     rebuttalStartShot = index
+                }
+                if (offset == plan.rebuttalEnd) {
+                    rebuttalEndShot = index
                     break
                 }
                 if (index < shots.size) offset += shots[index].text.length
             }
             val startIndex = rebuttalStartShot
                 ?: throw IllegalArgumentException("放屁反驳段未从独立镜头边界开始")
-            require(startIndex > 0 && shots.size >= startIndex + plan.rebuttalParts.size &&
-                shots.take(startIndex).joinToString("") == source.substring(0, plan.rebuttalStart) &&
-                shots.drop(startIndex).take(plan.rebuttalParts.size).map { it.text } == plan.rebuttalParts) {
-                "开头反驳未按原文短镜边界拆分"
+            val endIndex = rebuttalEndShot
+                ?: throw IllegalArgumentException("开头反驳必须在原文首个句末标点处结束")
+            require(startIndex > 0 && endIndex > startIndex &&
+                shots.take(startIndex).joinToString("") == source.substring(0, plan.rebuttalStart)) {
+                "开头反驳必须从“放屁”处开始"
             }
             val hookShots = shots.subList(1, startIndex)
             require(hookShots.none { it.text.filter(Char::isLetterOrDigit) in setOf("哼", "他娘的") }) {
@@ -323,6 +328,20 @@ internal object StoryboardRules {
             }) {
                 "开头钩子超过所选粒度上限且含可切分标点，必须按标点拆成多个镜头"
             }
+            val rebuttalText = source.substring(plan.rebuttalStart, plan.rebuttalEnd)
+            val rebuttalShots = shots.subList(startIndex, endIndex)
+            val expectedRebuttalParts = splitRebuttal(rebuttalText)
+            if (spokenCount(rebuttalText) <= 32) {
+                require(rebuttalShots.size == 1) { "不超过32个有效字符的反驳段应保持为一镜" }
+            } else if (expectedRebuttalParts.size > 1) {
+                require(rebuttalShots.size > 1) { "较长反驳段含有自然停顿，应按标点拆分成多镜" }
+            }
+            require(rebuttalShots.all {
+                spokenCount(it.text) <= 32 || expectedRebuttalParts.size == 1 ||
+                    !hasInternalCutPunctuation(it.text)
+            }) { "较长反驳镜头含可用标点却未拆分" }
+            rebuttalStartShot = startIndex
+            rebuttalEndShot = endIndex
         }
         require(shots.none { it.text.filter(Char::isLetterOrDigit) == "放屁" }) {
             "放屁不能单独占一镜，必须接上第一拍反驳"
@@ -336,7 +355,7 @@ internal object StoryboardRules {
             }
         }
         val rebuttalShots = rebuttalStartShot?.let { start ->
-            shots.subList(start, start + (plan?.rebuttalParts?.size ?: 0))
+            shots.subList(start, rebuttalEndShot ?: start)
         }.orEmpty()
         for (values in listOf(rebuttalShots.map { it.visual }, rebuttalShots.map { it.imagePrompt })) {
             val keys = values.map { it.filterNot(Char::isWhitespace) }
