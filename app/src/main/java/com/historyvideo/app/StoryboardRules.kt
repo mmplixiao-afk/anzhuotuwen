@@ -179,7 +179,7 @@ internal object StoryboardRules {
         val rebuttalEnd = plan?.rebuttalEnd
         if (rebuttalStart != null && rebuttalEnd != null && plan.rebuttalParts.isNotEmpty()) {
             appendFlexibleRange(cursor, rebuttalStart)
-            plan.rebuttalParts.forEach { pieces += it to false }
+            plan.rebuttalParts.forEachIndexed { index, part -> pieces += part to (index == 0) }
             cursor = rebuttalEnd
         }
         appendFlexibleRange(cursor, source.length)
@@ -197,8 +197,8 @@ internal object StoryboardRules {
         append("\n\n【移动端分镜约束，优先于前文冲突规则】\n")
         append("普通正文使用$rules 短反应句可更短，字数是目标范围；所有镜头边界必须落在标点之后，不得在句子中间截断。没有自然标点可切的长句保持完整。不要按固定镜头数量拆分。\n")
         append("下面提供的source_units是原文唯一权威来源。只返回相邻、连续的source unit编号分组，不要复述或改写口播文字。每个编号必须且只能出现一次，按升序、连续覆盖本次提供的全部编号；不能跳号、重复、调序。程序会从原文按编号还原voiceover。\n")
-        append("固定镜头单元fixed_shot=true必须独立成镜，不能与其他编号合并或拆开。")
-        if (firstBatch) append("第1镜是口播第一句。若主题后以他娘的或哼开头且后面出现放屁，放屁前的钩子按所选粒度、自然语义和画面变化拆分，切分点必须在标点之后；“哼/他娘的”不能单独成镜，需并入后续钩子内容。钩子内没有自然标点可切的长句保持完整，不得把多句钩子固定成一个镜头。放屁反驳段仍按标点边界拆分，放屁不可独占镜头。")
+        append("固定边界单元fixed_shot=true必须独立成镜，不能与其他编号合并或拆开。")
+        if (firstBatch) append("第1镜是口播第一句。若主题后以他娘的或哼开头且后面出现放屁，放屁前的钩子按所选粒度、自然语义和画面变化拆分，切分点必须在标点之后；“哼/他娘的”不能单独成镜。反驳第一镜必须从“放屁”开始，不能把它并入上一镜；其后的反驳镜头按标点边界灵活分组。放屁不能单独占一镜，须接上第一拍反驳。")
         append("\n")
         append("每镜必须有对应的visual、punch、image_prompt、video_prompt。visual用中文描述时代、地点、主体、动作和情绪；image_prompt是独立可生图的写实古装提示词，约100–180个中文字符，人物外观保持一致。")
         if (firstBatch) append("前两镜须有清晰可辨人物。")
@@ -216,7 +216,7 @@ internal object StoryboardRules {
             require(ids.isNotEmpty()) { "第 ${shotIndex + 1} 镜没有source_unit_ids" }
             require(ids.all { it == expectedId++ }) { "source_unit_ids必须连续、按序且不重复" }
             val group = ids.map { byId[it] ?: throw IllegalArgumentException("不存在的source unit编号：$it") }
-            require(group.none { it.fixedShot } || group.size == 1) { "固定开头镜头不能与相邻文本合并" }
+            require(group.none { it.fixedShot } || group.size == 1) { "固定边界单元不能与相邻文本合并" }
             group.joinToString("") { it.text }
         }.also {
             require(expectedId == units.size + 1) { "分镜source_unit_ids未覆盖完整原文" }

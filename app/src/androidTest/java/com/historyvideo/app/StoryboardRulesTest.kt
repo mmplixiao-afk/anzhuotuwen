@@ -118,7 +118,7 @@ class StoryboardRulesTest : Instrumentation() {
         val title = "主题句。"
         val hookText = "哼，钩子？"
         val rebuttalFirst = "放屁，先问诊观察脉象，再细看舌苔判断病因，"
-        val rebuttalSecond = "接着开出药方稳住病情，患者当场转危为安。"
+        val rebuttalSecond = "接着开出药方稳住病情，患者当场转危为安并康复。"
         val source = title + hookText + rebuttalFirst + rebuttalSecond + "正文继续。"
         val expected = listOf(title, hookText, rebuttalFirst, rebuttalSecond, "正文继续。")
         val result = shots(expected)
@@ -126,17 +126,51 @@ class StoryboardRulesTest : Instrumentation() {
         assertEquals(expected, result.map { it.text })
     }
 
-    fun testSourceUnitsPreserveExactCopyAndOnlyFixTopic() {
+    fun testExclamationAfterOpeningPunchKeepsRebuttalStartAndAllowsFreeGrouping() {
+        val source = "古代当个神医到底有多爽？哼，你以为神医只是免费看病的老好人？放屁！真正把医术玩明白的顶级神医，那叫专挑富家翁下手、吃人不吐骨头的活阎王。正文继续。"
+        val expected = listOf(
+            "古代当个神医到底有多爽？",
+            "哼，你以为神医只是免费看病的老好人？",
+            "放屁！真正把医术玩明白的顶级神医，",
+            "那叫专挑富家翁下手、吃人不吐骨头的活阎王。",
+            "正文继续。"
+        )
+        StoryboardRules.validate(source, shots(expected))
+        assertEquals(source, expected.joinToString(""))
+    }
+
+    fun testProvidedDivineDoctorOpeningKeepsPunchAsFirstRebuttalShot() {
+        val source = "古代当个“神医”到底有多爽？哼，你以为古代的神医，就是悬壶济世、妙手回春，背着个破药箱给穷人免费看病的老好人？放屁！真正把医术玩明白的顶级神医，那叫吃人不吐骨头的活阎王。"
+        val units = StoryboardRules.sourceUnits(source)
+        val hookUnits = units.drop(1).takeWhile { !it.text.startsWith("放屁") }
+        val hookGroups = groupAtPunctuation(hookUnits).toMutableList()
+        if (hookGroups.size > 1 && hookGroups.first().joinToString("") == "哼，") {
+            hookGroups[0] = hookGroups[0] + hookGroups.removeAt(1)
+        }
+        val afterHook = units.drop(1 + hookUnits.size)
+        val rebuttalUnits = takeThroughFirstSentence(afterHook)
+        val ids = mutableListOf(listOf(units.first().id))
+        hookGroups.forEach { ids += it.map { unit -> unit.id } }
+        ids += listOf(rebuttalUnits.map { it.id })
+        val parts = StoryboardRules.reconstruct(units, ids)
+        val rebuttalPart = parts.first { it.startsWith("放屁") }
+        assertEquals("放屁！真正把医术玩明白的顶级神医，那叫吃人不吐骨头的活阎王。", rebuttalPart)
+        StoryboardRules.validate(source, shots(parts))
+        assertEquals(source, parts.joinToString(""))
+    }
+
+    fun testSourceUnitsPreserveExactCopyAndFixTopicAndRebuttalStart() {
         val source = "古代做县令到底有多难？哼，你以为只要升堂断案、清查账册、安抚百姓就行吗？放屁，先得应付师爷，再得安抚百姓。第一件事，你打开粮仓。第二件事，发现账册被改。"
         for (granularity in listOf("coarse", "balanced", "fine")) {
             val units = StoryboardRules.sourceUnits(source, granularity)
             assertEquals(source, units.joinToString("") { it.text })
             val fixed = units.filter { it.fixedShot }.map { it.text }
-            assertEquals(listOf(StoryboardRules.opening(source).first()), fixed)
+            assertEquals(StoryboardRules.opening(source).first(), fixed.first())
+            assertTrue(fixed.drop(1).single().startsWith("放屁"))
             val hookUnits = units.drop(1).takeWhile { !it.text.startsWith("放屁") }
             assertTrue(hookUnits.size > 1)
             assertTrue(hookUnits.all { !it.fixedShot })
-            assertFalse(units.drop(1 + hookUnits.size).first().fixedShot)
+            assertTrue(units.drop(1 + hookUnits.size).first().fixedShot)
             val grouped = units.map { listOf(it.id) }
             assertEquals(units.map { it.text }, StoryboardRules.reconstruct(units, grouped))
         }
@@ -222,7 +256,7 @@ class StoryboardRulesTest : Instrumentation() {
         assertEquals(listOf(expected.first()), StoryboardRules.opening(source))
         val units = StoryboardRules.sourceUnits(source)
         assertFalse(units[1].fixedShot)
-        assertFalse(units.first { it.text.startsWith("放屁") }.fixedShot)
+        assertTrue(units.first { it.text.startsWith("放屁") }.fixedShot)
     }
 
     fun testOpeningPreservesWhitespaceAndLeavesOtherStylesAlone() {
