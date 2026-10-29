@@ -266,7 +266,7 @@ class MainActivity : ComponentActivity() {
             .putExtra(GenerationService.EXTRA_PROJECT, project.id)
             .putExtra(GenerationService.EXTRA_SHOT, shotId)
             .putExtra(GenerationService.EXTRA_PROMPT, prompt)
-        if (action == GenerationService.IMAGE) {
+        if (action == GenerationService.IMAGE || action == GenerationService.IMAGE_OPTIMIZE) {
             val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
             intent.putExtra(GenerationService.EXTRA_SHOT_IMAGE_PROMPT, shot.imagePrompt)
         }
@@ -360,6 +360,7 @@ class MainActivity : ComponentActivity() {
         var message by remember { mutableStateOf("") }
         var exportingAsset by remember { mutableStateOf(false) }
         var deleteTarget by remember { mutableStateOf<VideoProject?>(null) }
+        var noBgmRenderProjectId by rememberSaveable { mutableStateOf("") }
         var now by remember { mutableStateOf(System.currentTimeMillis()) }
         val screen = when (val route = navigation.last()) {
             "topics", "topic_editor" -> "script"
@@ -444,11 +445,12 @@ class MainActivity : ComponentActivity() {
             projects = store.all()
         }
 
-        fun runProject(project: VideoProject, action: String, shotId: Int = 0) {
+        fun launchProjectTask(project: VideoProject, action: String, shotId: Int = 0) {
             val promptName = when (action) {
                 GenerationService.SCRIPT -> "script"
                 GenerationService.SHOTS -> "shots"
                 GenerationService.IMAGE_ALL, GenerationService.IMAGE -> "image"
+                GenerationService.IMAGE_OPTIMIZE -> "image_failure"
                 else -> null
             }
             val prompt = promptName?.let { settings.prompt(it) }.orEmpty()
@@ -460,6 +462,14 @@ class MainActivity : ComponentActivity() {
             }.onFailure { error ->
                 message = error.message.orEmpty()
             }
+        }
+
+        fun runProject(project: VideoProject, action: String, shotId: Int = 0) {
+            if (action == GenerationService.RENDER && (project.bgmId.isBlank() || project.bgmId == "none")) {
+                noBgmRenderProjectId = project.id
+                return
+            }
+            launchProjectTask(project, action, shotId)
         }
 
         fun exportProject(project: VideoProject, cover: Boolean = false) {
@@ -756,6 +766,33 @@ class MainActivity : ComponentActivity() {
                 },
                 dismissButton = {
                     TextButton(onClick = { deleteTarget = null }) { Text("取消") }
+                }
+            )
+        }
+        if (noBgmRenderProjectId.isNotBlank()) {
+            val projectId = noBgmRenderProjectId
+            val renderProject = projects.firstOrNull { it.id == projectId }
+            AlertDialog(
+                onDismissRequest = { noBgmRenderProjectId = "" },
+                title = { Text("尚未选择背景音乐") },
+                text = { Text("本卷没有选择 BGM，继续渲染后成片将不含背景音乐。") },
+                confirmButton = {
+                    TextButton(onClick = {
+                        noBgmRenderProjectId = ""
+                        renderProject?.let { launchProjectTask(it, GenerationService.RENDER) }
+                    }) { Text("仍然渲染") }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            noBgmRenderProjectId = ""
+                            if (renderProject != null) {
+                                selectedId = renderProject.id
+                                navigate("effects")
+                            }
+                        }) { Text("去选择 BGM") }
+                        TextButton(onClick = { noBgmRenderProjectId = "" }) { Text("取消") }
+                    }
                 }
             )
         }
@@ -1432,12 +1469,13 @@ private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit
 @Composable
 private fun PromptListScreen(settings: AppSettings, onOpen: (String) -> Unit) {
     Text("提示词卷库", style = MaterialTheme.typography.headlineSmall)
-    Text("选择一套提示词进入编辑页面。恢复默认会使用电脑端历史工作台提示词。",
+    Text("选择一套提示词进入编辑页面，恢复默认会还原内置内容。",
         style = MaterialTheme.typography.bodySmall)
     AppSettings.types.forEach { type ->
         val label = when (type) {
             "script" -> "文案提示词"
             "shots" -> "分镜提示词"
+            "image_failure" -> "生图失败优化提示词"
             else -> "生图提示词"
         }
         Card(onClick = { onOpen(type) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
@@ -1456,6 +1494,7 @@ private fun PromptEditorScreen(settings: AppSettings, type: String, onMessage: (
     val label = when (type) {
         "script" -> "文案提示词"
         "shots" -> "分镜提示词"
+        "image_failure" -> "生图失败优化提示词"
         else -> "生图提示词"
     }
     var prompt by rememberSaveable(type) { mutableStateOf(settings.prompt(type)) }
@@ -1483,13 +1522,14 @@ private fun PromptEditorScreen(settings: AppSettings, type: String, onMessage: (
 @Composable
 private fun PromptSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit) {
     Text("提示词卷库", style = MaterialTheme.typography.headlineSmall)
-    Text("恢复默认会使用历史工作台中的三组提示词。")
+    Text("恢复默认会还原内置提示词。")
     AppSettings.types.forEach { type ->
         key(type) {
             var prompt by remember { mutableStateOf(settings.prompt(type)) }
             Text(when (type) {
                 "script" -> "文案"
                 "shots" -> "分镜"
+                "image_failure" -> "生图失败优化提示词"
                 else -> "生图提示词"
             })
             OutlinedTextField(prompt, { prompt = it }, modifier = Modifier.fillMaxWidth(), minLines = 8)
@@ -1532,12 +1572,15 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
     var soundMenu by remember(project.id, shot.id) { mutableStateOf(false) }
     var selectedSoundEffects by remember(project.id, shot.id) { mutableStateOf(shot.soundEffects.toList()) }
     LaunchedEffect(shot.soundEffects) { selectedSoundEffects = shot.soundEffects.toList() }
-    fun saveInputs() {
+    fun saveInputs(preserveImageError: Boolean = false) {
         val textChanged = shot.text != text
         val promptChanged = shot.imagePrompt != prompt
         shot.text = text; shot.imagePrompt = prompt
         if (textChanged) shot.audioStatus = "pending"
-        if (promptChanged) { shot.imageStatus = "pending"; shot.error = "" }
+        if (promptChanged) {
+            shot.imageStatus = "pending"
+            if (!preserveImageError) shot.error = ""
+        }
         onSave(project)
     }
     Column(
@@ -1577,8 +1620,15 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
             }
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("画面已生成", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-            StatusPill(imageSizeLabel(project.imageSize), HistoryColors.green)
+            Text(when {
+                shot.imageStatus == "failed" -> "图片生成失败"
+                imageFile.isFile && imageFile.length() > 1000 -> "画面已生成"
+                else -> "图片尚未生成"
+            }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+            StatusPill(imageSizeLabel(project.imageSize), if (shot.imageStatus == "failed") HistoryColors.cinnabar else HistoryColors.green)
+        }
+        if (shot.imageStatus == "failed" && shot.error.isNotBlank()) {
+            Text("失败原因：${shot.error}", color = HistoryColors.cinnabar, style = MaterialTheme.typography.bodySmall)
         }
         Text("配音", style = MaterialTheme.typography.titleLarge)
         FormCard {
@@ -1636,6 +1686,15 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                 }
             }
             CompactInput(prompt, { prompt = it }, enabled = !busy, minLines = 5)
+            if (shot.imageStatus == "failed") {
+                OutlinedButton(onClick = {
+                    saveInputs(preserveImageError = true)
+                    onRun(project, GenerationService.IMAGE_OPTIMIZE, shot.id)
+                }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(25.dp)) {
+                    Text("优化失败提示词并重生图")
+                }
+            }
             OutlinedButton(onClick = {
                 saveInputs(); shot.error = ""; onSave(project)
                 onRun(project, GenerationService.IMAGE, shot.id)
@@ -1650,7 +1709,7 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                 Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = null, modifier = Modifier.size(18.dp))
                 Text("上一镜", style = MaterialTheme.typography.labelMedium, maxLines = 1)
             }
-            Button(onClick = ::saveInputs, enabled = !busy, modifier = Modifier.weight(1.3f),
+            Button(onClick = { saveInputs() }, enabled = !busy, modifier = Modifier.weight(1.3f),
                 contentPadding = PaddingValues(6.dp), shape = RoundedCornerShape(24.dp)) { Text("保存本段", maxLines = 1) }
             OutlinedButton(onClick = { onNavigate(project.shots[shotIndex + 1].id) },
                 enabled = !busy && shotIndex >= 0 && shotIndex < project.shots.lastIndex,

@@ -86,7 +86,7 @@ class GenerationService : Service() {
             store.save(project)
             notifyStatus(project.detail)
             try {
-                if (action in setOf(FINISH, VOICE_ALL, IMAGE_ALL, RENDER, IMAGE, AUDIO)) {
+                if (action in setOf(FINISH, VOICE_ALL, IMAGE_ALL, RENDER, IMAGE, IMAGE_OPTIMIZE, AUDIO)) {
                     require(project.storyboardScript == project.script) {
                         "正文已修改，请先重新拆分镜头，再生成对应的图片、配音和视频"
                     }
@@ -114,6 +114,8 @@ class GenerationService : Service() {
                     IMAGE_ALL -> generateImages(project, promptOverride)
                     RENDER -> render(project)
                     IMAGE -> regenerateImage(project, intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
+                    IMAGE_OPTIMIZE -> optimizeAndRegenerateImage(project,
+                        intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
                     AUDIO -> regenerateAudio(project, intent.getIntExtra(EXTRA_SHOT, 0))
                 }
             } catch (error: Exception) {
@@ -178,6 +180,7 @@ class GenerationService : Service() {
         "script" -> "文案提示词"
         "shots" -> "分镜提示词"
         "image" -> "生图提示词"
+        "image_failure" -> "生图失败优化提示词"
         else -> "提示词"
     }
 
@@ -346,6 +349,47 @@ class GenerationService : Service() {
         update(project, "shots", "review", "图片已更新，可继续制作", 1, 1)
     }
 
+    private fun optimizeAndRegenerateImage(project: VideoProject, shotId: Int,
+                                           optimizerPromptOverride: String = "",
+                                           shotPromptOverride: String? = null) {
+        val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
+        val originalPrompt = (shotPromptOverride ?: shot.imagePrompt).trim()
+        require(originalPrompt.isNotBlank()) { "请先填写本镜生图提示词" }
+        val optimizerPrompt = configuredPrompt("image_failure", optimizerPromptOverride)
+        update(project, "images", "running", "正在优化第 ${project.shotNumber(shotId)} 镜的生图提示词", 0, 1)
+        val input = buildString {
+            append("视频主题：").append(project.title).append("\n")
+            append("本镜口播：").append(shot.text).append("\n")
+            if (shot.visual.isNotBlank()) append("本镜画面说明：").append(shot.visual).append("\n")
+            if (project.storyboardStylePreset.isNotBlank()) {
+                append("统一画风：").append(project.storyboardStylePreset).append("\n")
+            }
+            if (shot.error.isNotBlank()) append("上次生图失败原因：").append(shot.error).append("\n")
+            append("当前生图提示词：\n").append(originalPrompt)
+        }
+        val optimizedPrompt = try {
+            val response = api.text(settings.provider("text"), optimizerPrompt, input,
+                "只输出一条中文图片提示词，不输出 JSON、标题、编号、说明或代码块。") { usage ->
+                ProjectCosts(store).add(project.id,
+                    CostEntry.text("第 ${project.shotNumber(shotId)} 镜优化生图提示词", usage).copy(shotId = shotId))
+            }.trim()
+            val cleaned = if (response.startsWith("```")) {
+                response.substringAfter('\n').substringBeforeLast("```").trim()
+            } else response
+            cleaned.also { require(it.isNotBlank()) { "提示词优化结果为空" } }
+        } catch (error: Exception) {
+            shot.imageStatus = "failed"
+            shot.error = userFacingError(error, "images").take(180)
+            store.save(project)
+            throw error
+        }
+        shot.imagePrompt = optimizedPrompt
+        shot.imageStatus = "pending"
+        shot.error = ""
+        store.save(project)
+        regenerateImage(project, shotId, settings.prompt("image"), optimizedPrompt)
+    }
+
     private fun regenerateAudio(project: VideoProject, shotId: Int) {
         val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
         val target = store.audio(project, shot)
@@ -444,6 +488,7 @@ class GenerationService : Service() {
         const val IMAGE_ALL = "image_all"
         const val RENDER = "render"
         const val IMAGE = "image"
+        const val IMAGE_OPTIMIZE = "image_optimize"
         const val AUDIO = "audio"
         const val CANCEL = "cancel"
         private const val NOTIFICATION_CHANNEL = "generation_v2"
