@@ -450,7 +450,7 @@ class MainActivity : ComponentActivity() {
                 GenerationService.SCRIPT -> "script"
                 GenerationService.SHOTS -> "shots"
                 GenerationService.IMAGE_ALL, GenerationService.IMAGE -> "image"
-                GenerationService.IMAGE_OPTIMIZE -> "image_failure"
+                GenerationService.IMAGE_OPTIMIZE, GenerationService.IMAGE_OPTIMIZE_ALL -> "image_failure"
                 else -> null
             }
             val prompt = promptName?.let { settings.prompt(it) }.orEmpty()
@@ -2768,6 +2768,8 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
     val audioLibrary = remember(store) { AudioLibrary(store.context()) }
     val busy = project.status == "running"
     var missingImagesOnly by rememberSaveable(project.id) { mutableStateOf(false) }
+    var confirmBatchOptimize by rememberSaveable(project.id) { mutableStateOf(false) }
+    val failedImageIds = project.shots.filter { it.imageStatus == "failed" }.map { it.id }
     val missingImageIds = project.shots.filter { shot ->
         val image = store.image(project, shot)
         shot.imageStatus != "done" || !image.isFile || image.length() <= 1000
@@ -2805,6 +2807,12 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
             OutlinedButton(onClick = { onRun(project, GenerationService.VOICE_ALL, 0) },
                 enabled = !busy, modifier = Modifier.weight(1f).height(54.dp), shape = RoundedCornerShape(28.dp)) { Text("生成配音") }
         }
+        if (failedImageIds.isNotEmpty()) {
+            OutlinedButton(onClick = { confirmBatchOptimize = true }, enabled = !busy,
+                modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+                Text("批量优化失败提示词并重生图 · ${failedImageIds.size}")
+            }
+        }
         val voiceReady = project.shots.all { it.audioStatus == "done" }
         OutlinedButton(onClick = { onPlayVoice(project) },
             enabled = !busy && voiceReady, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
@@ -2825,6 +2833,22 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
         OutlinedButton(onClick = { onExport(project) }, modifier = Modifier.fillMaxWidth()) {
             Text("保存 MP4 到相册")
         }
+    }
+    if (confirmBatchOptimize) {
+        AlertDialog(
+            onDismissRequest = { confirmBatchOptimize = false },
+            title = { Text("批量优化失败镜头？") },
+            text = { Text("将逐个优化 ${failedImageIds.size} 个失败镜头的生图提示词并重新生成图片。每个镜头会调用文本 API 和生图 API，按接口实际用量计费；已生成成功的镜头不会处理。") },
+            confirmButton = {
+                Button(onClick = {
+                    confirmBatchOptimize = false
+                    onRun(project, GenerationService.IMAGE_OPTIMIZE_ALL, 0)
+                }) { Text("开始批量处理") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmBatchOptimize = false }) { Text("取消") }
+            }
+        )
     }
 }
 

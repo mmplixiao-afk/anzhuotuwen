@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.arthenica.ffmpegkit.FFmpegKit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -72,7 +73,8 @@ class GenerationService : Service() {
         store.markCurrentProject(id)
         val notification = notification("正在准备视频任务")
         if (Build.VERSION.SDK_INT >= 29) {
-            val type = if (Build.VERSION.SDK_INT >= 35 && (action == FINISH || action == VOICE_ALL || action == IMAGE_ALL || action == RENDER))
+            val type = if (Build.VERSION.SDK_INT >= 35 && (action == FINISH || action == VOICE_ALL ||
+                    action == IMAGE_ALL || action == IMAGE_OPTIMIZE_ALL || action == RENDER))
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROCESSING
                 else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             startForeground(1, notification, type)
@@ -86,7 +88,8 @@ class GenerationService : Service() {
             store.save(project)
             notifyStatus(project.detail)
             try {
-                if (action in setOf(FINISH, VOICE_ALL, IMAGE_ALL, RENDER, IMAGE, IMAGE_OPTIMIZE, AUDIO)) {
+                if (action in setOf(FINISH, VOICE_ALL, IMAGE_ALL, IMAGE_OPTIMIZE_ALL, RENDER,
+                        IMAGE, IMAGE_OPTIMIZE, AUDIO)) {
                     require(project.storyboardScript == project.script) {
                         "正文已修改，请先重新拆分镜头，再生成对应的图片、配音和视频"
                     }
@@ -116,6 +119,7 @@ class GenerationService : Service() {
                     IMAGE -> regenerateImage(project, intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
                     IMAGE_OPTIMIZE -> optimizeAndRegenerateImage(project,
                         intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
+                    IMAGE_OPTIMIZE_ALL -> optimizeAndRegenerateFailedImages(project, promptOverride)
                     AUDIO -> regenerateAudio(project, intent.getIntExtra(EXTRA_SHOT, 0))
                 }
             } catch (error: Exception) {
@@ -349,14 +353,60 @@ class GenerationService : Service() {
         update(project, "shots", "review", "图片已更新，可继续制作", 1, 1)
     }
 
-    private fun optimizeAndRegenerateImage(project: VideoProject, shotId: Int,
-                                           optimizerPromptOverride: String = "",
-                                           shotPromptOverride: String? = null) {
+    private suspend fun optimizeAndRegenerateImage(project: VideoProject, shotId: Int,
+                                                   optimizerPromptOverride: String = "",
+                                                   shotPromptOverride: String? = null) {
+        currentCoroutineContext().ensureActive()
         val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
-        val originalPrompt = (shotPromptOverride ?: shot.imagePrompt).trim()
-        require(originalPrompt.isNotBlank()) { "请先填写本镜生图提示词" }
         val optimizerPrompt = configuredPrompt("image_failure", optimizerPromptOverride)
         update(project, "images", "running", "正在优化第 ${project.shotNumber(shotId)} 镜的生图提示词", 0, 1)
+        val optimizedPrompt = optimizeImagePrompt(project, shot, optimizerPrompt, shotPromptOverride)
+        currentCoroutineContext().ensureActive()
+        regenerateImage(project, shotId, settings.prompt("image"), optimizedPrompt)
+    }
+
+    private suspend fun optimizeAndRegenerateFailedImages(project: VideoProject, optimizerPromptOverride: String = "") {
+        val failedIds = project.shots.filter { it.imageStatus == "failed" }.map { it.id }
+        require(failedIds.isNotEmpty()) { "当前项目没有生图失败的镜头" }
+        val optimizerPrompt = configuredPrompt("image_failure", optimizerPromptOverride)
+        val imagePrompt = configuredPrompt("image")
+        var succeeded = 0
+        val failedNumbers = mutableListOf<Int>()
+        failedIds.forEachIndexed { index, shotId ->
+            currentCoroutineContext().ensureActive()
+            val shot = project.shots.firstOrNull { it.id == shotId } ?: return@forEachIndexed
+            update(project, "images", "running",
+                "批量优化并重生图 ${index + 1}/${failedIds.size} · 镜头 ${project.shotNumber(shotId)}",
+                index, failedIds.size)
+            try {
+                val optimizedPrompt = optimizeImagePrompt(project, shot, optimizerPrompt, shot.imagePrompt)
+                currentCoroutineContext().ensureActive()
+                regenerateImage(project, shotId, imagePrompt, optimizedPrompt)
+                succeeded++
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                shot.imageStatus = "failed"
+                if (shot.error.isBlank()) shot.error = userFacingError(error, "images").take(180)
+                store.save(project)
+                failedNumbers += project.shotNumber(shotId)
+            }
+        }
+        val detail = buildString {
+            append("批量优化与重生图完成：成功 $succeeded/${failedIds.size}")
+            if (failedNumbers.isNotEmpty()) {
+                append("；失败镜头：${failedNumbers.take(10).joinToString("、")}")
+                if (failedNumbers.size > 10) append("等 ${failedNumbers.size} 个")
+            }
+        }
+        update(project, "shots", "review", detail, failedIds.size, failedIds.size)
+    }
+
+    private fun optimizeImagePrompt(project: VideoProject, shot: Shot, optimizerPrompt: String,
+                                    shotPromptOverride: String?): String {
+        val shotId = shot.id
+        val originalPrompt = (shotPromptOverride ?: shot.imagePrompt).trim()
+        require(originalPrompt.isNotBlank()) { "请先填写本镜生图提示词" }
         val input = buildString {
             append("视频主题：").append(project.title).append("\n")
             append("本镜口播：").append(shot.text).append("\n")
@@ -387,7 +437,7 @@ class GenerationService : Service() {
         shot.imageStatus = "pending"
         shot.error = ""
         store.save(project)
-        regenerateImage(project, shotId, settings.prompt("image"), optimizedPrompt)
+        return optimizedPrompt
     }
 
     private fun regenerateAudio(project: VideoProject, shotId: Int) {
@@ -486,6 +536,7 @@ class GenerationService : Service() {
         const val FINISH = "finish"
         const val VOICE_ALL = "voice_all"
         const val IMAGE_ALL = "image_all"
+        const val IMAGE_OPTIMIZE_ALL = "image_optimize_all"
         const val RENDER = "render"
         const val IMAGE = "image"
         const val IMAGE_OPTIMIZE = "image_optimize"
