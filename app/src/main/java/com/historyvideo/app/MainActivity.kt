@@ -980,7 +980,6 @@ private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long
                     Icon(Icons.Filled.Add, contentDescription = null, tint = HistoryColors.cinnabar, modifier = Modifier.size(30.dp))
                 }
                 Text("新建一卷", style = MaterialTheme.typography.titleLarge)
-                Text("从题材、文案到成片", color = HistoryColors.muted)
             }
         }
         Card(onClick = onHistory, modifier = Modifier.weight(1f).height(174.dp), shape = RoundedCornerShape(24.dp),
