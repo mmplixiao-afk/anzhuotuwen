@@ -132,8 +132,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material3.Typography
 import androidx.compose.material3.Shapes
@@ -1651,29 +1657,22 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
         ShotMotionSettingsCard(project, shot, busy, onChange = onMotionChange, onCutoutChange = onCutoutChange)
         FormCard {
             Text("本镜音效", style = MaterialTheme.typography.titleLarge)
-            Box(Modifier.fillMaxWidth()) {
-                val selectedLabel = selectedSoundEffects.mapNotNull { effect -> audioLibrary.asset(effect.assetId)?.name }
-                    .joinToString("、").ifBlank { "无" }
-                ChoiceTile("音效", selectedLabel, onClick = { soundMenu = true }, enabled = !busy, dropdown = true)
-                DropdownMenu(expanded = soundMenu && !busy, onDismissRequest = { soundMenu = false },
-                    modifier = Modifier.fillMaxWidth(0.88f).heightIn(max = 380.dp)) {
-                    DropdownMenuItem(text = { Text("无") },
-                        leadingIcon = if (selectedSoundEffects.isEmpty()) ({ Icon(Icons.Filled.Check, contentDescription = null) }) else null,
-                        onClick = {
-                            selectedSoundEffects = emptyList()
-                            onSoundEffectsChange(emptyList()); soundMenu = false
-                        })
-                    audioLibrary.assets(AudioKind.SFX).forEach { asset ->
-                        val selected = selectedSoundEffects.any { it.assetId == asset.id }
-                        DropdownMenuItem(text = { Text(asset.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            leadingIcon = if (selected) ({ Icon(Icons.Filled.Check, contentDescription = null) }) else null,
-                            onClick = {
-                                val next = if (selected) selectedSoundEffects.filterNot { it.assetId == asset.id }
-                                    else selectedSoundEffects + ShotSoundEffect(asset.id)
-                                selectedSoundEffects = next
-                                onSoundEffectsChange(next)
-                            })
-                    }
+            val selectedLabel = selectedSoundEffects.mapNotNull { effect -> audioLibrary.asset(effect.assetId)?.name }
+                .joinToString("、").ifBlank { "无" }
+            ShotSelectField("音效", selectedLabel, expanded = soundMenu, onClick = { soundMenu = true },
+                onDismiss = { soundMenu = false }, enabled = !busy) {
+                ShotSelectOption("无", selected = selectedSoundEffects.isEmpty(), onClick = {
+                    selectedSoundEffects = emptyList()
+                    onSoundEffectsChange(emptyList()); soundMenu = false
+                })
+                audioLibrary.assets(AudioKind.SFX).forEach { asset ->
+                    val selected = selectedSoundEffects.any { it.assetId == asset.id }
+                    ShotSelectOption(asset.name, selected = selected, onClick = {
+                        val next = if (selected) selectedSoundEffects.filterNot { it.assetId == asset.id }
+                            else selectedSoundEffects + ShotSoundEffect(asset.id)
+                        selectedSoundEffects = next
+                        onSoundEffectsChange(next)
+                    })
                 }
             }
             Text("试听本镜会同步播放已选音效。", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
@@ -1778,76 +1777,145 @@ private fun ShotMotionSettingsCard(project: VideoProject, shot: Shot, busy: Bool
     var zoomMenu by remember(shot.id) { mutableStateOf(false) }
     val modeChoices = listOf("default" to "使用默认运动") + ShotMotionRules.modes +
         listOf(ShotMotionRules.sequenceMode to "依次拉近推远")
+    val cutoutReady = !busy && (shot.cutoutEnabled || modelsReady)
     FormCard {
-        Text("运动类型", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.weight(1f)) {
-                    ChoiceTile("", if (shot.cutoutEnabled) "人物抠图已启用" else
-                        modeChoices.firstOrNull { it.first == mode }?.second ?: "使用默认运动",
-                        onClick = { modeMenu = true }, enabled = enabled, dropdown = true)
-                    DropdownMenu(expanded = modeMenu && enabled, onDismissRequest = { modeMenu = false }) {
-                        modeChoices.forEach { (id, label) ->
-                            DropdownMenuItem(text = { Text(label) }, onClick = {
-                                modeMenu = false
-                                val next = if (id == "default") null else {
-                                    val direction = setting?.direction?.takeIf { value ->
-                                        ShotMotionRules.directions.any { it.first == value }
-                                    } ?: "left_to_right"
-                                    ShotMotionSetting(id, direction,
-                                        if (id == "zoom_pan") setting?.zoomDirection ?: "in" else "in")
-                                }
-                                if (ShotMotionRules.normalize(next) != setting) onChange(next)
-                            })
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            ShotSelectField(
+                label = "运动类型",
+                value = if (shot.cutoutEnabled) "人物抠图已启用" else
+                    modeChoices.firstOrNull { it.first == mode }?.second ?: "使用默认运动",
+                expanded = modeMenu,
+                onClick = { modeMenu = true },
+                onDismiss = { modeMenu = false },
+                enabled = enabled,
+                modifier = Modifier.weight(1f)
+            ) {
+                modeChoices.forEach { (id, label) ->
+                    ShotSelectOption(label, selected = id == mode, onClick = {
+                        modeMenu = false
+                        val next = if (id == "default") null else {
+                            val direction = setting?.direction?.takeIf { value ->
+                                ShotMotionRules.directions.any { it.first == value }
+                            } ?: "left_to_right"
+                            ShotMotionSetting(id, direction,
+                                if (id == "zoom_pan") setting?.zoomDirection ?: "in" else "in")
                         }
-                    }
-                }
-                OutlinedButton(onClick = { onCutoutChange(!shot.cutoutEnabled) },
-                    enabled = !busy && (shot.cutoutEnabled || modelsReady),
-                    shape = RoundedCornerShape(24.dp)) {
-                    Text(if (shot.cutoutEnabled) "关闭抠图" else "人物抠图")
+                        if (ShotMotionRules.normalize(next) != setting) onChange(next)
+                    })
                 }
             }
-            if (!shot.cutoutEnabled && (mode == "pan" || mode == "zoom_pan")) {
-                Box(Modifier.fillMaxWidth()) {
-                    val directionLabel = ShotMotionRules.directions.firstOrNull { it.first == setting?.direction }?.second
-                        ?: "随机方向"
-                    ChoiceTile("移动方向", directionLabel, onClick = { directionMenu = true },
-                        enabled = enabled, dropdown = true)
-                    DropdownMenu(expanded = directionMenu && enabled, onDismissRequest = { directionMenu = false }) {
-                        ShotMotionRules.directions.forEach { (id, label) ->
-                            DropdownMenuItem(text = { Text(label) }, onClick = {
-                                directionMenu = false
-                                setting?.copy(direction = id)?.let { next ->
-                                    if (next != setting) onChange(next)
-                                }
-                            })
-                        }
-                    }
-                }
+            OutlinedButton(onClick = { onCutoutChange(!shot.cutoutEnabled) },
+                enabled = cutoutReady,
+                modifier = Modifier.height(ShotSelectHeight),
+                shape = RoundedCornerShape(ShotSelectHeight / 2),
+                border = BorderStroke(1.dp, if (cutoutReady) HistoryColors.cinnabar else HistoryColors.line),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    containerColor = Color.White,
+                    contentColor = HistoryColors.cinnabar,
+                    disabledContainerColor = Color.White,
+                    disabledContentColor = HistoryColors.muted
+                ),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)) {
+                Text(if (shot.cutoutEnabled) "关闭抠图" else "人物抠图", maxLines = 1,
+                    style = MaterialTheme.typography.labelLarge)
             }
-            if (!shot.cutoutEnabled && mode == "zoom_pan") {
-                Box(Modifier.fillMaxWidth()) {
-                    ChoiceTile("缩放方式", if (setting?.zoomDirection == "out") "拉远" else "推近",
-                        onClick = { zoomMenu = true }, enabled = enabled, dropdown = true)
-                    DropdownMenu(expanded = zoomMenu && enabled, onDismissRequest = { zoomMenu = false }) {
-                        listOf("in" to "推近", "out" to "拉远").forEach { (id, label) ->
-                            DropdownMenuItem(text = { Text(label) }, onClick = {
-                                zoomMenu = false
-                                setting?.copy(zoomDirection = id)?.let { next ->
-                                    if (next != setting) onChange(next)
-                                }
-                            })
-                        }
-                    }
-                }
-            }
-            Text(if (shot.cutoutEnabled) "已选择成片抠图，取消抠图后可设置普通图片运动" else
-                if (mode == ShotMotionRules.sequenceMode) "从本镜开始：本镜拉近，后续默认运动镜头交替推远、拉近；手动运动和抠图镜头跳过" else
-                if (!modelsReady) "普通运动选择后自动保存；如需抠图，请先在设置中导入模型" else
-                "选择后自动保存，仅影响当前镜头，重新渲染后生效",
-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         }
+        if (!shot.cutoutEnabled && (mode == "pan" || mode == "zoom_pan")) {
+            val directionLabel = ShotMotionRules.directions.firstOrNull { it.first == setting?.direction }?.second
+                ?: "随机方向"
+            ShotSelectField("移动方向", directionLabel, expanded = directionMenu, onClick = { directionMenu = true },
+                onDismiss = { directionMenu = false }, enabled = enabled) {
+                ShotMotionRules.directions.forEach { (id, label) ->
+                    ShotSelectOption(label, selected = setting?.direction == id, onClick = {
+                        directionMenu = false
+                        setting?.copy(direction = id)?.let { next ->
+                            if (next != setting) onChange(next)
+                        }
+                    })
+                }
+            }
+        }
+        if (!shot.cutoutEnabled && mode == "zoom_pan") {
+            ShotSelectField("缩放方式", if (setting?.zoomDirection == "out") "拉远" else "推近",
+                expanded = zoomMenu, onClick = { zoomMenu = true }, onDismiss = { zoomMenu = false },
+                enabled = enabled) {
+                listOf("in" to "推近", "out" to "拉远").forEach { (id, label) ->
+                    ShotSelectOption(label, selected = (setting?.zoomDirection ?: "in") == id, onClick = {
+                        zoomMenu = false
+                        setting?.copy(zoomDirection = id)?.let { next ->
+                            if (next != setting) onChange(next)
+                        }
+                    })
+                }
+            }
+        }
+        Text(if (shot.cutoutEnabled) "已选择成片抠图，取消抠图后可设置普通图片运动" else
+            if (mode == ShotMotionRules.sequenceMode) "从本镜开始：本镜拉近，后续默认运动镜头交替推远、拉近；手动运动和抠图镜头跳过" else
+            if (!modelsReady) "普通运动选择后自动保存；如需抠图，请先在设置中导入模型" else
+            "选择后自动保存，仅影响当前镜头，重新渲染后生效",
+            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+    }
+}
+
+private val ShotSelectHeight = 64.dp
+private val ShotSelectShape = RoundedCornerShape(14.dp)
+private val ShotMenuShape = RoundedCornerShape(12.dp)
+
+@Composable
+private fun ShotSelectField(label: String, value: String, expanded: Boolean, onClick: () -> Unit,
+                            onDismiss: () -> Unit, enabled: Boolean = true,
+                            modifier: Modifier = Modifier.fillMaxWidth(),
+                            menu: @Composable ColumnScope.() -> Unit) {
+    val density = LocalDensity.current
+    var anchorWidth by remember { mutableStateOf(0) }
+    var anchorHeight by remember { mutableStateOf(0) }
+    Box(modifier.onSizeChanged {
+        anchorWidth = it.width
+        anchorHeight = it.height
+    }) {
+        Surface(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth().height(ShotSelectHeight),
+            shape = ShotSelectShape, color = HistoryColors.subcard) {
+            Row(Modifier.fillMaxSize().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(label, style = MaterialTheme.typography.labelSmall, color = HistoryColors.muted,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
+                        color = HistoryColors.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Icon(Icons.Filled.ArrowDropDown, contentDescription = "展开$label", tint = HistoryColors.muted,
+                    modifier = Modifier.size(20.dp))
+            }
+        }
+        if (expanded && enabled && anchorWidth > 0) {
+            val shadowRoom = with(density) { 16.dp.roundToPx() }
+            val menuWidth = with(density) { anchorWidth.toDp() }
+            Popup(alignment = Alignment.TopStart,
+                offset = IntOffset(-shadowRoom, anchorHeight + with(density) { 4.dp.roundToPx() } - shadowRoom),
+                onDismissRequest = onDismiss,
+                properties = PopupProperties(focusable = true, clippingEnabled = false,
+                    usePlatformDefaultWidth = false)) {
+                Column(Modifier.padding(16.dp).width(menuWidth).heightIn(max = 320.dp)
+                    .shadow(8.dp, ShotMenuShape).clip(ShotMenuShape).background(Color.White)
+                    .border(1.dp, HistoryColors.line, ShotMenuShape).verticalScroll(rememberScrollState()),
+                    content = menu)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ShotSelectOption(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp)
+        .background(if (selected) HistoryColors.cinnabarSoft else Color.Transparent)
+        .clickable(onClick = onClick).padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (selected) Icon(Icons.Filled.Check, contentDescription = "已选", tint = HistoryColors.cinnabar,
+            modifier = Modifier.size(18.dp))
+        else Spacer(Modifier.size(18.dp))
+        Text(label, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.bodyLarge, color = HistoryColors.ink)
     }
 }
 
