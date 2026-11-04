@@ -179,7 +179,8 @@ internal object StoryboardRules {
         val rebuttalEnd = plan?.rebuttalEnd
         if (rebuttalStart != null && rebuttalEnd != null && plan.rebuttalParts.isNotEmpty()) {
             appendFlexibleRange(cursor, rebuttalStart)
-            plan.rebuttalParts.forEachIndexed { index, part -> pieces += part to (index == 0) }
+            // Every rebuttal beat is cut by the program and fixed; the AI only describes visuals for it.
+            plan.rebuttalParts.forEach { part -> pieces += part to true }
             cursor = rebuttalEnd
         }
         appendFlexibleRange(cursor, source.length)
@@ -198,7 +199,7 @@ internal object StoryboardRules {
         append("普通正文使用$rules 短反应句可更短，字数是目标范围；所有镜头边界必须落在标点之后，不得在句子中间截断。没有自然标点可切的长句保持完整。不要按固定镜头数量拆分。\n")
         append("下面提供的source_units是原文唯一权威来源。只返回相邻、连续的source unit编号分组，不要复述或改写口播文字。每个编号必须且只能出现一次，按升序、连续覆盖本次提供的全部编号；不能跳号、重复、调序。程序会从原文按编号还原voiceover。\n")
         append("固定边界单元fixed_shot=true必须独立成镜，不能与其他编号合并或拆开。")
-        if (firstBatch) append("第1镜是口播第一句。若主题后以他娘的或哼开头且后面出现放屁，放屁前的钩子按所选粒度、自然语义和画面变化拆分，切分点必须在标点之后；“哼/他娘的”不能单独成镜。反驳第一镜必须从“放屁”开始，不能把它并入上一镜；其后的反驳镜头按标点边界灵活分组。放屁不能单独占一镜，须接上第一拍反驳。")
+        if (firstBatch) append("第1镜是口播第一句。若主题后以他娘的或哼开头且后面出现放屁，放屁前的钩子按所选粒度、自然语义和画面变化拆分，切分点必须在标点之后；“哼/他娘的”不能单独成镜。主题句和放屁反驳段已由程序按原文切好并标为fixed_shot=true，每个固定单元各自独立成镜，你只为它们写visual和image_prompt，且各反驳镜画面与提示词必须互不相同。")
         append("\n")
         append("每镜必须有对应的visual、punch、image_prompt、video_prompt。visual用中文描述时代、地点、主体、动作和情绪；image_prompt是独立可生图的写实古装提示词，约100–180个中文字符，人物外观保持一致。")
         if (firstBatch) append("前两镜须有清晰可辨人物。")
@@ -276,6 +277,79 @@ internal object StoryboardRules {
         }
     }
 
+    /** Offsets the opening must be cut at: title end, rebuttal start, each rebuttal beat end. */
+    fun openingBoundaries(source: String): List<Int> {
+        val plan = openingPlan(source) ?: return emptyList()
+        val result = mutableListOf(plan.title.length)
+        val start = plan.rebuttalStart
+        if (start != null && plan.rebuttalEnd != null && plan.rebuttalParts.isNotEmpty()) {
+            result += start
+            var offset = start
+            plan.rebuttalParts.forEach { offset += it.length; result += offset }
+        }
+        return result.filter { it in 1 until source.length }.distinct().sorted()
+    }
+
+    /**
+     * Fallback: when the model merges across a deterministic opening boundary (e.g. the rebuttal end
+     * and the next sentence), split that shot at the boundary instead of failing. The extra shots
+     * reuse the visual/image prompt with a differentiator so they stay distinct. Returns shots
+     * unchanged when their text does not reconstruct the source (validate then reports it).
+     */
+    fun alignOpening(source: String, shots: List<Shot>): MutableList<Shot> {
+        if (shots.isEmpty() || shots.joinToString("") { it.text } != source) return shots.toMutableList()
+        val boundaries = openingBoundaries(source)
+        val out = mutableListOf<Shot>()
+        var offset = 0
+        for (shot in shots) {
+            val end = offset + shot.text.length
+            val cuts = boundaries.filter { it > offset && it < end }
+            if (cuts.isEmpty()) {
+                out += shot
+            } else {
+                val points = listOf(offset) + cuts + end
+                for (i in 0 until points.size - 1) {
+                    val text = source.substring(points[i], points[i + 1])
+                    val tag = if (i == 0) "" else "（续镜$i：${text.filter(Char::isLetterOrDigit).take(12)}）"
+                    out += shot.copy(
+                        text = text,
+                        visual = shot.visual + tag,
+                        imagePrompt = shot.imagePrompt + tag,
+                        subtitleChunks = mutableListOf(text)
+                    )
+                }
+            }
+            offset = end
+        }
+        // Fixed segments (title, each rebuttal beat) must be exactly one shot: merge any extra
+        // model cuts inside them back together, keeping the first shot's visual and prompts.
+        val plan = openingPlan(source)
+        val fixed = mutableListOf<IntRange>()
+        if (plan != null) {
+            fixed += 0 until plan.title.length
+            val start = plan.rebuttalStart
+            if (start != null && plan.rebuttalEnd != null) {
+                var cursor = start
+                plan.rebuttalParts.forEach { fixed += cursor until cursor + it.length; cursor += it.length }
+            }
+        }
+        val merged = mutableListOf<Shot>()
+        var pos = 0
+        var lastSegment: IntRange? = null
+        for (shot in out) {
+            val segment = fixed.firstOrNull { pos in it && pos + shot.text.length - 1 in it }
+            if (segment != null && segment == lastSegment && merged.isNotEmpty()) {
+                val prev = merged.removeAt(merged.lastIndex)
+                merged += prev.copy(text = prev.text + shot.text,
+                    subtitleChunks = mutableListOf(prev.text + shot.text))
+            } else merged += shot
+            lastSegment = segment
+            pos += shot.text.length
+        }
+        return merged.mapIndexed { index, shot -> if (shot.id == index + 1) shot else shot.copy(id = index + 1) }
+            .toMutableList()
+    }
+
     fun validate(source: String, shots: List<Shot>, granularity: String = "balanced") {
         require(shots.joinToString("") { it.text } == source) {
             "分镜口播与原文不一致，存在漏字、重复或标点改动"
@@ -316,7 +390,7 @@ internal object StoryboardRules {
             val endIndex = rebuttalEndShot
                 ?: throw IllegalArgumentException("开头反驳必须在原文首个句末标点处结束")
             require(startIndex > 0 && endIndex > startIndex &&
-                shots.take(startIndex).joinToString("") == source.substring(0, plan.rebuttalStart)) {
+                shots.take(startIndex).joinToString("") { it.text } == source.substring(0, plan.rebuttalStart)) {
                 "开头反驳必须从“放屁”处开始"
             }
             val hookShots = shots.subList(1, startIndex)

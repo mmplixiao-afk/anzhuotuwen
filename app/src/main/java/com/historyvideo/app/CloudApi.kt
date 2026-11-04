@@ -212,8 +212,9 @@ class CloudApi {
             if (stylePreset.isBlank()) stylePreset = result.stylePreset
             result.shots.forEach { shot -> merged += shot.copy(id = merged.size + 1) }
         }
-        StoryboardRules.validate(expectedScript, merged, granularity)
-        return StoryboardResult(title, stylePreset, merged)
+        val aligned = StoryboardRules.alignOpening(expectedScript, merged)
+        StoryboardRules.validate(expectedScript, aligned, granularity)
+        return StoryboardResult(title, stylePreset, aligned)
     }
 
     private fun storyboardBatch(config: ProviderConfig, prompt: String, input: String,
@@ -398,8 +399,9 @@ class CloudApi {
             }
             shots.add(shot)
         }
-        if (validateResult) StoryboardRules.validate(expectedScript, shots, granularity)
-        return StoryboardResult(root?.optString("title").orEmpty(), root?.optString("style_preset").orEmpty(), shots)
+        val aligned = StoryboardRules.alignOpening(expectedScript, shots)
+        if (validateResult) StoryboardRules.validate(expectedScript, aligned, granularity)
+        return StoryboardResult(root?.optString("title").orEmpty(), root?.optString("style_preset").orEmpty(), aligned)
     }
 
     fun image(config: ProviderConfig, prompt: String, out: File, onGenerated: () -> Unit = {}) {
