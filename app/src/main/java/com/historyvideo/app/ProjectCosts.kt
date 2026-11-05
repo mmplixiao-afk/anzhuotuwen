@@ -10,17 +10,21 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.UUID
 
-data class TextUsage(val inputTokens: Long?, val outputTokens: Long?, val requestId: String = "", val content: String = "") {
+data class TextUsage(val inputTokens: Long?, val outputTokens: Long?, val requestId: String = "",
+                     val content: String = "", val finishReason: String? = null) {
     companion object {
         fun from(response: JSONObject): TextUsage {
-            val content = response.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
-                ?.opt("content") as? String ?: ""
-            val usage = response.optJSONObject("usage") ?: return TextUsage(null, null, content = content)
+            val choice = response.optJSONArray("choices")?.optJSONObject(0)
+            val content = choice?.optJSONObject("message")?.opt("content") as? String ?: ""
+            val finishReason = choice?.optString("finish_reason")?.takeIf { it.isNotBlank() }
+            val usage = response.optJSONObject("usage")
+                ?: return TextUsage(null, null, content = content, finishReason = finishReason)
             fun count(primary: String, fallback: String): Long? {
                 val value = if (usage.has(primary)) usage.opt(primary) else usage.opt(fallback)
                 return (value as? Number)?.toLong()?.takeIf { it >= 0 }
             }
-            return TextUsage(count("prompt_tokens", "input_tokens"), count("completion_tokens", "output_tokens"), content = content)
+            return TextUsage(count("prompt_tokens", "input_tokens"), count("completion_tokens", "output_tokens"),
+                content = content, finishReason = finishReason)
         }
     }
 }

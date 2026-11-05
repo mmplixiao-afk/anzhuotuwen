@@ -8,6 +8,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONException
+import org.json.JSONTokener
 import android.graphics.BitmapFactory
 import java.io.File
 import java.net.URI
@@ -18,7 +19,9 @@ import java.nio.file.StandardCopyOption
 import kotlin.math.abs
 
 /** 单次分镜请求覆盖的 source unit 数量：分批控制输出长度，避免被服务端 max_tokens 截断。 */
-private const val STORYBOARD_UNITS_PER_CALL = 40
+private const val STORYBOARD_UNITS_PER_CALL = 24
+/** 文本补全上限：PC 格式分镜含 visual/image_prompt/video_prompt，默认上限过低会截断 JSON。 */
+private const val STORYBOARD_MAX_TOKENS = 8192
 
 private data class DoubaoResponseParts(
     val codes: List<Int>,
@@ -77,6 +80,135 @@ private fun imageRatioInstruction(size: String): String = when (imageAspect(size
 }
 
 data class StoryboardResult(val title: String, val stylePreset: String, val shots: MutableList<Shot>)
+
+internal class StoryboardTruncatedException(message: String, cause: Throwable? = null) :
+    IllegalArgumentException(message, cause)
+
+/** finish_reason=length 或 JSON 未闭合，视为输出被截断。 */
+internal fun isStoryboardTruncation(message: String?, finishReason: String? = null): Boolean {
+    if (finishReason.equals("length", ignoreCase = true)) return true
+    val text = message.orEmpty()
+    return text.contains("Unterminated", ignoreCase = true) ||
+        text.contains("EOFException", ignoreCase = true) ||
+        text.contains("End of input", ignoreCase = true) ||
+        text.contains("分镜输出被截断")
+}
+
+/**
+ * 从被截断的分镜 JSON 中捞出已完整闭合的 shot 对象，拼回可解析的对象。
+ * 若找不到完整 shot 或缺少 title/style_preset，返回 null。
+ */
+internal fun salvageTruncatedStoryboardJson(content: String): String? {
+    val raw = content.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+    val objectStart = raw.indexOf('{')
+    if (objectStart < 0) return null
+    val body = raw.substring(objectStart)
+    val title = extractJsonStringField(body, "title") ?: return null
+    val style = extractJsonStringField(body, "style_preset") ?: return null
+    val shotsKey = Regex("\"shots\"\\s*:\\s*\\[").find(body) ?: return null
+    val arrayStart = shotsKey.range.last
+    val completeShots = mutableListOf<JSONObject>()
+    var i = arrayStart + 1
+    while (i < body.length) {
+        while (i < body.length && body[i].isWhitespace()) i++
+        if (i >= body.length) break
+        when (body[i]) {
+            ']' -> break
+            ',' -> { i++; continue }
+            '{' -> {
+                val end = endOfJsonValue(body, i) ?: break
+                val obj = runCatching { JSONObject(body.substring(i, end)) }.getOrNull() ?: break
+                completeShots += obj
+                i = end
+            }
+            else -> break
+        }
+    }
+    if (completeShots.isEmpty()) return null
+    return JSONObject()
+        .put("title", title)
+        .put("style_preset", style)
+        .put("shots", JSONArray().apply { completeShots.forEach { put(it) } })
+        .toString()
+}
+
+internal fun extractJsonStringField(source: String, field: String): String? {
+    val match = Regex("\"${Regex.escape(field)}\"\\s*:\\s*\"").find(source) ?: return null
+    val start = match.range.last
+    // start points at the opening quote index? range.last is the last matched char which is "
+    // Actually pattern ends with ", so range.last is index of opening quote of the value.
+    val valueStart = match.range.last
+    if (valueStart >= source.length || source[valueStart] != '"') return null
+    val end = endOfJsonValue(source, valueStart) ?: return null
+    return runCatching { JSONTokener(source.substring(valueStart, end)).nextValue() as? String }.getOrNull()
+}
+
+/** 返回 value 结束下标（exclusive）；未闭合返回 null。 */
+internal fun endOfJsonValue(source: String, start: Int): Int? {
+    if (start >= source.length) return null
+    return when (source[start]) {
+        '{' -> endOfJsonContainer(source, start, '{', '}')
+        '[' -> endOfJsonContainer(source, start, '[', ']')
+        '"' -> {
+            var i = start + 1
+            while (i < source.length) {
+                when (source[i]) {
+                    '\\' -> i += 2
+                    '"' -> return i + 1
+                    else -> i++
+                }
+            }
+            null
+        }
+        else -> {
+            var i = start
+            while (i < source.length && source[i] !in ",}]" && !source[i].isWhitespace()) i++
+            if (i == start) null else i
+        }
+    }
+}
+
+private fun endOfJsonContainer(source: String, start: Int, open: Char, close: Char): Int? {
+    var depth = 0
+    var i = start
+    var inString = false
+    while (i < source.length) {
+        val ch = source[i]
+        if (inString) {
+            when (ch) {
+                '\\' -> i += 2
+                '"' -> { inString = false; i++ }
+                else -> i++
+            }
+            continue
+        }
+        when (ch) {
+            '"' -> { inString = true; i++ }
+            open -> { depth++; i++ }
+            close -> {
+                depth--
+                i++
+                if (depth == 0) return i
+            }
+            else -> i++
+        }
+    }
+    return null
+}
+
+internal fun splitStoryboardUnits(
+    units: List<StoryboardRules.SourceUnit>
+): Pair<List<StoryboardRules.SourceUnit>, List<StoryboardRules.SourceUnit>> {
+    require(units.size > 1) { "无法再拆分的分镜批次" }
+    val mid = units.size / 2
+    val candidates = (mid downTo 1) + ((mid + 1) until units.size)
+    val splitAt = candidates.firstOrNull { index ->
+        StoryboardRules.endsAtPunctuation(units[index - 1].text)
+    } ?: mid
+    fun renumber(slice: List<StoryboardRules.SourceUnit>) =
+        slice.mapIndexed { index, unit -> unit.copy(id = index + 1) }
+    return renumber(units.take(splitAt)) to renumber(units.drop(splitAt))
+}
 
 class CloudApi {
     private val client = OkHttpClient.Builder()
@@ -155,6 +287,7 @@ class CloudApi {
             }
         }
         val body = JSONObject().put("model", config.model).put("temperature", 0.6)
+            .put("max_tokens", STORYBOARD_MAX_TOKENS)
             .put("messages", JSONArray()
                 .put(JSONObject().put("role", "system").put("content", "你是一个严格执行用户任务提示词的生成器。"))
                 .put(JSONObject().put("role", "user").put("content", userContent)))
@@ -196,6 +329,7 @@ class CloudApi {
         val merged = mutableListOf<Shot>()
         var title = ""
         var stylePreset = ""
+        var unitOffset = 0
         batches.forEachIndexed { batchIndex, batch ->
             // 批次内编号从 1 开始，模型只需要看本批的原文分段。
             val localUnits = batch.mapIndexed { index, unit ->
@@ -203,11 +337,16 @@ class CloudApi {
             }
             val result = try {
                 storyboardBatch(config, prompt, input, expectedScript, localUnits, granularity,
-                    batchIndex, batches.size, units.size, onRetry, onUsage)
+                    batchIndex, batches.size, units.size, unitOffset, onRetry, onUsage,
+                    firstBatch = batchIndex == 0)
             } catch (error: IllegalStateException) {
                 throw IllegalStateException(
                     "第 ${batchIndex + 1}/${batches.size} 批分镜失败：${error.message}", error)
+            } catch (error: StoryboardTruncatedException) {
+                throw IllegalStateException(
+                    "第 ${batchIndex + 1}/${batches.size} 批分镜失败：${error.message}", error)
             }
+            unitOffset += batch.size
             if (title.isBlank()) title = result.title
             if (stylePreset.isBlank()) stylePreset = result.stylePreset
             result.shots.forEach { shot -> merged += shot.copy(id = merged.size + 1) }
@@ -220,15 +359,15 @@ class CloudApi {
     private fun storyboardBatch(config: ProviderConfig, prompt: String, input: String,
                                 expectedScript: String, units: List<StoryboardRules.SourceUnit>,
                                 granularity: String, batchIndex: Int, batchCount: Int, totalUnits: Int,
-                                onRetry: () -> Unit, onUsage: (TextUsage) -> Unit): StoryboardResult {
-        val header = if (batchCount <= 1) "" else buildString {
+                                unitOffset: Int, onRetry: () -> Unit, onUsage: (TextUsage) -> Unit,
+                                firstBatch: Boolean): StoryboardResult {
+        val header = if (batchCount <= 1 && units.size >= totalUnits) "" else buildString {
             append("\n\n【分批生成】全文共 $totalUnits 个 source unit，本批是第 ${batchIndex + 1}/$batchCount 批，")
-            append("对应全文第 ${batchIndex * STORYBOARD_UNITS_PER_CALL + 1}–")
-            append(batchIndex * STORYBOARD_UNITS_PER_CALL + units.size)
+            append("对应全文第 ${unitOffset + 1}–${unitOffset + units.size}")
             append(" 段；本批编号已从 1 重新开始。只输出本批的镜头，不要补全其他段落。\n")
         }
         val taskPrompt = prompt + header +
-            StoryboardRules.instruction(expectedScript, units, granularity, firstBatch = batchIndex == 0)
+            StoryboardRules.instruction(expectedScript, units, granularity, firstBatch = firstBatch)
         val sourceInput = buildString {
             append(input.trim())
             append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
@@ -238,11 +377,40 @@ class CloudApi {
             }.toString())
         }
         // 首批用本批原文校验开头边界和钩子长度；完整结果合并后再做一次全文校验。
-        val validateBatch = batchIndex == 0
+        val validateBatch = firstBatch
         val batchScript = if (validateBatch) units.joinToString("") { it.text } else expectedScript
-        return checkedStoryboard(batchScript, units, onRetry, enforceOriginalCopy = true,
-            validateResult = validateBatch, granularity = granularity) { retryInstruction ->
-            text(config, taskPrompt + retryInstruction, sourceInput, onUsage = onUsage)
+        var lastFinishReason: String? = null
+        return try {
+            checkedStoryboard(batchScript, units, onRetry, enforceOriginalCopy = true,
+                validateResult = validateBatch, granularity = granularity,
+                lastFinishReason = { lastFinishReason }) { retryInstruction ->
+                text(config, taskPrompt + retryInstruction, sourceInput, onUsage = { usage ->
+                    lastFinishReason = usage.finishReason
+                    onUsage(usage)
+                })
+            }
+        } catch (error: Exception) {
+            val truncated = error is StoryboardTruncatedException ||
+                isStoryboardTruncation(error.message, lastFinishReason) ||
+                error.cause is StoryboardTruncatedException
+            if (!truncated || units.size <= 1) {
+                if (error is IllegalStateException || error is StoryboardTruncatedException) throw error
+                throw error
+            }
+            onRetry()
+            val (left, right) = splitStoryboardUnits(units)
+            val leftResult = storyboardBatch(config, prompt, input, expectedScript, left, granularity,
+                batchIndex, batchCount, totalUnits, unitOffset, onRetry, onUsage, firstBatch)
+            val rightResult = storyboardBatch(config, prompt, input, expectedScript, right, granularity,
+                batchIndex, batchCount, totalUnits, unitOffset + left.size, onRetry, onUsage,
+                firstBatch = false)
+            val merged = mutableListOf<Shot>()
+            leftResult.shots.forEach { merged += it.copy(id = merged.size + 1) }
+            rightResult.shots.forEach { merged += it.copy(id = merged.size + 1) }
+            StoryboardResult(
+                leftResult.title.ifBlank { rightResult.title },
+                leftResult.stylePreset.ifBlank { rightResult.stylePreset },
+                merged)
         }
     }
 
@@ -258,22 +426,34 @@ class CloudApi {
                                    onRetry: () -> Unit = {}, enforceOriginalCopy: Boolean = false,
                                    validateResult: Boolean = true,
                                    granularity: String = "balanced",
+                                   lastFinishReason: () -> String? = { null },
                                    request: (String) -> String): StoryboardResult {
         var lastFailure = ""
+        var truncated = false
         for (attempt in 0..1) {
             val retryInstruction = if (attempt == 0) "" else
-                "\n上次分镜不合格：$lastFailure。请只为每镜返回连续完整的source_unit_ids编号分组和PC格式画面字段，不要输出或重写voiceover；每个source unit必须按顺序恰好覆盖一次。"
+                "\n上次分镜不合格：$lastFailure。请只为每镜返回连续完整的source_unit_ids编号分组和PC格式画面字段，不要输出或重写voiceover；每个source unit必须按顺序恰好覆盖一次。输出必须完整闭合，勿截断 JSON。"
             // Only invalid model output is retried. A transport error may already be billed.
             val content = request(retryInstruction)
             try {
                 return parseStoryboard(content, expectedScript, units, enforceOriginalCopy,
                     validateResult, granularity)
+            } catch (error: StoryboardTruncatedException) {
+                truncated = true
+                lastFailure = error.message.orEmpty()
             } catch (error: JSONException) {
                 lastFailure = "分镜JSON不完整或字段格式无效"
+                truncated = isStoryboardTruncation(lastFailure, lastFinishReason())
             } catch (error: IllegalArgumentException) {
                 lastFailure = error.message.orEmpty()
+                truncated = truncated || isStoryboardTruncation(lastFailure, lastFinishReason()) ||
+                    error.cause is StoryboardTruncatedException
             }
             if (attempt == 0) onRetry()
+        }
+        if (truncated) {
+            throw StoryboardTruncatedException(
+                "分镜输出被截断：$lastFailure。未保存错误分镜，正文和原分镜已保留")
         }
         error("分镜重试一次后仍不合格：$lastFailure。未保存错误分镜，正文和原分镜已保留")
     }
@@ -292,7 +472,19 @@ class CloudApi {
         val parsed = try {
             org.json.JSONTokener(raw.substring(start)).nextValue()
         } catch (error: JSONException) {
-            throw IllegalArgumentException("分镜 JSON 格式错误：${error.message ?: "无法解析"}", error)
+            val salvaged = salvageTruncatedStoryboardJson(raw)
+            if (salvaged != null) {
+                return try {
+                    parseStoryboard(salvaged, expectedScript, units, enforceOriginalCopy,
+                        validateResult, granularity)
+                } catch (salvageError: RuntimeException) {
+                    throw StoryboardTruncatedException(
+                        "分镜输出被截断，完整镜头不足以覆盖本批：${salvageError.message ?: "salvage failed"}",
+                        salvageError)
+                }
+            }
+            throw StoryboardTruncatedException(
+                "分镜 JSON 格式错误：${error.message ?: "无法解析"}", error)
         }
         val root = parsed as? JSONObject
         val array = when (parsed) {
