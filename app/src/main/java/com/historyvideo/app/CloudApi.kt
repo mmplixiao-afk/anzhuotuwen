@@ -373,7 +373,8 @@ class CloudApi {
             append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
             append(JSONArray().apply {
                 units.forEach { unit -> put(JSONObject().put("id", unit.id)
-                    .put("text", unit.text).put("fixed_shot", unit.fixedShot)) }
+                    .put("text", unit.text).put("fixed_shot", unit.fixedShot)
+                    .put("can_end_shot", unit.id == units.size || StoryboardRules.endsAtPunctuation(unit.text))) }
             }.toString())
         }
         // 首批用本批原文校验开头边界和钩子长度；完整结果合并后再做一次全文校验。

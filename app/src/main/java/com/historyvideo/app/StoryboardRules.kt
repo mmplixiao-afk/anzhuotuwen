@@ -196,7 +196,7 @@ internal object StoryboardRules {
             else -> "平衡粒度：每镜约20–35个有效口播字符，原则上不超过40字；完整语义优先。"
         }
         append("\n\n【移动端分镜约束，优先于前文冲突规则】\n")
-        append("普通正文使用$rules 短反应句可更短，字数是目标范围；所有镜头边界必须落在标点之后，不得在句子中间截断。没有自然标点可切的长句保持完整。不要按固定镜头数量拆分。\n")
+        append("普通正文使用$rules 短反应句可更短，字数是目标范围；所有镜头边界必须落在标点之后，不得在句子中间截断；can_end_shot=false的source unit不以标点结尾，不能作为一镜的最后一个编号，必须与后面的编号合并。没有自然标点可切的长句保持完整。不要按固定镜头数量拆分。\n")
         append("下面提供的source_units是原文唯一权威来源。只返回相邻、连续的source unit编号分组，不要复述或改写口播文字。每个编号必须且只能出现一次，按升序、连续覆盖本次提供的全部编号；不能跳号、重复、调序。程序会从原文按编号还原voiceover。\n")
         append("固定边界单元fixed_shot=true必须独立成镜，不能与其他编号合并或拆开。")
         if (firstBatch) append("第1镜是口播第一句。若主题后以他娘的或哼开头且后面出现放屁，放屁前的钩子按所选粒度、自然语义和画面变化拆分，切分点必须在标点之后；“哼/他娘的”不能单独成镜。主题句和放屁反驳段已由程序按原文切好并标为fixed_shot=true，每个固定单元各自独立成镜，你只为它们写visual和image_prompt，且各反驳镜画面与提示词必须互不相同。")
@@ -346,7 +346,75 @@ internal object StoryboardRules {
             lastSegment = segment
             pos += shot.text.length
         }
-        return merged.mapIndexed { index, shot -> if (shot.id == index + 1) shot else shot.copy(id = index + 1) }
+        return repairBoundaries(source, merged)
+    }
+
+    private fun chunkRanges(start: Int, shot: Shot): List<IntRange> {
+        val chunks = shot.subtitleChunks.takeIf { it.isNotEmpty() && it.joinToString("") == shot.text }
+            ?: listOf(shot.text)
+        val ranges = mutableListOf<IntRange>()
+        var cursor = start
+        chunks.forEach { chunk -> if (chunk.isNotEmpty()) ranges += cursor until cursor + chunk.length; cursor += chunk.length }
+        return ranges
+    }
+
+    private fun sliceChunks(source: String, ranges: List<IntRange>, from: Int, to: Int): MutableList<String> =
+        ranges.mapNotNull { range ->
+            val s = maxOf(range.first, from)
+            val e = minOf(range.last + 1, to)
+            if (e > s) source.substring(s, e) else null
+        }.toMutableList().ifEmpty { mutableListOf(source.substring(from, to)) }
+
+    /**
+     * Fallback for model groupings (or batch splits) that cut a shot after a source unit that does not
+     * end in punctuation (long sentences are pre-cut into several units). Each illegal boundary is moved
+     * to the nearest legal cut inside the two neighbouring shots; if neither has one (a long sentence
+     * without natural punctuation), the two shots are merged so the sentence stays whole. Opening
+     * boundaries (title / rebuttal beats) are never moved. Returns shots unchanged when their text does
+     * not reconstruct the source.
+     */
+    fun repairBoundaries(source: String, shots: List<Shot>): MutableList<Shot> {
+        if (shots.size < 2 || shots.joinToString("") { it.text } != source) {
+            return shots.mapIndexed { index, shot -> if (shot.id == index + 1) shot else shot.copy(id = index + 1) }
+                .toMutableList()
+        }
+        val protectedCuts = openingBoundaries(source).toSet()
+        fun legal(offset: Int) = offset in protectedCuts || boundaryFollowsPunctuation(source, offset)
+        val out = mutableListOf<Shot>()
+        val starts = mutableListOf<Int>()
+        var offset = 0
+        for (shot in shots) {
+            val end = offset + shot.text.length
+            if (out.isEmpty() || legal(offset)) {
+                out += shot
+                starts += offset
+                offset = end
+                continue
+            }
+            val prev = out.last()
+            val prevStart = starts.last()
+            val backward = (offset - 1 downTo prevStart + 1).firstOrNull { legal(it) }
+            val forward = (offset + 1 until end).firstOrNull { legal(it) }
+            val cut = when {
+                backward == null -> forward
+                forward == null -> backward
+                spokenCount(source.substring(backward, offset)) <= spokenCount(source.substring(offset, forward)) -> backward
+                else -> forward
+            }
+            val ranges = chunkRanges(prevStart, prev) + chunkRanges(offset, shot)
+            if (cut == null) {
+                out[out.lastIndex] = prev.copy(text = source.substring(prevStart, end),
+                    subtitleChunks = sliceChunks(source, ranges, prevStart, end))
+            } else {
+                out[out.lastIndex] = prev.copy(text = source.substring(prevStart, cut),
+                    subtitleChunks = sliceChunks(source, ranges, prevStart, cut))
+                out += shot.copy(text = source.substring(cut, end),
+                    subtitleChunks = sliceChunks(source, ranges, cut, end))
+                starts += cut
+            }
+            offset = end
+        }
+        return out.mapIndexed { index, shot -> if (shot.id == index + 1) shot else shot.copy(id = index + 1) }
             .toMutableList()
     }
 
