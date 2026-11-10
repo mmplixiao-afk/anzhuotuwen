@@ -2905,7 +2905,7 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
         AlertDialog(
             onDismissRequest = { confirmBatchOptimize = false },
             title = { Text("批量优化失败镜头？") },
-            text = { Text("将逐个优化 ${failedImageIds.size} 个失败镜头的生图提示词并重新生成图片。每个镜头会调用文本 API 和生图 API，按接口实际用量计费；已生成成功的镜头不会处理。") },
+            text = { Text("将分批处理 ${failedImageIds.size} 个生图失败的镜头，每批最多 $FAILED_IMAGE_BATCH_CONCURRENCY 个同时优化提示词并重新生图。每个镜头会调用文本 API 和生图 API，按接口实际用量计费；已生成成功的镜头不会处理。") },
             confirmButton = {
                 Button(onClick = {
                     confirmBatchOptimize = false

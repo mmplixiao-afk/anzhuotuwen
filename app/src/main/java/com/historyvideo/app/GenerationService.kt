@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.async
@@ -37,6 +38,10 @@ class GenerationService : Service() {
     private val api = CloudApi()
     private var job: Job? = null
     private var activeProject = ""
+    // Generation id so a finishing task cannot clear the flag of the next one.
+    private var taskGeneration = 0
+    private var taskRunning = false
+    private val taskLock = Any()
 
     override fun onCreate() {
         super.onCreate()
@@ -57,9 +62,14 @@ class GenerationService : Service() {
         if (action == CANCEL) {
             job?.cancel()
             FFmpegKit.cancel()
-            store.get(activeProject)?.let { project ->
-                project.status = "paused"; project.detail = "已暂停，可继续制作"; store.save(project)
-                notifyStatus(project.detail, false)
+            synchronized(taskLock) {
+                taskRunning = false
+                store.get(activeProject)?.let { project ->
+                    project.status = "paused"
+                    project.detail = "已暂停，可继续制作"
+                    store.save(project)
+                    notifyStatus(project.detail, false)
+                }
             }
             stopSelf()
             return START_NOT_STICKY
@@ -79,63 +89,80 @@ class GenerationService : Service() {
                 else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             startForeground(1, notification, type)
         } else startForeground(1, notification)
+        val generation = synchronized(taskLock) {
+            taskGeneration += 1
+            taskRunning = true
+            taskGeneration
+        }
         job = scope.launch {
-            val project = store.get(id)
-            if (project == null) { stopSelf(); return@launch }
-            project.taskStartedAt = System.currentTimeMillis()
-            project.status = "running"
-            project.detail = "正在准备视频任务"
-            store.save(project)
-            notifyStatus(project.detail)
             try {
-                if (action in setOf(FINISH, VOICE_ALL, IMAGE_ALL, IMAGE_OPTIMIZE_ALL, RENDER,
-                        IMAGE, IMAGE_OPTIMIZE, AUDIO)) {
-                    require(project.storyboardScript == project.script) {
-                        "正文已修改，请先重新拆分镜头，再生成对应的图片、配音和视频"
-                    }
-                }
-                if ((action == FINISH || action == RENDER) && project.shots.any { it.cutoutEnabled }) {
-                    CutoutProcessor(store).requireReady()
-                }
-                if (action == FINISH || action == RENDER) {
-                    val coverText = normalizeCoverText(project.coverText)
-                    require(coverText.codePointCount(0, coverText.length) <= 40) {
-                        "封面文案最多 40 个字符，请缩短后重试"
-                    }
-                    project.coverText = coverText
+                val project = store.get(id) ?: return@launch
+                synchronized(taskLock) {
+                    if (!taskRunning) return@launch
+                    project.taskStartedAt = System.currentTimeMillis()
+                    project.status = "running"
+                    project.detail = "正在准备视频任务"
                     store.save(project)
+                    notifyStatus(project.detail)
                 }
-                when (action) {
-                    SCRIPT -> generateScript(project, promptOverride)
-                    SHOTS -> generateShots(project, promptOverride)
-                    FINISH -> {
-                        generateAudio(project)
-                        generateImages(project)
-                        render(project)
+                try {
+                    if (action in setOf(FINISH, VOICE_ALL, IMAGE_ALL, IMAGE_OPTIMIZE_ALL, RENDER,
+                            IMAGE, IMAGE_OPTIMIZE, AUDIO)) {
+                        require(project.storyboardScript == project.script) {
+                            "正文已修改，请先重新拆分镜头，再生成对应的图片、配音和视频"
+                        }
                     }
-                    VOICE_ALL -> generateAudio(project)
-                    IMAGE_ALL -> generateImages(project, promptOverride)
-                    RENDER -> render(project)
-                    IMAGE -> regenerateImage(project, intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
-                    IMAGE_OPTIMIZE -> optimizeAndRegenerateImage(project,
-                        intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
-                    IMAGE_OPTIMIZE_ALL -> optimizeAndRegenerateFailedImages(project, promptOverride)
-                    AUDIO -> regenerateAudio(project, intent.getIntExtra(EXTRA_SHOT, 0))
-                }
-            } catch (error: Exception) {
-                if (isActive) {
-                    project.status = "failed"
-                    val detail = userFacingError(error, project.stage)
-                    if (detail.contains("素材未齐全")) {
-                        project.stage = "render"
-                        project.completed = 0
-                        project.total = 0
+                    if ((action == FINISH || action == RENDER) && project.shots.any { it.cutoutEnabled }) {
+                        CutoutProcessor(store).requireReady()
                     }
-                    project.detail = detail.take(if (detail.contains("退出码")) 320 else 180).ifBlank { "任务失败" }
-                    store.save(project)
-                    notifyStatus(project.detail, false)
+                    if (action == FINISH || action == RENDER) {
+                        val coverText = normalizeCoverText(project.coverText)
+                        require(coverText.codePointCount(0, coverText.length) <= 40) {
+                            "封面文案最多 40 个字符，请缩短后重试"
+                        }
+                        project.coverText = coverText
+                        store.save(project)
+                    }
+                    when (action) {
+                        SCRIPT -> generateScript(project, promptOverride)
+                        SHOTS -> generateShots(project, promptOverride)
+                        FINISH -> {
+                            generateAudio(project)
+                            generateImages(project)
+                            render(project)
+                        }
+                        VOICE_ALL -> generateAudio(project)
+                        IMAGE_ALL -> generateImages(project, promptOverride)
+                        RENDER -> render(project)
+                        IMAGE -> regenerateImage(project, intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
+                        IMAGE_OPTIMIZE -> optimizeAndRegenerateImage(project,
+                            intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
+                        IMAGE_OPTIMIZE_ALL -> optimizeAndRegenerateFailedImages(project, promptOverride)
+                        AUDIO -> regenerateAudio(project, intent.getIntExtra(EXTRA_SHOT, 0))
+                    }
+                } catch (error: Exception) {
+                    if (isActive) {
+                        synchronized(taskLock) {
+                            if (!taskRunning) return@synchronized
+                            project.status = "failed"
+                            val detail = userFacingError(error, project.stage)
+                            if (detail.contains("素材未齐全")) {
+                                project.stage = "render"
+                                project.completed = 0
+                                project.total = 0
+                            }
+                            project.detail = detail.take(if (detail.contains("退出码")) 320 else 180).ifBlank { "任务失败" }
+                            store.save(project)
+                            notifyStatus(project.detail, false)
+                        }
+                    }
                 }
-            } finally { stopSelf() }
+            } finally {
+                synchronized(taskLock) {
+                    if (taskGeneration == generation) taskRunning = false
+                }
+                stopSelf()
+            }
         }
         return START_NOT_STICKY
     }
@@ -167,11 +194,39 @@ class GenerationService : Service() {
     }
 
     private fun update(project: VideoProject, stage: String, status: String, detail: String,
-                       completed: Int = 0, total: Int = 0) {
-        project.stage = stage; project.status = status; project.detail = detail
-        project.completed = completed; project.total = total
-        store.save(project)
-        notifyStatus(detail, status == "running")
+                       completed: Int = 0, total: Int = 0, ownerGeneration: Int = taskGeneration) {
+        synchronized(taskLock) {
+            // A newer task owns the project file. Do not write this task's copy over it.
+            if (taskGeneration != ownerGeneration) return
+            // In-flight shot saves after cancel must not look like a single running step.
+            if (!taskRunning) {
+                project.status = "paused"
+                project.detail = "已暂停，可继续制作"
+                store.save(project)
+                notifyStatus(project.detail, false)
+                return
+            }
+            project.stage = stage
+            project.status = status
+            project.detail = detail
+            project.completed = completed
+            project.total = total
+            store.save(project)
+            notifyStatus(detail, status == "running")
+        }
+    }
+
+    private fun saveShotState(project: VideoProject, ownerGeneration: Int = taskGeneration, mutate: () -> Unit = {}) {
+        synchronized(taskLock) {
+            mutate()
+            if (taskGeneration != ownerGeneration) return
+            if (!taskRunning && project.status == "running") {
+                project.status = "paused"
+                project.detail = "已暂停，可继续制作"
+                store.save(project)
+                notifyStatus(project.detail, false)
+            } else store.save(project)
+        }
     }
 
     private fun configuredPrompt(name: String, override: String = ""): String {
@@ -322,15 +377,24 @@ class GenerationService : Service() {
     }
 
     private fun regenerateImage(project: VideoProject, shotId: Int, promptOverride: String = "",
-                                shotPromptOverride: String? = null) {
+                                shotPromptOverride: String? = null, publishStatus: Boolean = true,
+                                ownerGeneration: Int = taskGeneration) {
         val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
         val imagePrompt = configuredPrompt("image", promptOverride)
         val shotPrompt = (shotPromptOverride ?: shot.imagePrompt).trim()
         require(shotPrompt.isNotBlank()) { "请先填写本镜生图提示词" }
-        shot.imagePrompt = shotPrompt
-        shot.imageStatus = "running"
-        shot.error = ""
-        update(project, "images", "running", "正在生成第 ${project.shotNumber(shotId)} 张图片", 0, 1)
+        if (publishStatus) {
+            shot.imagePrompt = shotPrompt
+            shot.imageStatus = "running"
+            shot.error = ""
+            update(project, "images", "running", "正在生成第 ${project.shotNumber(shotId)} 张图片", 0, 1)
+        } else {
+            saveShotState(project, ownerGeneration) {
+                shot.imagePrompt = shotPrompt
+                shot.imageStatus = "running"
+                shot.error = ""
+            }
+        }
         val target = store.image(project, shot)
         val replacement = File(target.parentFile, target.name + ".new")
         val imageUnitPrice = settings.imageUnitPrice
@@ -344,13 +408,21 @@ class GenerationService : Service() {
             ProjectCosts(store).attachMedia(project.id, costEntry.id, replacement)
             Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
             File(store.directory(project.id), "temp/clip_%03d.mp4".format(shot.id)).delete()
-            shot.imageStatus = "done"
+            if (publishStatus) shot.imageStatus = "done" else saveShotState(project, ownerGeneration) { shot.imageStatus = "done" }
         } catch (error: Exception) {
-            shot.imageStatus = "failed"
-            shot.error = userFacingError(error).take(180)
+            if (!publishStatus && error is CancellationException) throw error
+            if (publishStatus) {
+                shot.imageStatus = "failed"
+                shot.error = userFacingError(error).take(180)
+            } else {
+                saveShotState(project, ownerGeneration) {
+                    shot.imageStatus = "failed"
+                    shot.error = userFacingError(error).take(180)
+                }
+            }
             throw error
         }
-        update(project, "shots", "review", "图片已更新，可继续制作", 1, 1)
+        if (publishStatus) update(project, "shots", "review", "图片已更新，可继续制作", 1, 1)
     }
 
     private suspend fun optimizeAndRegenerateImage(project: VideoProject, shotId: Int,
@@ -370,40 +442,47 @@ class GenerationService : Service() {
         require(failedIds.isNotEmpty()) { "当前项目没有生图失败的镜头" }
         val optimizerPrompt = configuredPrompt("image_failure", optimizerPromptOverride)
         val imagePrompt = configuredPrompt("image")
+        val ownerGeneration = taskGeneration
         var succeeded = 0
         val failedNumbers = mutableListOf<Int>()
-        failedIds.forEachIndexed { index, shotId ->
+        update(project, "images", "running", batchOptimizeProgressDetail(0, failedIds.size), 0, failedIds.size,
+            ownerGeneration)
+        forEachInWaves(failedIds, FAILED_IMAGE_BATCH_CONCURRENCY) { shotId ->
             currentCoroutineContext().ensureActive()
-            val shot = project.shots.firstOrNull { it.id == shotId } ?: return@forEachIndexed
-            update(project, "images", "running",
-                "批量优化并重生图 ${index + 1}/${failedIds.size} · 镜头 ${project.shotNumber(shotId)}",
-                index, failedIds.size)
+            val shot = project.shots.firstOrNull { it.id == shotId } ?: return@forEachInWaves
             try {
-                val optimizedPrompt = optimizeImagePrompt(project, shot, optimizerPrompt, shot.imagePrompt)
+                val optimizedPrompt = optimizeImagePrompt(project, shot, optimizerPrompt, shot.imagePrompt,
+                    ownerGeneration)
                 currentCoroutineContext().ensureActive()
-                regenerateImage(project, shotId, imagePrompt, optimizedPrompt)
-                succeeded++
+                regenerateImage(project, shotId, imagePrompt, optimizedPrompt, publishStatus = false,
+                    ownerGeneration = ownerGeneration)
+                synchronized(taskLock) {
+                    succeeded++
+                    val done = succeeded + failedNumbers.size
+                    update(project, "images", "running",
+                        batchOptimizeProgressDetail(done, failedIds.size), done, failedIds.size, ownerGeneration)
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
-                shot.imageStatus = "failed"
-                if (shot.error.isBlank()) shot.error = userFacingError(error, "images").take(180)
-                store.save(project)
-                failedNumbers += project.shotNumber(shotId)
+                synchronized(taskLock) {
+                    shot.imageStatus = "failed"
+                    if (shot.error.isBlank()) shot.error = userFacingError(error, "images").take(180)
+                    failedNumbers += project.shotNumber(shotId)
+                    val done = succeeded + failedNumbers.size
+                    update(project, "images", "running",
+                        batchOptimizeProgressDetail(done, failedIds.size), done, failedIds.size, ownerGeneration)
+                }
             }
         }
-        val detail = buildString {
-            append("批量优化与重生图完成：成功 $succeeded/${failedIds.size}")
-            if (failedNumbers.isNotEmpty()) {
-                append("；失败镜头：${failedNumbers.take(10).joinToString("、")}")
-                if (failedNumbers.size > 10) append("等 ${failedNumbers.size} 个")
-            }
-        }
-        update(project, "shots", "review", detail, failedIds.size, failedIds.size)
+        val (succeededCount, failedSnapshot) = synchronized(taskLock) { succeeded to failedNumbers.toList() }
+        update(project, "shots", "review",
+            batchOptimizeSummary(succeededCount, failedIds.size, failedSnapshot.sorted()),
+            failedIds.size, failedIds.size, ownerGeneration)
     }
 
     private fun optimizeImagePrompt(project: VideoProject, shot: Shot, optimizerPrompt: String,
-                                    shotPromptOverride: String?): String {
+                                    shotPromptOverride: String?, ownerGeneration: Int = taskGeneration): String {
         val shotId = shot.id
         val originalPrompt = (shotPromptOverride ?: shot.imagePrompt).trim()
         require(originalPrompt.isNotBlank()) { "请先填写本镜生图提示词" }
@@ -427,16 +506,20 @@ class GenerationService : Service() {
                 response.substringAfter('\n').substringBeforeLast("```").trim()
             } else response
             cleaned.also { require(it.isNotBlank()) { "提示词优化结果为空" } }
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Exception) {
-            shot.imageStatus = "failed"
-            shot.error = userFacingError(error, "images").take(180)
-            store.save(project)
+            saveShotState(project, ownerGeneration) {
+                shot.imageStatus = "failed"
+                shot.error = userFacingError(error, "images").take(180)
+            }
             throw error
         }
-        shot.imagePrompt = optimizedPrompt
-        shot.imageStatus = "pending"
-        shot.error = ""
-        store.save(project)
+        saveShotState(project, ownerGeneration) {
+            shot.imagePrompt = optimizedPrompt
+            shot.imageStatus = "pending"
+            shot.error = ""
+        }
         return optimizedPrompt
     }
 
@@ -546,5 +629,32 @@ class GenerationService : Service() {
         private const val FOREGROUND_NOTIFICATION_ID = 1
         private const val RESULT_NOTIFICATION_ID = 2
         @Volatile var activeProjectId: String = ""
+    }
+}
+
+internal const val FAILED_IMAGE_BATCH_CONCURRENCY = 10
+
+internal fun batchOptimizeProgressDetail(done: Int, total: Int) = "批量优化并重生图 $done/$total"
+
+internal fun batchOptimizeSummary(succeeded: Int, total: Int, failedNumbers: List<Int>) = buildString {
+    append("批量优化与重生图完成：成功 $succeeded/$total")
+    if (failedNumbers.isNotEmpty()) {
+        append("；失败镜头：${failedNumbers.take(10).joinToString("、")}")
+        if (failedNumbers.size > 10) append("等 ${failedNumbers.size} 个")
+    }
+}
+
+internal suspend fun <T> forEachInWaves(
+    items: List<T>,
+    waveSize: Int = FAILED_IMAGE_BATCH_CONCURRENCY,
+    action: suspend (T) -> Unit
+) {
+    val size = waveSize.coerceIn(1, FAILED_IMAGE_BATCH_CONCURRENCY)
+    if (items.isEmpty()) return
+    coroutineScope {
+        items.chunked(size).forEach { wave ->
+            ensureActive()
+            wave.map { item -> async { action(item) } }.awaitAll()
+        }
     }
 }
