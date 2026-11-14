@@ -1332,14 +1332,16 @@ class VideoRenderer(private val store: ProjectStore) {
         val voice = File(temp, "voice.m4a")
         stage("正在合并画面")
         mergeVideos(clips, frameCounts, transitionPlans, video, temp, encoder) { percent ->
-            frameProgress(percent, 100, "正在合并画面 $percent%")
+            // The progress slot is a shot counter in the project UI ("x / y 镜"),
+            // so the stage progress travels in the detail text instead.
+            frameProgress(project.shots.size, project.shots.size, "正在合并画面 $percent%")
         }
         stage("正在合并配音")
         run("合并配音", "-y", "-f", "concat", "-safe", "0", "-i", audioList.absolutePath, "-vn", "-c:a", "aac", "-b:a", "192k", voice.absolutePath)
         val pending = File(dir, "output/final.pending.mp4")
         stage("正在封装最终 MP4")
         muxFinalAudio(project, video, voice, pending, temp, encoder, soundEvents, durations) { percent ->
-            frameProgress(percent, 100, "正在封装最终 MP4 · 音画混合 $percent%")
+            frameProgress(project.shots.size, project.shots.size, "正在封装最终 MP4 · 音画混合 $percent%")
         }
         require(pending.length() > 1000) { "输出视频为空" }
         Files.move(pending.toPath(), store.output(project).toPath(), StandardCopyOption.REPLACE_EXISTING)
