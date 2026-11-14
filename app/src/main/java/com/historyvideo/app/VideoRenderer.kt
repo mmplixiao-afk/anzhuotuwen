@@ -9,6 +9,7 @@ import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.arthenica.ffmpegkit.StatisticsCallback
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -19,7 +20,10 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -72,6 +76,9 @@ class VideoRenderer(private val store: ProjectStore) {
         const val BGM_FADE_SECONDS = 0.5
         const val H264_BITRATE = "10M"
         const val H264_GOP = "60"
+        // A clip that reports no frame for this long is treated as a stalled
+        // hardware encoder, not as a slow clip.
+        const val CLIP_STALL_SECONDS = 120L
         // The picture is quantized to whole frames, so anything below this is a
         // rounding difference against the narration and must not extend it.
         const val MUX_TAIL_TOLERANCE_SECONDS = 0.25
@@ -90,6 +97,16 @@ class VideoRenderer(private val store: ProjectStore) {
 
     /** Picture codec for every clip; H.264 keeps the finished MP4 upload ready. */
     private data class VideoEncoder(val label: String, val args: List<String>, val hardware: Boolean)
+
+    private val softwareEncoder =
+        VideoEncoder("mpeg4", listOf("-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p"), hardware = false)
+
+    /**
+     * The hardware encoder accepted the probe but failed or stalled while writing
+     * clips: the render is thrown away and redone with [softwareEncoder] so the
+     * user gets a finished video instead of a stuck one.
+     */
+    private class HardwareEncodeFailure(message: String) : Exception(message)
 
     /**
      * The bundled ffmpeg-kit build carries no software H.264 encoder (no libx264
@@ -120,7 +137,7 @@ class VideoRenderer(private val store: ProjectStore) {
         }
         // The probe log is kept when the fallback happens so the reason stays diagnosable.
         probe.delete()
-        return VideoEncoder("mpeg4", listOf("-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p"), hardware = false)
+        return softwareEncoder
     }
 
     /** Hardware encoders report a small instance budget; keep the clip queue inside it. */
@@ -133,18 +150,38 @@ class VideoRenderer(private val store: ProjectStore) {
                     runCatching { info.getCapabilitiesForType("video/avc").maxSupportedInstances }.getOrDefault(1)
                 } ?: 1
         }.getOrDefault(1)
-        return (instances - 1).coerceIn(1, 4)
+        // Vendors keep a codec instance busy for a moment after a session ends, so only
+        // half of the reported budget is used; more than three parallel hardware
+        // encoders is also where phones start to stall instead of failing.
+        return (instances / 2).coerceIn(1, 3)
     }
 
     private fun run(label: String, vararg args: String, onFrame: ((Int) -> Unit)? = null,
-                    onTime: ((Double) -> Unit)? = null) {
-        val session = if (onFrame == null && onTime == null) FFmpegKit.executeWithArguments(arrayOf(*args)) else {
-            FFmpegSession.create(arrayOf(*args), null, null, StatisticsCallback { statistics ->
+                    onTime: ((Double) -> Unit)? = null, stallSeconds: Long = 0) {
+        val arguments = arrayOf(*args)
+        val latch = CountDownLatch(1)
+        val lastProgress = AtomicLong(SystemClock.elapsedRealtime())
+        val session = if (onFrame == null && onTime == null) {
+            FFmpegKit.executeWithArgumentsAsync(arguments) { latch.countDown() }
+        } else {
+            FFmpegSession.create(arguments, { latch.countDown() }, null, StatisticsCallback { statistics ->
+                lastProgress.set(SystemClock.elapsedRealtime())
                 // Statistics.time is milliseconds (as a double) since FFmpegKit 6.0.
                 onTime?.invoke(statistics.time)
                 onFrame?.invoke(statistics.videoFrameNumber)
             }).also(FFmpegKitConfig::ffmpegExecute)
         }
+        if (stallSeconds > 0 && (onFrame != null || onTime != null)) {
+            // A hardware encoder that stops reporting frames never returns on some
+            // devices; cancel the session instead of freezing the whole render.
+            while (!latch.await(2, TimeUnit.SECONDS)) {
+                if (SystemClock.elapsedRealtime() - lastProgress.get() >= stallSeconds * 1000) {
+                    FFmpegKit.cancel(session.sessionId)
+                    latch.await(10, TimeUnit.SECONDS)
+                    error("$label 超过 ${stallSeconds} 秒没有任何进展，已中止")
+                }
+            }
+        } else latch.await()
         if (!ReturnCode.isSuccess(session.returnCode)) {
             val logs = session.allLogsAsString.orEmpty()
             runCatching {
@@ -1149,6 +1186,17 @@ class VideoRenderer(private val store: ProjectStore) {
 
     fun render(project: VideoProject, progress: (Int, Int) -> Unit,
                frameProgress: (Int, Int, String) -> Unit = { _, _, _ -> }, stage: (String) -> Unit = {}) {
+        try {
+            renderOnce(project, progress, frameProgress, stage, forceSoftware = false)
+        } catch (failure: HardwareEncodeFailure) {
+            stage("硬件编码失败，正在改用兼容编码重新生成片段")
+            renderOnce(project, progress, frameProgress, stage, forceSoftware = true)
+        }
+    }
+
+    private fun renderOnce(project: VideoProject, progress: (Int, Int) -> Unit,
+                           frameProgress: (Int, Int, String) -> Unit, stage: (String) -> Unit,
+                           forceSoftware: Boolean) {
         require(project.shots.isNotEmpty())
         val dir = store.directory(project.id)
         val temp = File(dir, "temp").apply { mkdirs() }
@@ -1167,8 +1215,9 @@ class VideoRenderer(private val store: ProjectStore) {
                 require(image.length() > 1000) { "第 ${shot.id} 镜缺少图片" }
             }
         }
-        val encoder = chooseVideoEncoder(images.first(), canvasSize(project), temp)
-        if (!encoder.hardware) stage("本机无法硬件编码 H.264，本次按 mpeg4 输出")
+        val encoder = if (forceSoftware) softwareEncoder
+            else chooseVideoEncoder(images.first(), canvasSize(project), temp)
+        if (!encoder.hardware && !forceSoftware) stage("本机无法硬件编码 H.264，本次按 mpeg4 输出")
         val parts = project.shots.map { shot ->
             store.audio(project, shot).also { audio ->
                 require(audio.length() > 1000) { "第 ${shot.id} 镜缺少配音" }
@@ -1292,7 +1341,7 @@ class VideoRenderer(private val store: ProjectStore) {
                                         "-framerate", "30", "-i", layers.foreground.absolutePath,
                                         "-filter_complex", graph, "-map", outputLabel, "-frames:v", frameCount.toString(), "-an",
                                         *encoder.args.toTypedArray(), pending.absolutePath,
-                                        onFrame = onFrame)
+                                        onFrame = onFrame, stallSeconds = CLIP_STALL_SECONDS)
                                 } else {
                                     if (shot.id == 1 && project.openingTemplate != "none") {
                                         val openingBase = File(temp, "opening_template_base.mp4")
@@ -1304,13 +1353,14 @@ class VideoRenderer(private val store: ProjectStore) {
                                         val overlayFilter = motionFilter(motionPlanFor(project, visualShot), frameCount, width, height) + subtitle + cover
                                         run("叠加封面文案", "-y", "-i", openingBase.absolutePath, "-vf", overlayFilter,
                                             "-frames:v", frameCount.toString(), "-an", *encoder.args.toTypedArray(),
-                                            pending.absolutePath, onFrame = onFrame)
+                                            pending.absolutePath, onFrame = onFrame, stallSeconds = CLIP_STALL_SECONDS)
                                         openingBase.delete()
                                     } else {
                                         val filter = motionFilter(motionPlanFor(project, visualShot), frameCount, width, height, stillImage = true) + subtitle + cover
                                         run("生成视频片段", "-y", "-framerate", "30", "-i", images[index].absolutePath,
                                             "-vf", filter, "-frames:v", frameCount.toString(), "-an",
-                                            *encoder.args.toTypedArray(), pending.absolutePath, onFrame = onFrame)
+                                            *encoder.args.toTypedArray(), pending.absolutePath,
+                                            onFrame = onFrame, stallSeconds = CLIP_STALL_SECONDS)
                                     }
                                 }
                                 Files.move(pending.toPath(), clip.toPath(), StandardCopyOption.REPLACE_EXISTING)
@@ -1323,6 +1373,11 @@ class VideoRenderer(private val store: ProjectStore) {
                     }
                 }.awaitAll()
             }
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Exception) {
+            if (encoder.hardware) throw HardwareEncodeFailure(failure.message ?: "硬件编码片段失败")
+            throw failure
         } finally {
             synchronized(progressLock) { reportingFrames = false }
         }
