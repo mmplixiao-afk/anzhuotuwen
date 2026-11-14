@@ -1,6 +1,7 @@
 package com.historyvideo.app
 
 import android.graphics.BitmapFactory
+import android.media.MediaCodecList
 import android.os.SystemClock
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.FFmpegKitConfig
@@ -46,9 +47,17 @@ class VideoRenderer(private val store: ProjectStore) {
         val inputs: List<String>, val filters: MutableList<String>, val labels: List<String>,
         val duration: Double, val hasOverlay: Boolean
     ) {
-        fun graph(filterOverride: List<String> = filters): String =
-            (filterOverride + "${labels.joinToString("")}amix=inputs=${labels.size}:duration=longest:dropout_transition=2:normalize=0[aout]")
-                .joinToString(";")
+        /**
+         * [targetDuration] pins the mixed audio to an exact length, which lets the
+         * final mux copy the picture instead of re-encoding it to match the sound.
+         */
+        fun graph(filterOverride: List<String> = filters, targetDuration: Double? = null): String {
+            val mix = "${labels.joinToString("")}amix=inputs=${labels.size}:duration=longest:dropout_transition=2:normalize=0"
+            val fit = targetDuration?.let {
+                ",apad,atrim=0:${String.format(Locale.US, "%.6f", it)},asetpts=PTS-STARTPTS"
+            }.orEmpty()
+            return (filterOverride + "$mix$fit[aout]").joinToString(";")
+        }
     }
 
     private companion object {
@@ -58,9 +67,14 @@ class VideoRenderer(private val store: ProjectStore) {
         const val SUBTITLE_SAFE_MARGIN_RATIO = 0.065
         const val SUBTITLE_GLYPH_WIDTH_RATIO = 1.05
         const val COVER_TITLE_MAX_CHARS = 40
-        const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2-cover-2-timing-2"
-        const val AUDIO_MIX_VERSION = "asset-audio-2"
+        const val RENDER_STYLE_VERSION = "subtitle-17-motion-3-transition-4-cutout-2-cover-2-timing-2-h264-1"
+        const val AUDIO_MIX_VERSION = "asset-audio-3"
         const val BGM_FADE_SECONDS = 0.5
+        const val H264_BITRATE = "10M"
+        const val H264_GOP = "60"
+        // The picture is quantized to whole frames, so anything below this is a
+        // rounding difference against the narration and must not extend it.
+        const val MUX_TAIL_TOLERANCE_SECONDS = 0.25
         const val SUBTITLE_SPLIT_MARKS = "，。！？；：、,.!?;:…"
         const val SUBTITLE_CLOSING_QUOTES = "”’\"'」』）》】)]}〉〕〗〙〛"
         val spokenOnlyPhrases = listOf("他娘的", "奶奶的", "老子")
@@ -74,10 +88,61 @@ class VideoRenderer(private val store: ProjectStore) {
             ?: error("无法读取音频时长: ${path.name}")
     }
 
-    private fun run(label: String, vararg args: String, onFrame: ((Int) -> Unit)? = null) {
-        val session = if (onFrame == null) FFmpegKit.executeWithArguments(arrayOf(*args)) else {
+    /** Picture codec for every clip; H.264 keeps the finished MP4 upload ready. */
+    private data class VideoEncoder(val label: String, val args: List<String>, val hardware: Boolean)
+
+    /**
+     * The bundled ffmpeg-kit build carries no software H.264 encoder (no libx264
+     * and no libopenh264), so H.264 means the hardware MediaCodec encoder. It is
+     * probed once per render because a few devices refuse it, and the clips are
+     * written with mpeg4 in that case so rendering still finishes.
+     */
+    private fun chooseVideoEncoder(image: File, size: Pair<Int, Int>, temp: File): VideoEncoder {
+        val probe = File(temp, "encoder_probe.mp4")
+        val errorLog = File(temp, "encoder_probe.ffmpeg-error.log")
+        val (width, height) = size
+        val candidates = listOf(
+            listOf("-b:v", H264_BITRATE, "-g", H264_GOP),
+            listOf("-b:v", H264_BITRATE, "-g", H264_GOP, "-pix_fmt", "nv12")
+        )
+        candidates.forEach { args ->
+            probe.delete()
+            val ok = runCatching {
+                run("检测硬件 H.264 编码", "-y", "-loop", "1", "-framerate", "30", "-i", image.absolutePath,
+                    "-vf", "scale=$width:$height,setsar=1,format=yuv420p", "-frames:v", "3", "-an",
+                    "-c:v", "h264_mediacodec", *args.toTypedArray(), probe.absolutePath)
+                probe.length() > 1000
+            }.getOrDefault(false)
+            if (ok) {
+                probe.delete(); errorLog.delete()
+                return VideoEncoder("H.264", listOf("-c:v", "h264_mediacodec") + args, hardware = true)
+            }
+        }
+        // The probe log is kept when the fallback happens so the reason stays diagnosable.
+        probe.delete()
+        return VideoEncoder("mpeg4", listOf("-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p"), hardware = false)
+    }
+
+    /** Hardware encoders report a small instance budget; keep the clip queue inside it. */
+    private fun encodeSlots(hardware: Boolean): Int {
+        if (!hardware) return 10
+        val instances = runCatching {
+            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+                .filter { info -> info.isEncoder && info.supportedTypes.any { it.equals("video/avc", true) } }
+                .maxOfOrNull { info ->
+                    runCatching { info.getCapabilitiesForType("video/avc").maxSupportedInstances }.getOrDefault(1)
+                } ?: 1
+        }.getOrDefault(1)
+        return (instances - 1).coerceIn(1, 4)
+    }
+
+    private fun run(label: String, vararg args: String, onFrame: ((Int) -> Unit)? = null,
+                    onTime: ((Double) -> Unit)? = null) {
+        val session = if (onFrame == null && onTime == null) FFmpegKit.executeWithArguments(arrayOf(*args)) else {
             FFmpegSession.create(arrayOf(*args), null, null, StatisticsCallback { statistics ->
-                onFrame(statistics.videoFrameNumber)
+                // Statistics.time is milliseconds (as a double) since FFmpegKit 6.0.
+                onTime?.invoke(statistics.time)
+                onFrame?.invoke(statistics.videoFrameNumber)
             }).also(FFmpegKitConfig::ffmpegExecute)
         }
         if (!ReturnCode.isSuccess(session.returnCode)) {
@@ -726,7 +791,8 @@ class VideoRenderer(private val store: ProjectStore) {
         frameCount: Int,
         imageSeconds: Float,
         width: Int,
-        height: Int
+        height: Int,
+        encoder: VideoEncoder
     ) {
         val templateTransitions = mapOf(
             "life_copy_fast_cut" to "dissolve",
@@ -756,8 +822,8 @@ class VideoRenderer(private val store: ProjectStore) {
             val basicPlan = MotionPlan("zoom_in", MotionPoint(1.02, 0.0, 0.0), MotionPoint(1.12, 0.0, 0.0))
             val filter = motionFilter(basicPlan, frameCount, width, height)
             run("生成开头模板", "-y", "-loop", "1", "-framerate", "30", "-i", selectedImages.first().absolutePath,
-                "-vf", filter, "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4", "-q:v", "4",
-                "-pix_fmt", "yuv420p", output.absolutePath)
+                "-vf", filter, "-frames:v", frameCount.toString(), "-an", *encoder.args.toTypedArray(),
+                output.absolutePath)
             return
         }
         val args = mutableListOf("-y")
@@ -796,18 +862,19 @@ class VideoRenderer(private val store: ProjectStore) {
             .append("trim=end_frame=$frameCount,format=yuv420p$result")
         args += listOf(
             "-filter_complex", filters.toString(), "-map", result,
-            "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4", "-q:v", "4",
-            "-pix_fmt", "yuv420p", output.absolutePath
+            "-frames:v", frameCount.toString(), "-an", *encoder.args.toTypedArray(), output.absolutePath
         )
         run("生成开头模板", *args.toTypedArray())
     }
 
     private fun concatLine(file: File): String = "file '${file.absolutePath.replace("\\", "/").replace("'", "'\\''")}'\n"
 
-    private fun concatVideos(clips: List<File>, output: File, temp: File) {
+    private fun concatVideos(clips: List<File>, output: File, temp: File, totalSeconds: Double,
+                             onProgress: (Int) -> Unit) {
         val list = File(temp, "video_list.txt")
         list.writeText(clips.joinToString("") { concatLine(it) })
-        run("合并画面", "-y", "-f", "concat", "-safe", "0", "-i", list.absolutePath, "-c", "copy", output.absolutePath)
+        run("合并画面", "-y", "-f", "concat", "-safe", "0", "-i", list.absolutePath, "-c", "copy",
+            output.absolutePath, onTime = { time -> reportPercent(time, totalSeconds, onProgress) })
     }
 
     private fun mergeVideos(
@@ -815,10 +882,13 @@ class VideoRenderer(private val store: ProjectStore) {
         frameCounts: List<Int>,
         transitionPlans: List<TransitionPlan>,
         output: File,
-        temp: File
+        temp: File,
+        encoder: VideoEncoder,
+        onProgress: (Int) -> Unit = {}
     ) {
+        val totalSeconds = frameCounts.sum() / VideoTimeline.FPS.toDouble()
         if (clips.size < 2 || transitionPlans.none { it.frames >= 2 && it.type != "none" }) {
-            concatVideos(clips, output, temp)
+            concatVideos(clips, output, temp, totalSeconds, onProgress)
             return
         }
         val filters = StringBuilder()
@@ -871,8 +941,17 @@ class VideoRenderer(private val store: ProjectStore) {
             .append("fps=30,trim=end_frame=$totalFrames,format=yuv420p$finalLabel")
         val inputs = clips.flatMap { listOf("-i", it.absolutePath) }.toTypedArray()
         run("生成转场", "-y", *inputs, "-filter_complex_threads", "8", "-filter_complex", filters.toString(),
-            "-map", finalLabel, "-an", "-c:v", "mpeg4", "-q:v", "4", "-threads", "8",
-            "-r", "30", "-frames:v", totalFrames.toString(), "-pix_fmt", "yuv420p", output.absolutePath)
+            "-map", finalLabel, "-an", *encoder.args.toTypedArray(), "-threads", "8",
+            "-r", "30", "-frames:v", totalFrames.toString(), output.absolutePath,
+            onFrame = { frames ->
+                onProgress((frames * 100L / totalFrames.coerceAtLeast(1)).toInt().coerceIn(0, 99))
+            })
+    }
+
+    private fun reportPercent(timeMs: Double, totalSeconds: Double, onProgress: (Int) -> Unit) {
+        if (totalSeconds <= 0.0) return
+        val percent = (timeMs / (totalSeconds * 1000.0) * 100.0).toInt().coerceIn(0, 99)
+        onProgress(percent)
     }
 
     private fun shotAudioEvents(project: VideoProject, shotDurations: List<Double>): List<AudioPlayback> {
@@ -941,30 +1020,76 @@ class VideoRenderer(private val store: ProjectStore) {
         }
         return AudioMixPlan(inputs, filters, labels, outputDuration, labels.size > 1)
     }
+
+    /**
+     * Final container step: copy the picture, encode only the sound.
+     *
+     * The picture is rendered from fixed per-shot frame counts, so the narration
+     * timeline is at most a frame away from it. That sub-frame difference used to
+     * make this step re-encode the whole 1080x1920 timeline with mpeg4 just to
+     * clone a few milliseconds of the last frame, which is why "封装最终 MP4"
+     * could run for twenty minutes on a phone. Now the audio is padded or
+     * trimmed to the picture instead, and only a real tail (a sound effect that
+     * outlives the last shot) extends the picture, by cloning the final frame and
+     * concatenating it with stream copy.
+     */
     private fun muxFinalAudio(project: VideoProject, video: File, voice: File, output: File,
-                              soundEvents: List<AudioPlayback>, shotDurations: List<Double>) {
+                              temp: File, encoder: VideoEncoder,
+                              soundEvents: List<AudioPlayback>, shotDurations: List<Double>,
+                              onProgress: (Int) -> Unit = {}) {
+        val videoDuration = duration(video)
         val plan = audioMixPlan(project, duration(voice), soundEvents, voiceInputIndex = 1,
             shotDurations = shotDurations)
-        if (!plan.hasOverlay && project.ttsVolume == 1f) {
-            run("封装最终视频", "-y", "-i", video.absolutePath, "-i", voice.absolutePath,
-                "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                "-shortest", "-movflags", "+faststart", output.absolutePath)
-            return
+        val tail = (plan.duration - videoDuration).coerceAtLeast(0.0)
+        val extended = if (tail > MUX_TAIL_TOLERANCE_SECONDS) {
+            runCatching {
+                extendVideoWithFreeze(video, tail, canvasSize(project), temp, encoder, onProgress)
+            }.getOrDefault(video)
+        } else video
+        try {
+            val timeline = if (extended !== video) maxOf(plan.duration, videoDuration) else videoDuration
+            val seconds = String.format(Locale.US, "%.6f", timeline)
+            val onTime: (Double) -> Unit = { time -> reportPercent(time, timeline, onProgress) }
+            if (extended === video && !plan.hasOverlay && project.ttsVolume == 1f) {
+                run("封装最终视频", "-y", "-i", video.absolutePath, "-i", voice.absolutePath,
+                    "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                    "-t", seconds, "-movflags", "+faststart", output.absolutePath, onTime = onTime)
+                return
+            }
+            run("混合配音、BGM和镜头音效", "-y", "-i", extended.absolutePath, "-i", voice.absolutePath,
+                *plan.inputs.toTypedArray(), "-filter_complex", plan.graph(targetDuration = timeline),
+                "-map", "0:v:0", "-map", "[aout]", "-t", seconds,
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                output.absolutePath, onTime = onTime)
+        } finally {
+            if (extended !== video) extended.delete()
         }
-        val videoDuration = duration(video)
-        val videoTail = (plan.duration - videoDuration).coerceAtLeast(0.0)
-        val filters = plan.filters.toMutableList()
-        val videoMap = if (videoTail > 0.001) {
-            filters.add(0, "[0:v]tpad=stop_mode=clone:stop_duration=${String.format(Locale.US, "%.6f", videoTail)}[vout]")
-            "[vout]"
-        } else "0:v:0"
-        val videoCodec = if (videoTail > 0.001) "mpeg4" else "copy"
-        val videoCodecArgs = if (videoTail > 0.001) arrayOf("-q:v", "4", "-r", "30", "-pix_fmt", "yuv420p") else emptyArray()
-        run("混合配音、BGM和镜头音效", "-y", "-i", video.absolutePath, "-i", voice.absolutePath,
-            *plan.inputs.toTypedArray(), "-filter_complex", plan.graph(filters),
-            "-map", videoMap, "-map", "[aout]", "-t", String.format(Locale.US, "%.6f", maxOf(plan.duration, videoDuration)),
-            "-c:v", videoCodec, *videoCodecArgs,
-            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output.absolutePath)
+    }
+
+    /** Extend the picture by holding its last frame, without re-encoding the timeline. */
+    private fun extendVideoWithFreeze(video: File, tailSeconds: Double, size: Pair<Int, Int>,
+                                      temp: File, encoder: VideoEncoder,
+                                      onProgress: (Int) -> Unit): File {
+        val frame = File(temp, "final_tail_frame.jpg").apply { delete() }
+        run("提取成片末帧", "-y", "-sseof", "-0.5", "-i", video.absolutePath,
+            "-frames:v", "1", "-q:v", "2", frame.absolutePath)
+        require(frame.length() > 1000) { "无法提取成片末帧" }
+        val frames = kotlin.math.ceil(tailSeconds * VideoTimeline.FPS).toInt().coerceAtLeast(1)
+        val (width, height) = size
+        val clone = File(temp, "final_tail.mp4").apply { delete() }
+        run("生成结尾定格", "-y", "-loop", "1", "-framerate", "30", "-i", frame.absolutePath,
+            "-vf", "scale=$width:$height,setsar=1,format=yuv420p", "-frames:v", frames.toString(),
+            "-an", *encoder.args.toTypedArray(), "-r", "30",
+            clone.absolutePath, onFrame = { drawn ->
+                onProgress((drawn * 100L / frames).toInt().coerceIn(0, 99))
+            })
+        val list = File(temp, "final_tail_list.txt")
+        list.writeText(concatLine(video) + concatLine(clone))
+        val merged = File(temp, "final_extended.mp4").apply { delete() }
+        run("拼接结尾定格", "-y", "-f", "concat", "-safe", "0", "-i", list.absolutePath,
+            "-c", "copy", merged.absolutePath)
+        require(merged.length() > 1000) { "拼接结尾定格失败" }
+        return merged
     }
 
     private fun mixVoicePreview(project: VideoProject, voice: File, output: File,
@@ -1042,6 +1167,8 @@ class VideoRenderer(private val store: ProjectStore) {
                 require(image.length() > 1000) { "第 ${shot.id} 镜缺少图片" }
             }
         }
+        val encoder = chooseVideoEncoder(images.first(), canvasSize(project), temp)
+        if (!encoder.hardware) stage("本机无法硬件编码 H.264，本次按 mpeg4 输出")
         val parts = project.shots.map { shot ->
             store.audio(project, shot).also { audio ->
                 require(audio.length() > 1000) { "第 ${shot.id} 镜缺少配音" }
@@ -1079,7 +1206,7 @@ class VideoRenderer(private val store: ProjectStore) {
         val bgmFile = runCatching { AudioLibrary(store.context()).resolve(project.bgmId) }.getOrNull()
         val bgmFileStamp = bgmFile?.takeIf { it.isFile }?.let { "${it.length()}:${it.lastModified()}" }.orEmpty()
         val clipSignature = listOf(
-            RENDER_STYLE_VERSION, frameCounts.joinToString(","), project.imageSize, project.subtitlesEnabled, project.motionMode,
+            RENDER_STYLE_VERSION, encoder.label, frameCounts.joinToString(","), project.imageSize, project.subtitlesEnabled, project.motionMode,
             project.transitionMode, transitionPlans.joinToString(",") { "${it.type}:${it.frames}" },
             project.coverShotId, project.coverText, OpeningTiming.normalizeDelay(project.coverTitleDelaySeconds), project.openingTemplate, project.introImageSeconds,
             project.storyboardStylePreset,
@@ -1126,11 +1253,11 @@ class VideoRenderer(private val store: ProjectStore) {
                     "正在生成视频片段 ${completed.get()}/${clips.size} · 画面进度 $percent%")
             }
         }
-        // Ten FFmpeg jobs use the available phone memory while keeping the
-        // render queue bounded instead of launching all encoders at once.
+        // The queue is bounded so the phone memory and the hardware encoder slots
+        // available for parallel FFmpeg jobs are not oversubscribed.
         try {
             runBlocking {
-                val gate = Semaphore(10)
+                val gate = Semaphore(encodeSlots(encoder.hardware))
                 clips.indices.map { index ->
                     async(Dispatchers.Default) {
                         gate.withPermit {
@@ -1164,7 +1291,7 @@ class VideoRenderer(private val store: ProjectStore) {
                                         "-framerate", "30", "-i", layers.background.absolutePath,
                                         "-framerate", "30", "-i", layers.foreground.absolutePath,
                                         "-filter_complex", graph, "-map", outputLabel, "-frames:v", frameCount.toString(), "-an",
-                                        "-c:v", "mpeg4", "-q:v", "4", "-pix_fmt", "yuv420p", pending.absolutePath,
+                                        *encoder.args.toTypedArray(), pending.absolutePath,
                                         onFrame = onFrame)
                                 } else {
                                     if (shot.id == 1 && project.openingTemplate != "none") {
@@ -1172,18 +1299,18 @@ class VideoRenderer(private val store: ProjectStore) {
                                         openingBase.delete()
                                         renderOpeningTemplate(
                                             project.openingTemplate, images, openingBase, frameCount,
-                                            project.introImageSeconds, width, height
+                                            project.introImageSeconds, width, height, encoder
                                         )
                                         val overlayFilter = motionFilter(motionPlanFor(project, visualShot), frameCount, width, height) + subtitle + cover
                                         run("叠加封面文案", "-y", "-i", openingBase.absolutePath, "-vf", overlayFilter,
-                                            "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4", "-q:v", "4",
-                                            "-pix_fmt", "yuv420p", pending.absolutePath, onFrame = onFrame)
+                                            "-frames:v", frameCount.toString(), "-an", *encoder.args.toTypedArray(),
+                                            pending.absolutePath, onFrame = onFrame)
                                         openingBase.delete()
                                     } else {
                                         val filter = motionFilter(motionPlanFor(project, visualShot), frameCount, width, height, stillImage = true) + subtitle + cover
                                         run("生成视频片段", "-y", "-framerate", "30", "-i", images[index].absolutePath,
-                                            "-vf", filter, "-frames:v", frameCount.toString(), "-an", "-c:v", "mpeg4",
-                                            "-q:v", "4", "-pix_fmt", "yuv420p", pending.absolutePath, onFrame = onFrame)
+                                            "-vf", filter, "-frames:v", frameCount.toString(), "-an",
+                                            *encoder.args.toTypedArray(), pending.absolutePath, onFrame = onFrame)
                                     }
                                 }
                                 Files.move(pending.toPath(), clip.toPath(), StandardCopyOption.REPLACE_EXISTING)
@@ -1204,12 +1331,16 @@ class VideoRenderer(private val store: ProjectStore) {
         val video = File(temp, "video.mp4")
         val voice = File(temp, "voice.m4a")
         stage("正在合并画面")
-        mergeVideos(clips, frameCounts, transitionPlans, video, temp)
+        mergeVideos(clips, frameCounts, transitionPlans, video, temp, encoder) { percent ->
+            frameProgress(percent, 100, "正在合并画面 $percent%")
+        }
         stage("正在合并配音")
         run("合并配音", "-y", "-f", "concat", "-safe", "0", "-i", audioList.absolutePath, "-vn", "-c:a", "aac", "-b:a", "192k", voice.absolutePath)
         val pending = File(dir, "output/final.pending.mp4")
         stage("正在封装最终 MP4")
-        muxFinalAudio(project, video, voice, pending, soundEvents, durations)
+        muxFinalAudio(project, video, voice, pending, temp, encoder, soundEvents, durations) { percent ->
+            frameProgress(percent, 100, "正在封装最终 MP4 · 音画混合 $percent%")
+        }
         require(pending.length() > 1000) { "输出视频为空" }
         Files.move(pending.toPath(), store.output(project).toPath(), StandardCopyOption.REPLACE_EXISTING)
         project.duration = duration(store.output(project))
