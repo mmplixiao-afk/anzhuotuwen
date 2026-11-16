@@ -17,7 +17,7 @@ Kotlin + Jetpack Compose 的手机端工程。首页提供新建视频、历史�
 ## 已知限制与验证
 
 - 本机缺少 Android 构建工具和设备，尚未验证 Gradle 同步、API 实际响应或真机 FFmpeg 编码。首次真机测试应先做 10～15 镜短片，再做长片压力测试。
-- FFmpeg 使用 `dev.ffmpegkit-maintained:ffmpeg-kit-video:8.1.9`，该非 GPL 包为 LGPL-3.0。MVP 用 MPEG-4 视频编码，不使用桌面端 GPL 的 `libx264`；成片体积和速度需要真机测量。发行时须保留依赖的许可证和第三方声明。
+- FFmpeg 使用 `dev.ffmpegkit-maintained:ffmpeg-kit-video:8.1.9`，该非 GPL 包为 LGPL-3.0。片段仍用 MPEG-4 编码；最终成片由 Android MediaCodec 转为 H.264，并用 FFmpeg 无损封装 AAC 与 faststart。不使用 GPL 的 `libx264`。成片体积和速度需要真机测量。发行时须保留依赖的许可证和第三方声明。
 - 当前未加入 SRT/ASS、BGM、随机运动、音效、开场模板、人物抠图或成本统计。这些属于后续阶段。
 - 前台服务提供进度和暂停；Android 对后台服务有时长与启动限制，系统终止后需重新打开项目并继续。暂停 FFmpeg 时会取消当前命令，已有图片和 MP3 保留。
 

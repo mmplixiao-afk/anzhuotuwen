@@ -559,11 +559,12 @@ class GenerationService : Service() {
             }
         }
         update(project, "render", "running", "正在剪辑视频", 0, project.shots.size)
+        val stillActive = currentCoroutineContext().let { context -> { context.isActive } }
         VideoRenderer(store).render(project, progress = { count, total ->
             update(project, "render", "running", "正在生成视频片段 $count/$total", count, total)
         }, frameProgress = { count, total, detail ->
             update(project, "render", "running", detail, count, total)
-        }) { detail ->
+        }, isActive = stillActive) { detail ->
             update(project, "render", "running", detail, 0, 0)
         }
         currentCoroutineContext().ensureActive()
