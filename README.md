@@ -6,7 +6,7 @@ Kotlin + Jetpack Compose 的手机端工程。首页提供新建视频、历史�
 
 使用 Android Studio 打开本目录，需要 JDK 17、Android SDK 37、Gradle 8.11.1。工程固定使用 Gradle 8.11.1；如果 Android Studio 没有本地缓存，会从项目 wrapper 配置的镜像下载。最低支持 Android 10（API 29）。
 
-在“API 设置”分别填入文本、图片、豆包的 HTTPS 地址、模型及密钥。首次安装会预填电脑端当前使用的文本、图片和豆包接口地址及模型；Key 仍需在手机上输入一次。文本端使用 OpenAI Compatible `/v1/chat/completions`，生图端使用 `/v1/images/generations`；豆包使用火山引擎单向 TTS v3 的 Resource ID 和音色 ID。图片接口需返回 `data[0].url` 或 `data[0].b64_json`。不同中转站的 `size` 参数可能不同，当前默认 `1792x1024`（16:9），需用自己的服务先验证 1 张图片。
+在“API 设置”分别填入文本、图片、豆包的 HTTPS 地址、模型及密钥。首次安装会预填电脑端当前使用的文本、图片和豆包接口地址及模型；Key 仍需在手机上输入一次。文本端使用 OpenAI Compatible `/v1/chat/completions`，生图端使用 `/v1/images/generations`；豆包使用火山引擎单向 TTS v3 的 Resource ID 和音色 ID。图片接口需返回 `data[0].url` 或 `data[0].b64_json`。不同中转站的 `size` 参数可能不同，当前默认 `1792x1024`（16:9），需用自己的服务先验证 1 张图片。沧元算力 gpt-image-2.5 会先生成一张主角参考图，再对标明主角出镜的镜头用 `/v1/images/edits` 垫图；空镜和未标注的旧镜头仍走 `/v1/images/generations`。
 
 每个镜头的配音独立保存于 `files/projects/{id}/audio/001.mp3` 等文件。点“重配此段”仅调用当前镜头的 TTS，生成临时文件并验证时长后替换对应 MP3；其他镜头音频不动。可点“试听”立即检查该段。之后点“重新剪辑”会复用其他镜头的视频片段并重建最终 MP4。修改镜头文字再点完整生成流程，也只补做状态失效的音频。
 
