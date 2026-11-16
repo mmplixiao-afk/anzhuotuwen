@@ -8,6 +8,7 @@ import com.arthenica.ffmpegkit.FFmpegSession
 import com.arthenica.ffmpegkit.FFprobeKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.arthenica.ffmpegkit.StatisticsCallback
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -72,6 +73,24 @@ class VideoRenderer(private val store: ProjectStore) {
         val session = FFprobeKit.getMediaInformation(path.absolutePath)
         return session.mediaInformation?.duration?.toDoubleOrNull()?.takeIf { it > 0.0 }
             ?: error("无法读取音频时长: ${path.name}")
+    }
+
+    private fun publishH264(source: File, destination: File, isActive: () -> Boolean) {
+        val pending = File(destination.parentFile, destination.name + ".h264.pending.mp4")
+        try {
+            if (!isActive()) throw CancellationException("已暂停")
+            H264Export.produce(source, pending, isActive) { label, args -> run(label, *args) }
+            replaceVerifiedFile(pending, destination)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            throw IllegalStateException(
+                h264FailureMessage(destination.isFile && destination.length() > 1000L, error.message ?: "未知错误"),
+                error
+            )
+        } finally {
+            if (pending.exists()) pending.delete()
+        }
     }
 
     private fun run(label: String, vararg args: String, onFrame: ((Int) -> Unit)? = null) {
@@ -1023,7 +1042,9 @@ class VideoRenderer(private val store: ProjectStore) {
     }
 
     fun render(project: VideoProject, progress: (Int, Int) -> Unit,
-               frameProgress: (Int, Int, String) -> Unit = { _, _, _ -> }, stage: (String) -> Unit = {}) {
+               frameProgress: (Int, Int, String) -> Unit = { _, _, _ -> },
+               isActive: () -> Boolean = { true },
+               stage: (String) -> Unit = {}) {
         require(project.shots.isNotEmpty())
         val dir = store.directory(project.id)
         val temp = File(dir, "temp").apply { mkdirs() }
@@ -1098,9 +1119,22 @@ class VideoRenderer(private val store: ProjectStore) {
         val audioSignature = listOf(project.bgmId, project.bgmStartShotId, project.bgmVolume,
             project.introSfxId, project.introSfxVolume, project.ttsVolume, bgmFileStamp, soundAudioSignature).joinToString("|")
         val expectedFinalSignature = "$clipSignature|${project.renderRevision}|$AUDIO_MIX_VERSION|$audioSignature"
-        if (store.output(project).length() > 1000 && finalStamp.readTextOrNull() == expectedFinalSignature) {
-            stage("素材未改变，复用已有成片")
-            return
+        val output = store.output(project)
+        if (output.length() > 1000 && finalStamp.readTextOrNull() == expectedFinalSignature) {
+            val probed = H264Export.probeOrNull(output)
+            when (finalCacheAction(true, output.length(), probed?.videoMime, probed?.audioMime)) {
+                FinalCacheAction.REUSE -> {
+                    stage("素材未改变，复用已有成片")
+                    return
+                }
+                FinalCacheAction.TRANSCODE_EXISTING -> {
+                    stage("正在把成片转为 H.264")
+                    publishH264(output, output, isActive)
+                    project.duration = duration(output)
+                    return
+                }
+                FinalCacheAction.RENDER -> Unit
+            }
         }
         val savedSignature = renderStamp.readTextOrNull()
         val rebuildClips = savedSignature != clipSignature
@@ -1207,12 +1241,17 @@ class VideoRenderer(private val store: ProjectStore) {
         mergeVideos(clips, frameCounts, transitionPlans, video, temp)
         stage("正在合并配音")
         run("合并配音", "-y", "-f", "concat", "-safe", "0", "-i", audioList.absolutePath, "-vn", "-c:a", "aac", "-b:a", "192k", voice.absolutePath)
-        val pending = File(dir, "output/final.pending.mp4")
+        val mpeg4Pending = File(dir, "output/final.mpeg4.pending.mp4")
         stage("正在封装最终 MP4")
-        muxFinalAudio(project, video, voice, pending, soundEvents, durations)
-        require(pending.length() > 1000) { "输出视频为空" }
-        Files.move(pending.toPath(), store.output(project).toPath(), StandardCopyOption.REPLACE_EXISTING)
-        project.duration = duration(store.output(project))
+        try {
+            muxFinalAudio(project, video, voice, mpeg4Pending, soundEvents, durations)
+            require(mpeg4Pending.length() > 1000) { "输出视频为空" }
+            stage("正在转换为 H.264")
+            publishH264(mpeg4Pending, output, isActive)
+        } finally {
+            if (mpeg4Pending.exists()) mpeg4Pending.delete()
+        }
+        project.duration = duration(output)
         renderStamp.writeText(clipSignature)
         openingInputsStamp.writeText(openingInputs)
         finalStamp.writeText(expectedFinalSignature)
