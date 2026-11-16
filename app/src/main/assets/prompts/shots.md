@@ -9,6 +9,8 @@
 - 人物动作镜头、双人互动、表情近景、屋舍街道全景、食物衣物等器物特写交替出现。讲“以前”和“如今”时分成独立镜头，保持对比物与构图可辨认。
 - 开场迅速呈现关键人物或核心处境，避免与主题无关的风景铺垫。结尾画面呼应开场问题。
 - 在内部先确定角色外观，再在每条涉及人物的 image_prompt 中重复简短且稳定的年龄、脸型、发髻、胡须和衣着锚点，不能只写“同一人”。剧情换装保留脸与发型；配角各有可辨认外观。
+- 可以额外在根对象写 characters，只描述主角：{"name":"主角","role":"protagonist","appearance":"年龄、脸型、发髻、胡须、服装"}。不要把配角写成主角。
+- 只有主角的脸或身体清楚出现时，该镜才加 "uses_protagonist_reference": true。空镜、器物、只有配角或路人的镜头必须为 false。缺少该字段按 false，不要为此改动分镜边界。
 - visual 用中文写清时代、地点、主体、动作和情绪；image_prompt 是独立可用的中文生图指令，约 100 至 180 字，包含人物锚点、单一场景、景别、动作、光线及写实古装风格。无人物空镜不必强塞主角。
 - 不画可读文字、字幕、花字、水印；底部保留字幕位置。画幅服从用户选择，不强行写竖屏。
 - video_prompt 只描述适合静态图的轻微推近、平移或静止，不要求角色完成连续动作；它是镜头意图，不能假设程序会生成真人动态视频。
@@ -19,6 +21,9 @@
 {
   "title": "string",
   "style_preset": "string",
+  "characters": [
+    {"name": "主角", "role": "protagonist", "appearance": "年龄、脸型、发髻、胡须和衣着"}
+  ],
   "shots": [
     {
       "id": 1,
@@ -27,7 +32,8 @@
       "visual": "string",
       "punch": "2到6字的画面关键词",
       "image_prompt": "string",
-      "video_prompt": "string"
+      "video_prompt": "string",
+      "uses_protagonist_reference": true
     }
   ]
 }

@@ -455,7 +455,7 @@ class MainActivity : ComponentActivity() {
             val promptName = when (action) {
                 GenerationService.SCRIPT -> "script"
                 GenerationService.SHOTS -> "shots"
-                GenerationService.IMAGE_ALL, GenerationService.IMAGE -> "image"
+                GenerationService.IMAGE_ALL, GenerationService.IMAGE, GenerationService.CHARACTER_REFERENCE -> "image"
                 GenerationService.IMAGE_OPTIMIZE, GenerationService.IMAGE_OPTIMIZE_ALL -> "image_failure"
                 else -> null
             }
@@ -1632,6 +1632,9 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
             }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             StatusPill(imageSizeLabel(project.imageSize), if (shot.imageStatus == "failed") HistoryColors.cinnabar else HistoryColors.green)
         }
+        Text(if (shot.usesProtagonistReference) "本镜标明主角出镜，生成时会使用人物参考图。"
+            else "本镜不垫主角参考图，仍按文字生图。",
+            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         if (shot.imageStatus == "failed" && shot.error.isNotBlank()) {
             Text("失败原因：${shot.error}", color = HistoryColors.cinnabar, style = MaterialTheme.typography.bodySmall)
         }
@@ -2836,6 +2839,7 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
     val busy = project.status == "running"
     var missingImagesOnly by rememberSaveable(project.id) { mutableStateOf(false) }
     var confirmBatchOptimize by rememberSaveable(project.id) { mutableStateOf(false) }
+    var confirmReference by rememberSaveable(project.id) { mutableStateOf(false) }
     val failedImageIds = project.shots.filter { it.imageStatus == "failed" }.map { it.id }
     val missingImageIds = project.shots.filter { shot ->
         val image = store.image(project, shot)
@@ -2866,6 +2870,23 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
                         }
                     }
                 }
+        }
+        val referenceFile = store.characterReferenceImage(project)
+        val referenceReady = referenceFile.isFile && referenceFile.length() > 1000
+        val protagonistShots = project.shots.count { it.usesProtagonistReference }
+        FormCard {
+            Text("人物参考图", style = MaterialTheme.typography.titleLarge)
+            ShotThumbnail(referenceFile, Modifier.size(96.dp).clip(RoundedCornerShape(16.dp)),
+                contentScale = ContentScale.Crop)
+            Text(if (referenceReady) "已保存主角参考图。只用于标明主角出镜的镜头，保持脸、发型、胡须、衣服和年龄。"
+                else "还没有主角参考图。生成标明主角出镜的镜头前会先创建一张。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            Text("空镜、道具镜和未标注的旧镜头仍按文字生图，不会把配角改成主角。当前标明主角出镜 $protagonistShots 镜。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            OutlinedButton(onClick = { confirmReference = true }, enabled = !busy,
+                modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
+                Text("重新生成参考图")
+            }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(onClick = { onRun(project, GenerationService.IMAGE_ALL, 0) },
@@ -2915,6 +2936,20 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
             dismissButton = {
                 TextButton(onClick = { confirmBatchOptimize = false }) { Text("取消") }
             }
+        )
+    }
+    if (confirmReference) {
+        AlertDialog(
+            onDismissRequest = { confirmReference = false },
+            title = { Text("重新生成参考图") },
+            text = { Text("只重新生成主角参考图，不会自动重做已有镜头。之后再生成标明主角出镜的镜头时，会使用新的参考图。此操作按一张图片计费。") },
+            confirmButton = {
+                Button(onClick = {
+                    confirmReference = false
+                    onRun(project, GenerationService.CHARACTER_REFERENCE, 0)
+                }) { Text("重新生成参考图") }
+            },
+            dismissButton = { TextButton(onClick = { confirmReference = false }) { Text("取消") } }
         )
     }
 }
