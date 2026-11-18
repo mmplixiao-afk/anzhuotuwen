@@ -97,6 +97,8 @@ data class Shot(
     var videoPrompt: String = "",
     var imageRevision: String = "",
     var audioRevision: String = "",
+    var imageUrl: String = "",
+    var usesProtagonistReference: Boolean = false,
     var motionSetting: ShotMotionSetting? = null,
     var motionPlanSetting: ShotMotionSetting? = null
 ) {
@@ -116,6 +118,8 @@ data class Shot(
         put("cutout_foreground_plan", cutoutForegroundPlan?.json() ?: JSONObject.NULL)
         put("visual", visual); put("punch", punch); put("video_prompt", videoPrompt)
         put("image_revision", imageRevision); put("audio_revision", audioRevision)
+        put("image_url", imageUrl)
+        put("uses_protagonist_reference", usesProtagonistReference)
     }
 
     companion object {
@@ -159,6 +163,8 @@ data class Shot(
             videoPrompt = value.optString("video_prompt"),
             imageRevision = value.optString("image_revision"),
             audioRevision = value.optString("audio_revision"),
+            imageUrl = persistedImageUrl(value.optString("image_url")),
+            usesProtagonistReference = usesProtagonistReference(value),
             motionSetting = if (value.optBoolean("cutout_enabled")) null else ShotMotionSetting.from(value.optJSONObject("motion_setting")),
             motionPlanSetting = if (value.optBoolean("cutout_enabled")) null else ShotMotionSetting.from(value.optJSONObject("motion_plan_setting"))
         )
@@ -203,7 +209,9 @@ data class VideoProject(
     var coverTitleDelaySeconds: Float = OpeningTiming.DEFAULT_DELAY,
     var topicQuery: String = "",
     var topicIdeas: MutableList<TopicIdea> = mutableListOf(),
-    var selectedTopic: TopicIdea? = null
+    var selectedTopic: TopicIdea? = null,
+    var characters: MutableList<StoryCharacter> = mutableListOf(),
+    var characterReferences: MutableList<CharacterReference> = mutableListOf()
 ) {
     fun json() = JSONObject().apply {
         put("schema_version", 1); put("id", id); put("title", title)
@@ -228,6 +236,8 @@ data class VideoProject(
         put("tts_volume", ttsVolume); put("storyboard_granularity", storyboardGranularity)
         put("storyboard_script", storyboardScript); put("storyboard_style_preset", storyboardStylePreset)
         put("render_revision", renderRevision)
+        put("characters", JSONArray().apply { characters.forEach { put(it.json()) } })
+        put("character_references", JSONArray().apply { characterReferences.forEach { put(it.json()) } })
         put("shots", JSONArray().apply { shots.forEach { put(it.json()) } })
     }
 
@@ -279,7 +289,15 @@ data class VideoProject(
             coverTitleDelaySeconds = OpeningTiming.normalizeDelay(value.optDouble("cover_title_delay_seconds", OpeningTiming.DEFAULT_DELAY.toDouble()).toFloat()),
             topicQuery = value.optString("topic_query"),
             topicIdeas = TopicIdeas.storedIdeas(value),
-            selectedTopic = value.optJSONObject("selected_topic")?.let { TopicIdea.from(it, "selected-topic") }
+            selectedTopic = value.optJSONObject("selected_topic")?.let { TopicIdea.from(it, "selected-topic") },
+            characters = mutableListOf<StoryCharacter>().apply {
+                val array = value.optJSONArray("characters") ?: JSONArray()
+                for (index in 0 until array.length()) array.optJSONObject(index)?.let { add(StoryCharacter.from(it)) }
+            },
+            characterReferences = mutableListOf<CharacterReference>().apply {
+                val array = value.optJSONArray("character_references") ?: JSONArray()
+                for (index in 0 until array.length()) array.optJSONObject(index)?.let { add(CharacterReference.from(it)) }
+            }
             )
             if (project.introSfxId != "none" && project.shots.isNotEmpty()) {
                 val firstShot = project.shots.first()
@@ -360,6 +378,8 @@ class ProjectStore(context: Context) {
 
     fun image(project: VideoProject, shot: Shot) = File(directory(project.id),
         "images/%03d%s.jpg".format(shot.id, revisionSuffix(shot.imageRevision)))
+    fun characterReferenceImage(project: VideoProject) =
+        File(directory(project.id), "images/character_ref_01.jpg")
     fun audio(project: VideoProject, shot: Shot) = File(directory(project.id),
         "audio/%03d%s.mp3".format(shot.id, revisionSuffix(shot.audioRevision)))
     fun output(project: VideoProject) = File(directory(project.id),
@@ -392,7 +412,8 @@ class ProjectStore(context: Context) {
                 motionPlanSetting = if (sameImage && !old!!.cutoutEnabled) ShotMotionRules.normalize(old!!.motionPlanSetting) else null,
                 cutoutMirrorX = if (sameImage) old!!.cutoutMirrorX else null,
                 cutoutBackgroundPlan = if (sameImage) old!!.cutoutBackgroundPlan else null,
-                cutoutForegroundPlan = if (sameImage) old!!.cutoutForegroundPlan else null
+                cutoutForegroundPlan = if (sameImage) old!!.cutoutForegroundPlan else null,
+                imageUrl = if (sameImage) old!!.imageUrl else ""
             )
         }.toMutableList()
         project.bgmStartShotId = project.shots.firstOrNull { it.text == previousBgmStartText }?.id
