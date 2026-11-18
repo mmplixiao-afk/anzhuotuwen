@@ -997,6 +997,7 @@ class VideoRenderer(private val store: ProjectStore) {
         return mixVoicePreview(project, pending, output, soundEvents, shotDurations)
     }
 
+    // 单镜试听已改为直接播放原配音，不再调用这里。完整试听仍用 concatAudio，成片仍用 muxFinalAudio。
     fun previewShotAudio(project: VideoProject, shotId: Int, output: File): File {
         val index = project.shots.indexOfFirst { it.id == shotId }
         require(index >= 0) { "镜头不存在" }
