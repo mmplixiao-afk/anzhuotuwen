@@ -745,6 +745,7 @@ class MainActivity : ComponentActivity() {
                     "shots" -> if (selected != null) ShotsScreen(
                         selected,
                         store,
+                        imagePrompt = settings.prompt("image"),
                         onSave = ::saveProject,
                         onRun = ::runProject,
                         onPlay = ::playShot,
@@ -2870,6 +2871,7 @@ private fun ScriptScreen(project: VideoProject,
 
 @Composable
 private fun ShotsScreen(project: VideoProject, store: ProjectStore,
+                        imagePrompt: String,
                         onSave: (VideoProject) -> Unit,
                         onRun: (VideoProject, String, Int) -> Unit,
                         onPlay: (VideoProject, Shot) -> Unit,
@@ -2887,6 +2889,29 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
         shot.imageStatus != "done" || !image.isFile || image.length() <= 1000
     }.map { it.id }.toSet()
     val visibleShots = if (missingImagesOnly) project.shots.filter { it.id in missingImageIds } else project.shots
+    val referenceAppearance = sheetAppearance(
+        project.characters,
+        project.shots.filter { it.usesProtagonistReference }.map { it.imagePrompt }
+    )
+    val computedReferencePrompt = buildCharacterSheetPrompt(
+        imagePrompt, project.storyboardStylePreset, referenceAppearance
+    )
+    val storedReferencePrompt = project.characterReferences.firstOrNull()?.prompt?.trim().orEmpty()
+    var referenceDraft by remember(project.id) {
+        mutableStateOf(storedReferencePrompt.ifBlank { computedReferencePrompt })
+    }
+    var referenceNote by remember(project.id) { mutableStateOf("") }
+    fun commitReferencePrompt() {
+        val reference = project.characterReferences.firstOrNull() ?: CharacterReference().also {
+            project.characterReferences += it
+        }
+        val text = referenceDraft.trim().ifBlank { computedReferencePrompt }
+        storeReferencePrompt(reference, text)
+        if (referenceDraft.isBlank()) referenceDraft = text
+        onSave(project)
+    }
+    val referenceFile = store.characterReferenceImage(project)
+    val referenceReady = referenceFile.isFile && referenceFile.length() > 1000
     ProjectProgress(project)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         StepCaption(2, "图片按镜头逐张生成，配音按正文批量生成", Modifier.weight(1f))
@@ -2912,25 +2937,38 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
                     }
                 }
         }
-        val referenceFile = store.characterReferenceImage(project)
-        val referenceReady = referenceFile.isFile && referenceFile.length() > 1000
         val protagonistShots = project.shots.count { it.usesProtagonistReference }
         FormCard {
             Text("人物参考图", style = MaterialTheme.typography.titleLarge)
             ShotThumbnail(referenceFile, Modifier.size(96.dp).clip(RoundedCornerShape(16.dp)),
                 contentScale = ContentScale.Crop)
-            Text(if (referenceReady) "已保存主角参考图。只用于标明主角出镜的镜头，保持脸、发型、胡须、衣服和年龄。"
+            Text(if (referenceReady) "已保存主角参考图。只用于标明主角出镜的镜头，保持参考图里已有的脸、发式、服装和年龄。"
                 else "还没有主角参考图。生成标明主角出镜的镜头前会先创建一张。",
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
             Text("空镜、道具镜和未标注的旧镜头仍按文字生图，不会把配角改成主角。当前标明主角出镜 $protagonistShots 镜。",
                 style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            Text("参考图生图提示词", style = MaterialTheme.typography.titleMedium)
+            Text(if (storedReferencePrompt.isBlank())
+                "还没有单独保存过。下面按当前主角外观整理，可先改再保存。已有参考图不会因此被删除。"
+                else "下次生成人物参考图会原样使用这份已保存的文字。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            CompactInput(referenceDraft, { referenceDraft = it; referenceNote = "" }, enabled = !busy, minLines = 6)
+            if (referenceNote.isNotBlank()) {
+                Text(referenceNote, style = MaterialTheme.typography.bodySmall, color = HistoryColors.teal)
+            }
+            OutlinedButton(onClick = {
+                commitReferencePrompt()
+                referenceNote = "提示词已保存。重新生成后才会按这份文字重画参考图，已有镜头图片不会清除。"
+            }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
+                Text("保存提示词")
+            }
             OutlinedButton(onClick = { confirmReference = true }, enabled = !busy,
                 modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
-                Text("重新生成参考图")
+                Text(if (referenceReady) "重新生成参考图" else "生成参考图")
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { onRun(project, GenerationService.IMAGE_ALL, 0) },
+            Button(onClick = { commitReferencePrompt(); onRun(project, GenerationService.IMAGE_ALL, 0) },
                 enabled = !busy, modifier = Modifier.weight(1f).height(54.dp), shape = RoundedCornerShape(28.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) { Text("生成图片") }
             OutlinedButton(onClick = { onRun(project, GenerationService.VOICE_ALL, 0) },
@@ -2983,12 +3021,13 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
         AlertDialog(
             onDismissRequest = { confirmReference = false },
             title = { Text("重新生成参考图") },
-            text = { Text("只重新生成主角参考图，不会自动重做已有镜头。之后再生成标明主角出镜的镜头时，会使用新的参考图。此操作按一张图片计费。") },
+            text = { Text("按上面这份提示词重新生成主角参考图，并换成新的图片地址。已有镜头图片不会清除，也不会自动重画。之后再生成标明主角出镜的镜头时，会垫这张新参考图。此操作按一张图片计费。") },
             confirmButton = {
                 Button(onClick = {
                     confirmReference = false
+                    commitReferencePrompt()
                     onRun(project, GenerationService.CHARACTER_REFERENCE, 0)
-                }) { Text("重新生成参考图") }
+                }) { Text(if (referenceReady) "重新生成参考图" else "生成参考图") }
             },
             dismissButton = { TextButton(onClick = { confirmReference = false }) { Text("取消") } }
         )

@@ -536,7 +536,8 @@ class GenerationService : Service() {
             project.characters,
             project.shots.filter { it.usesProtagonistReference }.map { it.imagePrompt }
         )
-        val prompt = buildCharacterSheetPrompt(globalPrompt, project.storyboardStylePreset, appearance)
+        val computed = buildCharacterSheetPrompt(globalPrompt, project.storyboardStylePreset, appearance)
+        val prompt = characterSheetRequestPrompt(project.characterReferences.firstOrNull()?.prompt.orEmpty(), computed)
         val file = store.characterReferenceImage(project)
         file.parentFile?.mkdirs()
         val replacement = File(file.parentFile, file.name + ".new")
@@ -576,6 +577,7 @@ class GenerationService : Service() {
         reference.remoteUrl = image.remoteUrl
         reference.status = "done"
         reference.appearance = appearance
+        reference.prompt = prompt
         update(project, "images", "running", "人物参考图已生成", 1, 1)
     }
 

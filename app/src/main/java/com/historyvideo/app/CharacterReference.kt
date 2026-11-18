@@ -27,13 +27,15 @@ data class CharacterReference(
     var name: String = "主角",
     var remoteUrl: String = "",
     var status: String = "pending",
-    var appearance: String = ""
+    var appearance: String = "",
+    var prompt: String = ""
 ) {
     fun json() = JSONObject().apply {
         put("name", name)
         put("remote_url", remoteUrl)
         put("status", status)
         put("appearance", appearance)
+        put("prompt", prompt)
     }
 
     companion object {
@@ -41,7 +43,8 @@ data class CharacterReference(
             name = value.optString("name").trim().ifBlank { "主角" },
             remoteUrl = persistedImageUrl(value.optString("remote_url")),
             status = value.optString("status").trim().ifBlank { "pending" },
-            appearance = value.optString("appearance")
+            appearance = value.optString("appearance"),
+            prompt = value.optString("prompt")
         )
     }
 }
@@ -104,11 +107,52 @@ internal fun protagonistAppearance(characters: List<StoryCharacter>): String {
     return ""
 }
 
+internal enum class ProtagonistSex { FEMALE, MALE, UNSPECIFIED }
+
+private val femaleMarkers = listOf(
+    "女性", "女人", "女子", "女士", "女主", "美女", "姑娘", "少女", "少妇", "妇人", "闺女",
+    "娘娘", "皇后", "太后", "公主", "王妃", "贵妃", "妃子", "夫人", "小姐", "丫鬟", "宫女", "尼姑"
+)
+private val explicitMaleMarkers = listOf("男性", "男人", "男子", "男士", "男主")
+private val maleRoleMarkers = listOf("汉子", "书生", "公子", "皇帝", "皇上", "王爷", "和尚", "太监")
+private val beardTerms = listOf("络腮胡", "络腮", "美髯", "长须", "短须", "胡须", "胡子", "八字须")
+
+private fun containsUnprefixed(text: String, token: String, prefix: Char): Boolean {
+    var index = text.indexOf(token)
+    while (index >= 0) {
+        if (index == 0 || text[index - 1] != prefix) return true
+        index = text.indexOf(token, index + token.length)
+    }
+    return false
+}
+
+/** Gender comes only from the appearance text. Beard words do not override an explicit woman. */
+internal fun protagonistSex(appearance: String): ProtagonistSex {
+    val text = appearance.trim()
+    if (text.isEmpty()) return ProtagonistSex.UNSPECIFIED
+    val female = femaleMarkers.any { text.contains(it) } || containsUnprefixed(text, "她", '其')
+    val explicitMale = explicitMaleMarkers.any { text.contains(it) } || containsUnprefixed(text, "他", '其')
+    val maleRole = maleRoleMarkers.any { text.contains(it) }
+    if (female && (explicitMale || maleRole)) return ProtagonistSex.UNSPECIFIED
+    if (female) return ProtagonistSex.FEMALE
+    val male = explicitMale || maleRole || beardTerms.any { text.contains(it) }
+    return if (male) ProtagonistSex.MALE else ProtagonistSex.UNSPECIFIED
+}
+
+internal fun appearanceForSheet(appearance: String, sex: ProtagonistSex): String {
+    var text = appearance.trim()
+    if (sex == ProtagonistSex.FEMALE) {
+        beardTerms.sortedByDescending { it.length }.forEach { term -> text = text.replace(term, "") }
+        text = text.replace(Regex("[，,、；;\\s]+"), "，").trim('，', ' ', '。', '、', '；', ';')
+    }
+    return text
+}
+
 internal fun sheetAppearance(characters: List<StoryCharacter>, flaggedPrompts: List<String>): String {
     val explicit = protagonistAppearance(characters)
     if (explicit.isNotBlank()) return explicit
     return flaggedPrompts.map { it.trim() }.filter { it.isNotBlank() }.take(2).joinToString("\n")
-        .ifBlank { "写实中国古代主角，脸型、发髻、胡须、服装和年龄保持稳定。不要改成配角或路人的脸。" }
+        .ifBlank { "写实中国古代主角。只保留文中已经写明的年龄、脸型、发式和服装。" }
 }
 
 internal fun planImageBatch(shots: List<Pair<Int, Boolean>>, referenceReady: Boolean): ImageBatchPlan {
@@ -188,12 +232,30 @@ internal fun parseStoryCharacters(root: JSONObject?): List<StoryCharacter> {
 }
 
 internal const val CHARACTER_REFERENCE_LOCK =
-    "输入图片只作为人物的脸型、发型、胡须、衣服和年龄参考，不要复制它的构图或背景。请根据镜头描述生成一张全新的写实古装场景。"
+    "输入图片只作为人物的脸型、发式、服装和年龄参考。参考图里没有的特征不要自行添加，没有胡须就不要加胡须。不要复制它的构图或背景。请根据镜头描述生成一张全新的写实古装场景。"
+
+internal fun characterSheetRequestPrompt(savedPrompt: String, computedPrompt: String): String {
+    val saved = savedPrompt.trim()
+    return if (saved.isNotEmpty()) saved else computedPrompt.trim()
+}
+
+/** Saves the edited sheet prompt and leaves the existing image, URL, and status untouched. */
+internal fun storeReferencePrompt(reference: CharacterReference, prompt: String) {
+    reference.prompt = prompt.trim()
+}
 
 internal fun buildCharacterSheetPrompt(globalImagePrompt: String, stylePreset: String, appearance: String): String {
-    val sheet = "为主角生成一张人物参考图：光线清楚，正面或三分之四侧面，中景或全身，服装统一。外观：" +
-        appearance.trim().ifBlank { "写实中国古代主角，脸型、发髻、胡须、服装和年龄保持稳定" } +
-        "。写实中国古代影视剧照，不要Q版、漫画或图集拼贴。画面不要文字、字幕、Logo或水印。背景简洁，不要复杂剧情场景。"
+    val sex = protagonistSex(appearance)
+    val described = appearanceForSheet(appearance, sex).ifBlank {
+        "只使用文中已经写明的年龄、脸型、发式和服装"
+    }
+    val gender = when (sex) {
+        ProtagonistSex.FEMALE -> "主角是女性，按女性的脸、发式、体态和服装来画。"
+        ProtagonistSex.MALE -> "主角是男性，按男性的脸、发式、体态和服装来画。"
+        ProtagonistSex.UNSPECIFIED -> "这段描述没有写明主角性别。只画已经写明的特征，不要默认画成男性，不要自行添加胡须。"
+    }
+    val sheet = "为主角生成一张人物参考图。$gender 光线清楚，正面或三分之四侧面，中景或全身，服装统一。外观：$described。" +
+        "写实中国古代影视剧照，不要Q版、漫画或图集拼贴。画面不要文字、字幕、Logo或水印。背景简洁，不要复杂剧情场景。"
     return listOf(globalImagePrompt, stylePreset, sheet).filter { it.isNotBlank() }.joinToString("\n")
 }
 
