@@ -123,6 +123,8 @@ class ShotVoicePreviewTest {
 
         assertTrue(playVoice.contains("buildVoicePreview"))
         assertTrue(playVoice.contains("voicePreviewGate.isCurrent(token)"))
+        assertTrue(playVoice.contains("isActive"))
+        assertTrue(main.contains("import kotlinx.coroutines.isActive"))
         assertTrue(main.contains("试听全部 · 配音、BGM和镜头音效"))
         assertTrue(functionBody(main, "private fun buildVoicePreview").contains("concatAudio"))
 
