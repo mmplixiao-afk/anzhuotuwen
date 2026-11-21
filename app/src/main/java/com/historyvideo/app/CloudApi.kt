@@ -373,7 +373,7 @@ class CloudApi {
             append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
             append(JSONArray().apply {
                 units.forEach { unit -> put(JSONObject().put("id", unit.id)
-                    .put("text", unit.text).put("fixed_shot", unit.fixedShot)
+                    .put("text", PronunciationMarkup.clean(unit.text)).put("fixed_shot", unit.fixedShot)
                     .put("can_end_shot", unit.id == units.size || StoryboardRules.endsAtPunctuation(unit.text))) }
             }.toString())
         }
@@ -709,27 +709,7 @@ class CloudApi {
                onGenerated: () -> Unit = {}) {
         val url = config.baseUrl.ifBlank { "https://openspeech.bytedance.com/api/v3/tts/unidirectional" }
         require(url.startsWith("https://")) { "TTS URL 必须使用 HTTPS" }
-        val additions = JSONObject()
-            .put("disable_markdown_filter", true)
-            .put("enable_language_detector", true)
-            .put("enable_latex_tn", true)
-            .put("disable_default_bit_rate", true)
-            .put("max_length_to_filter_parenthesis", 0)
-            .put("cache_config", JSONObject().put("text_type", 1).put("use_cache", true))
-        if (config.model == "seed-icl-2.0") additions.put("tone_fidelity", true)
-        val requestParams = JSONObject()
-            .put("text", spoken)
-            .put("speaker", voiceId)
-            .put("audio_params", JSONObject().put("format", "mp3")
-                .put("sample_rate", 24000).put("bit_rate", 128000)
-                .put("speech_rate", ((speed - 1f) * 100).toInt().coerceIn(-50, 100))
-                .put("loudness_rate", 0))
-            .put("additions", additions.toString())
-        if (config.model == "seed-icl-2.0") {
-            requestParams.put("model", "seed-tts-2.0-expressive")
-        }
-        val body = JSONObject().put("user", JSONObject().put("uid", "rensheng-fuben"))
-            .put("req_params", requestParams)
+        val body = doubaoRequest(config, voiceId, speed, spoken)
         val response = post(url, body, config.key, true,
             config.model.ifBlank { "volc.service_type.10029" })
         val parts = parseDoubaoResponse(response)
@@ -749,5 +729,32 @@ class CloudApi {
         }
         require(pending.length() > 1000) { "TTS 返回了空音频" }
         Files.move(pending.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
+
+    internal fun doubaoRequest(config: ProviderConfig, voiceId: String, speed: Float, spoken: String): JSONObject {
+        val additions = JSONObject()
+            .put("disable_markdown_filter", true)
+            .put("enable_language_detector", true)
+            .put("enable_latex_tn", true)
+            .put("disable_default_bit_rate", true)
+            .put("max_length_to_filter_parenthesis", 0)
+            .put("cache_config", JSONObject().put("text_type", 1).put("use_cache", true))
+        if (config.model == "seed-icl-2.0") additions.put("tone_fidelity", true)
+        // Marks become pronunciation_dict entries. req_params.text stays unmarked:
+        // parenthesis content can be read as an aside, and ICL 2.0 does not support SSML.
+        val textForSpeech = PronunciationMarkup.mergeIntoAdditions(additions, spoken)
+        val requestParams = JSONObject()
+            .put("text", textForSpeech)
+            .put("speaker", voiceId)
+            .put("audio_params", JSONObject().put("format", "mp3")
+                .put("sample_rate", 24000).put("bit_rate", 128000)
+                .put("speech_rate", ((speed - 1f) * 100).toInt().coerceIn(-50, 100))
+                .put("loudness_rate", 0))
+            .put("additions", additions.toString())
+        if (config.model == "seed-icl-2.0") {
+            requestParams.put("model", "seed-tts-2.0-expressive")
+        }
+        return JSONObject().put("user", JSONObject().put("uid", "rensheng-fuben"))
+            .put("req_params", requestParams)
     }
 }

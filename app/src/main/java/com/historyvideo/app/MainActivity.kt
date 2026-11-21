@@ -1373,6 +1373,7 @@ private fun ApiSettingsScreen(settings: AppSettings, onMessage: (String) -> Unit
                     ApiInputField("模型 / Resource ID", model, { model = it }, enabled = !testing)
                     ApiInputField("音色 / 说话人 ID", voiceId, { voiceId = it }, enabled = !testing)
                     ApiInputField("语速 0.5～2.0", speed, { speed = it }, enabled = !testing)
+                    Text(PronunciationMarkup.HINT, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
                 } else {
                     ApiInputField("接口地址", url, { url = it }, enabled = !testing)
                     ApiInputField("接口类型", interfaceType, { interfaceType = it }, enabled = !testing)
@@ -1554,6 +1555,20 @@ private fun PromptSettingsScreen(settings: AppSettings, onMessage: (String) -> U
 }
 
 @Composable
+private fun PronunciationNote(sample: String) {
+    Text(PronunciationMarkup.HINT, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+    val parsed = remember(sample) { runCatching { PronunciationMarkup.parse(sample) } }
+    val markup = parsed.getOrNull()
+    val message = parsed.exceptionOrNull()?.message
+    if (!message.isNullOrBlank()) {
+        Text(message, style = MaterialTheme.typography.bodySmall, color = HistoryColors.cinnabar)
+    } else if (markup != null && markup.rules.isNotEmpty()) {
+        Text("已识别 ${markup.rules.size} 条读音。配音按标注朗读，字幕只显示去掉括号后的原文。",
+            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+    }
+}
+
+@Composable
 private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectStore, busy: Boolean,
                              onSave: (VideoProject) -> Unit,
                              onRun: (VideoProject, String, Int) -> Unit,
@@ -1638,6 +1653,7 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
         Text("配音", style = MaterialTheme.typography.titleLarge)
         FormCard {
             CompactInput(text, { text = it }, enabled = !busy, minLines = 2)
+            PronunciationNote(text)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(onClick = { saveInputs(); onRun(project, GenerationService.AUDIO, shot.id) },
                     enabled = !busy, modifier = Modifier.weight(1f).height(48.dp), shape = RoundedCornerShape(24.dp)) {
@@ -1735,6 +1751,7 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                     Text("已有图片和配音会保留，只需生成新镜头的素材后重新渲染。",
                         style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
                     InputTile("新镜头配音文字", insertedText, { insertedText = it }, minLines = 3)
+                    PronunciationNote(insertedText)
                     InputTile("新镜头生图提示词", insertedPrompt, { insertedPrompt = it }, minLines = 3)
                 }
             },
@@ -2181,7 +2198,7 @@ private fun ProjectCostDetailsScreen(project: VideoProject, store: ProjectStore,
                                 if (entry.content.isNotBlank()) TextButton(onClick = { contentEntryId = entry.id }) { Text("查看本次生图提示词") }
                             }
                             "voice" -> {
-                                val spoken = entry.content.ifBlank { currentShot?.text.orEmpty() }
+                                val spoken = PronunciationMarkup.display(entry.content.ifBlank { currentShot?.text.orEmpty() })
                                 if (spoken.isNotBlank()) Text(spoken, style = MaterialTheme.typography.bodyMedium)
                                 else Text("此记录未保存配音文字", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
                                 if (media != null) OutlinedButton(onClick = { playAudio(entry, media) }, shape = RoundedCornerShape(8.dp)) {
@@ -2296,7 +2313,7 @@ private fun ProjectOverviewScreen(project: VideoProject,
         selectedCategory = "", onSelectCategory = onFilterCosts)
     Text("本卷内容", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 4.dp))
     val items = listOf(
-        ProjectContentItem("成文", if (project.script.isBlank()) "题目、文案和封面文案" else "正文已保存 · ${project.script.length} 字", onOpenScript,
+        ProjectContentItem("成文", if (project.script.isBlank()) "题目、文案和封面文案" else "正文已保存 · ${PronunciationMarkup.display(project.script).length} 字", onOpenScript,
             project.script.isNotBlank()),
         ProjectContentItem("生图", "${project.shots.size} 个镜头 · 图片与配音", onOpenShots, project.shots.isNotEmpty()),
         ProjectContentItem("画面与章法", "字幕、转场、封面与开头节奏", onOpenEffects, project.shots.isNotEmpty())
@@ -2739,12 +2756,12 @@ private fun ScriptScreen(project: VideoProject,
             val startShot = project.shots.firstOrNull { it.id == bgmStartShotId } ?: project.shots.first()
             Text("BGM 起播分镜", style = MaterialTheme.typography.labelLarge, color = HistoryColors.muted)
             Box(Modifier.fillMaxWidth()) {
-                ChoiceTile("", "第 ${project.shotNumber(startShot.id)} 镜 · ${startShot.text.take(24)}",
+                ChoiceTile("", "第 ${project.shotNumber(startShot.id)} 镜 · ${PronunciationMarkup.display(startShot.text).take(24)}",
                     onClick = { bgmStartMenu = true }, enabled = !busy && bgmId != "none", dropdown = true)
                 DropdownMenu(expanded = bgmStartMenu && !busy, onDismissRequest = { bgmStartMenu = false },
                     modifier = Modifier.fillMaxWidth(0.9f).heightIn(max = 360.dp)) {
                     project.shots.forEach { shot ->
-                        DropdownMenuItem(text = { Text("第 ${project.shotNumber(shot.id)} 镜 · ${shot.text.take(36)}",
+                        DropdownMenuItem(text = { Text("第 ${project.shotNumber(shot.id)} 镜 · ${PronunciationMarkup.display(shot.text).take(36)}",
                             maxLines = 2, overflow = TextOverflow.Ellipsis) }, onClick = {
                             bgmStartShotId = shot.id; bgmStartMenu = false; saveInputs()
                         })
@@ -2782,9 +2799,14 @@ private fun ScriptScreen(project: VideoProject,
     FormCard {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("正文", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
-            Text("${script.codePointCount(0, script.length)} 字", color = HistoryColors.muted)
+            val spokenCount = remember(script) {
+                runCatching { PronunciationMarkup.clean(script).let { it.codePointCount(0, it.length) } }.getOrNull()
+            }
+            Text(if (spokenCount != null) "$spokenCount 字" else "读音有误",
+                color = if (spokenCount != null) HistoryColors.muted else HistoryColors.cinnabar)
         }
         CompactInput(script, { script = it }, enabled = !busy, minLines = 7)
+        PronunciationNote(script)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             OutlinedButton(onClick = { saveInputs(saveScript = true) },
                 enabled = !busy && script.isNotBlank(), modifier = Modifier.weight(1f).height(52.dp),
@@ -2949,7 +2971,8 @@ private fun ShotListItem(shot: Shot, displayNumber: Int, imageFile: File, busy: 
                         else -> "未生成"
                     }, if (imageReady) HistoryColors.green else HistoryColors.muted)
                 }
-                Text(shot.text, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                Text(PronunciationMarkup.display(shot.text), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodyMedium)
                 Text("${"%.1f".format(shot.duration)} 秒 · $soundLabel", style = MaterialTheme.typography.bodySmall,
                     color = HistoryColors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {

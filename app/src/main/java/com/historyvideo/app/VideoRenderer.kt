@@ -297,15 +297,17 @@ class VideoRenderer(private val store: ProjectStore) {
     }
 
     private fun subtitleSource(project: VideoProject, shot: Shot): Pair<String, List<String>> {
+        val spoken = PronunciationMarkup.clean(shot.text)
+        val chunks = PronunciationMarkup.cleanChunks(shot.subtitleChunks, spoken)
         val hasCover = normalizeCoverText(project.coverText).isNotBlank()
-        if (!hasCover) return shot.text to shot.subtitleChunks
+        if (!hasCover) return spoken to chunks
         if (shot.id == 1) return "" to emptyList()
         if (project.shotNumber(shot.id) == 2) {
             val firstShot = project.shots.firstOrNull { it.id == 1 }
-            val remainder = firstShot?.let { openingBody(it.text) }
-            if (!remainder.isNullOrBlank()) return remainder + shot.text to emptyList()
+            val remainder = firstShot?.let { openingBody(PronunciationMarkup.clean(it.text)) }
+            if (!remainder.isNullOrBlank()) return remainder + spoken to emptyList()
         }
-        return shot.text to shot.subtitleChunks
+        return spoken to chunks
     }
 
     private fun subtitleCharWidth(codePoint: Int): Double {

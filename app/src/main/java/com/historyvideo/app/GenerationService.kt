@@ -362,7 +362,8 @@ class GenerationService : Service() {
             update(project, "tts", "running", "正在配音 ${index + 1}/${project.shots.size}", index, project.shots.size)
             if (target.length() < 1000 || shot.audioStatus != "done") {
                 val replacement = File(target.parentFile, target.name + ".new.mp3")
-                val costEntry = CostEntry.voice("第 ${project.shotNumber(shot.id)} 镜配音", shot.text, shot.id)
+                val spoken = PronunciationMarkup.clean(shot.text)
+                val costEntry = CostEntry.voice("第 ${project.shotNumber(shot.id)} 镜配音", spoken, shot.id)
                 api.doubao(tts, settings.voiceId, settings.speed, shot.text, replacement,
                     onGenerated = { ProjectCosts(store).add(project.id, costEntry) })
                 ProjectCosts(store).attachMedia(project.id, costEntry.id, replacement)
@@ -488,7 +489,7 @@ class GenerationService : Service() {
         require(originalPrompt.isNotBlank()) { "请先填写本镜生图提示词" }
         val input = buildString {
             append("视频主题：").append(project.title).append("\n")
-            append("本镜口播：").append(shot.text).append("\n")
+            append("本镜口播：").append(PronunciationMarkup.clean(shot.text)).append("\n")
             if (shot.visual.isNotBlank()) append("本镜画面说明：").append(shot.visual).append("\n")
             if (project.storyboardStylePreset.isNotBlank()) {
                 append("统一画风：").append(project.storyboardStylePreset).append("\n")
@@ -528,7 +529,8 @@ class GenerationService : Service() {
         val target = store.audio(project, shot)
         val replacement = File(target.parentFile, target.name + ".new.mp3")
         update(project, "tts", "running", "正在生成第 ${project.shotNumber(shotId)} 段配音", 0, 1)
-        val costEntry = CostEntry.voice("第 ${project.shotNumber(shotId)} 镜重配音", shot.text, shotId)
+        val spoken = PronunciationMarkup.clean(shot.text)
+        val costEntry = CostEntry.voice("第 ${project.shotNumber(shotId)} 镜重配音", spoken, shotId)
         api.doubao(settings.provider("tts"), settings.voiceId, settings.speed, shot.text, replacement,
             onGenerated = { ProjectCosts(store).add(project.id, costEntry) })
         ProjectCosts(store).attachMedia(project.id, costEntry.id, replacement)
