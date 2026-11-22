@@ -146,6 +146,7 @@ import androidx.compose.material3.Shapes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.DateFormat
@@ -196,6 +197,8 @@ private val HistoryTypography = Typography().let { base ->
 class MainActivity : ComponentActivity() {
     private lateinit var store: ProjectStore
     private var player: MediaPlayer? = null
+    private val voicePreviewGate = VoicePreviewGate()
+    private var voicePreviewKey: String? = null
     private var notificationProjectId by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -279,27 +282,44 @@ class MainActivity : ComponentActivity() {
         startForegroundService(intent)
     }
 
+    private fun stopVoicePreview() {
+        voicePreviewGate.issue()
+        voicePreviewKey = null
+        val current = player
+        player = null
+        current?.release()
+    }
+
     private fun play(project: VideoProject, shot: Shot): String {
-        val file = store.audio(project, shot)
-        require(shot.audioStatus == "done" && file.isFile && file.length() > 1000) {
-            "第 ${project.shotNumber(shot.id)} 段配音尚未生成，请先完成配音"
+        val decision = ShotVoicePreview.decide(
+            project.shotNumber(shot.id), shot.audioStatus, store.audio(project, shot))
+        return when (decision) {
+            is ShotVoicePreview.Decision.Ready -> playFile(decision.file, decision.message)
+            is ShotVoicePreview.Decision.Missing -> error(decision.message)
         }
-        return playFile(file, "正在试听第 ${project.shotNumber(shot.id)} 段配音")
     }
 
     private fun playFile(file: File, message: String): String {
-        require(file.isFile && file.length() > 1000) { "音频文件不存在或为空" }
-        player?.release()
+        require(file.isFile && file.length() > ShotVoicePreview.MIN_BYTES) { "音频文件不存在或为空" }
+        val previous = player
+        player = null
+        previous?.release()
         player = MediaPlayer().apply {
             setDataSource(file.absolutePath)
             setOnPreparedListener { it.start() }
             setOnCompletionListener { completed ->
                 completed.release()
-                if (player === completed) player = null
+                if (player === completed) {
+                    player = null
+                    voicePreviewKey = null
+                }
             }
             setOnErrorListener { failed, _, _ ->
                 failed.release()
-                if (player === failed) player = null
+                if (player === failed) {
+                    player = null
+                    voicePreviewKey = null
+                }
                 true
             }
             prepareAsync()
@@ -313,8 +333,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        player?.release()
-        player = null
+        stopVoicePreview()
         super.onDestroy()
     }
 
@@ -382,8 +401,17 @@ class MainActivity : ComponentActivity() {
         fun navigate(to: String) {
             focusManager.clearFocus(force = true)
             keyboard?.hide()
+            val nextScreen = if (to == "topics" || to == "topic_editor") "script" else to
+            if (!ShotVoicePreview.keepPlayback(nextScreen, selectedId, selectedShotId, voicePreviewKey)) {
+                stopVoicePreview()
+            }
             navigation = navigation + to
             message = ""
+        }
+
+        fun switchShot(shotId: Int) {
+            if (!ShotVoicePreview.keepPlayback("shot", selectedId, shotId, voicePreviewKey)) stopVoicePreview()
+            selectedShotId = shotId
         }
 
         fun newProject() {
@@ -399,7 +427,7 @@ class MainActivity : ComponentActivity() {
             if (navigation.size > 1) {
                 focusManager.clearFocus(force = true)
                 keyboard?.hide()
-                player?.release(); player = null
+                stopVoicePreview()
                 navigation = navigation.dropLast(1)
                 message = ""
             }
@@ -407,6 +435,11 @@ class MainActivity : ComponentActivity() {
 
         BackHandler(enabled = navigation.size > 1) { goBack() }
         LaunchedEffect(screen) { message = "" }
+        LaunchedEffect(pageKey) {
+            if (!ShotVoicePreview.keepPlayback(screen, selectedId, selectedShotId, voicePreviewKey)) {
+                stopVoicePreview()
+            }
+        }
         LaunchedEffect(Unit) {
             // Restore old topic routes into the combined writing page after an app update.
             navigation = navigation.map { if (it == "topics" || it == "topic_editor") "script" else it }
@@ -442,6 +475,7 @@ class MainActivity : ComponentActivity() {
                 selectedId = project.id
                 focusManager.clearFocus(force = true); keyboard?.hide()
                 message = ""
+                stopVoicePreview()
                 navigation = listOf("home", CurrentProjectRules.resumeScreen(project))
             }
         }
@@ -455,7 +489,7 @@ class MainActivity : ComponentActivity() {
             val promptName = when (action) {
                 GenerationService.SCRIPT -> "script"
                 GenerationService.SHOTS -> "shots"
-                GenerationService.IMAGE_ALL, GenerationService.IMAGE -> "image"
+                GenerationService.IMAGE_ALL, GenerationService.IMAGE, GenerationService.CHARACTER_REFERENCE -> "image"
                 GenerationService.IMAGE_OPTIMIZE, GenerationService.IMAGE_OPTIMIZE_ALL -> "image_failure"
                 else -> null
             }
@@ -488,33 +522,39 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // 分镜「试听」只播已生成的原配音文件，不等待音效解析、时长探测或混音。
         fun playShot(project: VideoProject, shot: Shot) {
-            message = "正在混合本镜配音和音效…"
-            scope.launch {
-                val result = runCatching {
-                    withContext(Dispatchers.IO) {
-                        val output = File(store.directory(project.id), "temp/shot_${shot.id}_preview.m4a")
-                        VideoRenderer(store).previewShotAudio(project, shot.id, output)
-                    }
+            stopVoicePreview()
+            voicePreviewKey = ShotVoicePreview.shotKey(project.id, shot.id)
+            runCatching { play(project, shot) }
+                .onSuccess { message = it }
+                .onFailure {
+                    voicePreviewKey = null
+                    message = it.message.orEmpty()
                 }
-                result.onSuccess { file ->
-                    runCatching { playFile(file, "正在试听第 ${project.shotNumber(shot.id)} 镜配音与音效") }
-                        .onFailure { message = it.message.orEmpty() }
-                }.onFailure { message = it.message.orEmpty() }
-            }
         }
 
         fun playVoice(project: VideoProject) {
+            val token = voicePreviewGate.issue()
+            voicePreviewKey = ShotVoicePreview.allKey(project.id)
             message = "正在合并配音，请稍候..."
             scope.launch {
                 val result = runCatching {
                     withContext(Dispatchers.IO) { buildVoicePreview(project) }
                 }
+                if (!isActive || !voicePreviewGate.isCurrent(token)) return@launch
                 result.onSuccess { file ->
                     runCatching { playFile(file, "正在试听配音、BGM和镜头音效") }
                         .onSuccess { message = it }
-                        .onFailure { message = it.message.orEmpty() }
-                }.onFailure { error -> message = error.message.orEmpty() }
+                        .onFailure {
+                            voicePreviewKey = null
+                            message = it.message.orEmpty()
+                        }
+                }.onFailure { error ->
+                    if (!voicePreviewGate.isCurrent(token)) return@onFailure
+                    voicePreviewKey = null
+                    message = error.message.orEmpty()
+                }
             }
         }
 
@@ -603,12 +643,12 @@ class MainActivity : ComponentActivity() {
                             }
                             if (screen == "shot" && selected != null) {
                                 val shotIndex = selected.shots.indexOfFirst { it.id == selectedShotId }
-                                IconButton(onClick = { selectedShotId = selected.shots[shotIndex - 1].id },
+                                IconButton(onClick = { switchShot(selected.shots[shotIndex - 1].id) },
                                     enabled = selected.status != "running" && shotIndex > 0) {
                                     Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "上一镜头")
                                 }
                                 Text("${shotIndex + 1}/${selected.shots.size}", style = MaterialTheme.typography.labelMedium)
-                                IconButton(onClick = { selectedShotId = selected.shots[shotIndex + 1].id },
+                                IconButton(onClick = { switchShot(selected.shots[shotIndex + 1].id) },
                                     enabled = selected.status != "running" && shotIndex >= 0 && shotIndex < selected.shots.lastIndex) {
                                     Icon(Icons.Filled.KeyboardArrowRight, contentDescription = "下一镜头")
                                 }
@@ -705,6 +745,7 @@ class MainActivity : ComponentActivity() {
                     "shots" -> if (selected != null) ShotsScreen(
                         selected,
                         store,
+                        imagePrompt = settings.prompt("image"),
                         onSave = ::saveProject,
                         onRun = ::runProject,
                         onPlay = ::playShot,
@@ -717,13 +758,13 @@ class MainActivity : ComponentActivity() {
                             ShotDetailScreen(selected, shot, store, selected.status == "running",
                                 onSave = ::saveProject, onRun = ::runProject, onPlay = ::playShot,
                                 onNavigate = { nextId ->
-                                    if (selected.shots.any { it.id == nextId }) selectedShotId = nextId
+                                    if (selected.shots.any { it.id == nextId }) switchShot(nextId)
                                 }, onInsert = { newText, newPrompt ->
                                     runCatching {
                                         val updated = VideoProject.from(selected.json())
                                         val inserted = store.insertShotAfter(updated, shot.id, newText, newPrompt)
                                         saveProject(updated)
-                                        selectedShotId = inserted.id
+                                        switchShot(inserted.id)
                                         message = "已插入新镜头，原图片和配音已保留"
                                     }.onFailure { message = it.message.orEmpty() }.isSuccess
                                 }, onMotionChange = { setting ->
@@ -738,7 +779,7 @@ class MainActivity : ComponentActivity() {
                                     updated.shots.firstOrNull { it.id == shot.id }?.soundEffects = effects.toMutableList()
                                     updated.renderRevision = java.util.UUID.randomUUID().toString()
                                     saveProject(updated)
-                                    message = "本镜音效已保存，试听或重新渲染后生效"
+                                    message = "本镜音效已保存，重新渲染后生效"
                                 }, onCutoutChange = { enabled ->
                                     runCatching {
                                         if (enabled) CutoutProcessor(store).requireReady()
@@ -1647,6 +1688,9 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
             }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             StatusPill(imageSizeLabel(project.imageSize), if (shot.imageStatus == "failed") HistoryColors.cinnabar else HistoryColors.green)
         }
+        Text(if (shot.usesProtagonistReference) "本镜标明主角出镜，生成时会使用人物参考图。"
+            else "本镜不垫主角参考图，仍按文字生图。",
+            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         if (shot.imageStatus == "failed" && shot.error.isNotBlank()) {
             Text("失败原因：${shot.error}", color = HistoryColors.cinnabar, style = MaterialTheme.typography.bodySmall)
         }
@@ -1664,7 +1708,7 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                 }
                 IconButton(onClick = { onPlay(project, shot) }, enabled = !busy,
                     modifier = Modifier.background(HistoryColors.cinnabarSoft, CircleShape)) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = "试听配音和音效", tint = HistoryColors.cinnabar)
+                    Icon(Icons.Filled.PlayArrow, contentDescription = "试听配音", tint = HistoryColors.cinnabar)
                 }
             }
         }
@@ -1690,7 +1734,8 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
                     })
                 }
             }
-            Text("试听本镜会同步播放已选音效。", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            Text("试听只播放本镜已生成的原配音。音效在重新渲染成片时混入。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         }
         FormCard {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -2848,6 +2893,7 @@ private fun ScriptScreen(project: VideoProject,
 
 @Composable
 private fun ShotsScreen(project: VideoProject, store: ProjectStore,
+                        imagePrompt: String,
                         onSave: (VideoProject) -> Unit,
                         onRun: (VideoProject, String, Int) -> Unit,
                         onPlay: (VideoProject, Shot) -> Unit,
@@ -2858,12 +2904,36 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
     val busy = project.status == "running"
     var missingImagesOnly by rememberSaveable(project.id) { mutableStateOf(false) }
     var confirmBatchOptimize by rememberSaveable(project.id) { mutableStateOf(false) }
+    var confirmReference by rememberSaveable(project.id) { mutableStateOf(false) }
     val failedImageIds = project.shots.filter { it.imageStatus == "failed" }.map { it.id }
     val missingImageIds = project.shots.filter { shot ->
         val image = store.image(project, shot)
         shot.imageStatus != "done" || !image.isFile || image.length() <= 1000
     }.map { it.id }.toSet()
     val visibleShots = if (missingImagesOnly) project.shots.filter { it.id in missingImageIds } else project.shots
+    val referenceAppearance = sheetAppearance(
+        project.characters,
+        project.shots.filter { it.usesProtagonistReference }.map { it.imagePrompt }
+    )
+    val computedReferencePrompt = buildCharacterSheetPrompt(
+        imagePrompt, project.storyboardStylePreset, referenceAppearance
+    )
+    val storedReferencePrompt = project.characterReferences.firstOrNull()?.prompt?.trim().orEmpty()
+    var referenceDraft by remember(project.id) {
+        mutableStateOf(storedReferencePrompt.ifBlank { computedReferencePrompt })
+    }
+    var referenceNote by remember(project.id) { mutableStateOf("") }
+    fun commitReferencePrompt() {
+        val reference = project.characterReferences.firstOrNull() ?: CharacterReference().also {
+            project.characterReferences += it
+        }
+        val text = referenceDraft.trim().ifBlank { computedReferencePrompt }
+        storeReferencePrompt(reference, text)
+        if (referenceDraft.isBlank()) referenceDraft = text
+        onSave(project)
+    }
+    val referenceFile = store.characterReferenceImage(project)
+    val referenceReady = referenceFile.isFile && referenceFile.length() > 1000
     ProjectProgress(project)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         StepCaption(2, "图片按镜头逐张生成，配音按正文批量生成", Modifier.weight(1f))
@@ -2889,8 +2959,38 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
                     }
                 }
         }
+        val protagonistShots = project.shots.count { it.usesProtagonistReference }
+        FormCard {
+            Text("人物参考图", style = MaterialTheme.typography.titleLarge)
+            ShotThumbnail(referenceFile, Modifier.size(96.dp).clip(RoundedCornerShape(16.dp)),
+                contentScale = ContentScale.Crop)
+            Text(if (referenceReady) "已保存主角参考图。只用于标明主角出镜的镜头，保持参考图里已有的脸、发式、服装和年龄。"
+                else "还没有主角参考图。生成标明主角出镜的镜头前会先创建一张。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            Text("空镜、道具镜和未标注的旧镜头仍按文字生图，不会把配角改成主角。当前标明主角出镜 $protagonistShots 镜。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            Text("参考图生图提示词", style = MaterialTheme.typography.titleMedium)
+            Text(if (storedReferencePrompt.isBlank())
+                "还没有单独保存过。下面按当前主角外观整理，可先改再保存。已有参考图不会因此被删除。"
+                else "下次生成人物参考图会原样使用这份已保存的文字。",
+                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+            CompactInput(referenceDraft, { referenceDraft = it; referenceNote = "" }, enabled = !busy, minLines = 6)
+            if (referenceNote.isNotBlank()) {
+                Text(referenceNote, style = MaterialTheme.typography.bodySmall, color = HistoryColors.teal)
+            }
+            OutlinedButton(onClick = {
+                commitReferencePrompt()
+                referenceNote = "提示词已保存。重新生成后才会按这份文字重画参考图，已有镜头图片不会清除。"
+            }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
+                Text("保存提示词")
+            }
+            OutlinedButton(onClick = { confirmReference = true }, enabled = !busy,
+                modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
+                Text(if (referenceReady) "重新生成参考图" else "生成参考图")
+            }
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { onRun(project, GenerationService.IMAGE_ALL, 0) },
+            Button(onClick = { commitReferencePrompt(); onRun(project, GenerationService.IMAGE_ALL, 0) },
                 enabled = !busy, modifier = Modifier.weight(1f).height(54.dp), shape = RoundedCornerShape(28.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) { Text("生成图片") }
             OutlinedButton(onClick = { onRun(project, GenerationService.VOICE_ALL, 0) },
@@ -2937,6 +3037,21 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
             dismissButton = {
                 TextButton(onClick = { confirmBatchOptimize = false }) { Text("取消") }
             }
+        )
+    }
+    if (confirmReference) {
+        AlertDialog(
+            onDismissRequest = { confirmReference = false },
+            title = { Text("重新生成参考图") },
+            text = { Text("按上面这份提示词重新生成主角参考图，并换成新的图片地址。已有镜头图片不会清除，也不会自动重画。之后再生成标明主角出镜的镜头时，会垫这张新参考图。此操作按一张图片计费。") },
+            confirmButton = {
+                Button(onClick = {
+                    confirmReference = false
+                    commitReferencePrompt()
+                    onRun(project, GenerationService.CHARACTER_REFERENCE, 0)
+                }) { Text(if (referenceReady) "重新生成参考图" else "生成参考图") }
+            },
+            dismissButton = { TextButton(onClick = { confirmReference = false }) { Text("取消") } }
         )
     }
 }
