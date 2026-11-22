@@ -876,6 +876,7 @@ class CloudApi {
         val url = config.baseUrl.ifBlank { "https://openspeech.bytedance.com/api/v3/tts/unidirectional" }
         require(url.startsWith("https://")) { "TTS URL 必须使用 HTTPS" }
         val body = doubaoRequest(config, voiceId, speed, spoken)
+        logDoubaoRequest(config.model, body)
         val response = post(url, body, config.key, true,
             config.model.ifBlank { "volc.service_type.10029" })
         val parts = parseDoubaoResponse(response)
@@ -909,6 +910,14 @@ class CloudApi {
         // Marks become pronunciation_dict entries. req_params.text stays unmarked:
         // parenthesis content can be read as an aside, and ICL 2.0 does not support SSML.
         val textForSpeech = PronunciationMarkup.mergeIntoAdditions(additions, spoken)
+        // Volcano's cache key is the text, not the dictionary. The same clean
+        // sentence would otherwise come back with the previous pronunciation.
+        val ruleCount = additions.optJSONObject("pronunciation_dict")?.optJSONArray("tone")?.length() ?: 0
+        if (ruleCount > 0) {
+            val cache = additions.optJSONObject("cache_config") ?: JSONObject()
+            cache.put("use_cache", false)
+            additions.put("cache_config", cache)
+        }
         val requestParams = JSONObject()
             .put("text", textForSpeech)
             .put("speaker", voiceId)
@@ -922,5 +931,26 @@ class CloudApi {
         }
         return JSONObject().put("user", JSONObject().put("uid", "rensheng-fuben"))
             .put("req_params", requestParams)
+    }
+
+    private fun logDoubaoRequest(resource: String, body: JSONObject) {
+        val params = body.optJSONObject("req_params") ?: return
+        val additions = runCatching { JSONObject(params.optString("additions")) }.getOrNull()
+        val rules = additions?.optJSONObject("pronunciation_dict")?.optJSONArray("tone")
+        val shown = buildString {
+            if (rules == null) return@buildString
+            val limit = minOf(rules.length(), 8)
+            for (index in 0 until limit) {
+                if (index > 0) append(" | ")
+                append(rules.optString(index))
+            }
+            if (rules.length() > limit) append(" | …")
+        }
+        android.util.Log.i(
+            "DoubaoTts",
+            "resource=$resource model=${params.optString("model")} textChars=${params.optString("text").length} " +
+                "rules=${rules?.length() ?: 0} useCache=${additions?.optJSONObject("cache_config")?.optBoolean("use_cache")} " +
+                "toneFidelity=${additions?.opt("tone_fidelity")} dict=$shown"
+        )
     }
 }

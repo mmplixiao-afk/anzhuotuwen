@@ -102,6 +102,17 @@ data class Shot(
     var motionSetting: ShotMotionSetting? = null,
     var motionPlanSetting: ShotMotionSetting? = null
 ) {
+    /**
+     * A changed narration must not keep the previous MP3. Render treats any
+     * existing file as finished audio, and the clean sentence sent to TTS can
+     * be identical after a pronunciation edit.
+     */
+    fun retireVoiceIfNarrationChanged(previousText: String) {
+        if (text == previousText) return
+        audioStatus = "pending"
+        audioRevision = java.util.UUID.randomUUID().toString()
+    }
+
     fun json() = JSONObject().apply {
         put("shot_id", id); put("text", text); put("image_prompt", imagePrompt)
         put("duration", duration); put("shot_type", shotType); put("has_person", hasPerson)

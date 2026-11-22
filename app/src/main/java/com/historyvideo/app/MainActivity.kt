@@ -1634,10 +1634,10 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
     var selectedSoundEffects by remember(project.id, shot.id) { mutableStateOf(shot.soundEffects.toList()) }
     LaunchedEffect(shot.soundEffects) { selectedSoundEffects = shot.soundEffects.toList() }
     fun saveInputs(preserveImageError: Boolean = false) {
-        val textChanged = shot.text != text
+        val previousNarration = shot.text
         val promptChanged = shot.imagePrompt != prompt
         shot.text = text; shot.imagePrompt = prompt
-        if (textChanged) shot.audioStatus = "pending"
+        shot.retireVoiceIfNarrationChanged(previousNarration)
         if (promptChanged) {
             shot.imageStatus = "pending"
             if (!preserveImageError) shot.error = ""

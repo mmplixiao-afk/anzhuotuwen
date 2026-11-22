@@ -423,7 +423,9 @@ class GenerationService : Service() {
         val tts = settings.provider("tts")
         project.shots.forEachIndexed { index, shot ->
             val target = store.audio(project, shot)
-            update(project, "tts", "running", "正在配音 ${index + 1}/${project.shots.size}", index, project.shots.size)
+            val ruleCount = PronunciationMarkup.parse(shot.text).rules.size
+            update(project, "tts", "running", voiceProgress("正在配音 ${index + 1}/${project.shots.size}", ruleCount),
+                index, project.shots.size)
             if (target.length() < 1000 || shot.audioStatus != "done") {
                 val replacement = File(target.parentFile, target.name + ".new.mp3")
                 val spoken = PronunciationMarkup.clean(shot.text)
@@ -685,7 +687,9 @@ class GenerationService : Service() {
         val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
         val target = store.audio(project, shot)
         val replacement = File(target.parentFile, target.name + ".new.mp3")
-        update(project, "tts", "running", "正在生成第 ${project.shotNumber(shotId)} 段配音", 0, 1)
+        val ruleCount = PronunciationMarkup.parse(shot.text).rules.size
+        update(project, "tts", "running",
+            voiceProgress("正在生成第 ${project.shotNumber(shotId)} 段配音", ruleCount), 0, 1)
         val spoken = PronunciationMarkup.clean(shot.text)
         val costEntry = CostEntry.voice("第 ${project.shotNumber(shotId)} 镜重配音", spoken, shotId)
         api.doubao(settings.provider("tts"), settings.voiceId, settings.speed, shot.text, replacement,
@@ -768,6 +772,9 @@ class GenerationService : Service() {
         scope.cancel()
         super.onDestroy()
     }
+
+    private fun voiceProgress(base: String, ruleCount: Int): String =
+        if (ruleCount == 0) base else "$base，带 $ruleCount 条读音"
 
     companion object {
         const val EXTRA_PROJECT = "project_id"

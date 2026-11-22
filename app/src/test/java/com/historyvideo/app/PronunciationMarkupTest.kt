@@ -290,6 +290,7 @@ class PronunciationMarkupTest {
             "银行/(yin2)(hang2)",
             cloneAdditions.getJSONObject("pronunciation_dict").getJSONArray("tone").getString(0)
         )
+        assertFalse(cloneAdditions.getJSONObject("cache_config").getBoolean("use_cache"))
         assertFalse(cloneParams.getString("additions").contains("phoneme"))
 
         val generic = api.doubaoRequest(
@@ -314,6 +315,81 @@ class PronunciationMarkupTest {
         assertEquals("我去银行取钱", plain.getJSONObject("req_params").getString("text"))
         assertEquals(true, plainAdditions.getBoolean("tone_fidelity"))
         assertFalse(plainAdditions.has("pronunciation_dict"))
+        assertTrue(plainAdditions.getJSONObject("cache_config").getBoolean("use_cache"))
+    }
+
+    @Test
+    fun grainMeasureDanSendsAnIclDictionaryAndSkipsTheTextCache() {
+        val marked = "哼，你以为考上状元也就是多领几石(dan4)俸禄、"
+        val parsed = PronunciationMarkup.parse(marked)
+        assertEquals("哼，你以为考上状元也就是多领几石俸禄、", parsed.cleanText)
+        assertEquals(listOf("石/(dan4)"), parsed.rules)
+        val units = StoryboardRules.sourceUnits(marked)
+        assertEquals(marked, units.joinToString("") { it.text })
+        assertTrue(units.any { "石(dan4)" in it.text })
+        assertTrue(units.none { "(dan4)" in it.text && "石(dan4)" !in it.text })
+
+        val body = CloudApi().doubaoRequest(
+            ProviderConfig("tts", "https://openspeech.bytedance.com/api/v3/tts/unidirectional", "seed-icl-2.0", "key"),
+            "S_voice", 1f, marked
+        )
+        val params = body.getJSONObject("req_params")
+        assertEquals("哼，你以为考上状元也就是多领几石俸禄、", params.getString("text"))
+        assertEquals("seed-tts-2.0-expressive", params.getString("model"))
+        assertFalse(params.has("ssml"))
+        val additions = JSONObject(params.getString("additions"))
+        assertEquals(true, additions.getBoolean("tone_fidelity"))
+        assertFalse(additions.getJSONObject("cache_config").getBoolean("use_cache"))
+        assertEquals(1, additions.getJSONObject("cache_config").getInt("text_type"))
+        val tone = additions.getJSONObject("pronunciation_dict").getJSONArray("tone")
+        assertEquals(1, tone.length())
+        assertEquals("石/(dan4)", tone.getString(0))
+        assertFalse(params.getString("text").contains("dan4"))
+        assertFalse(params.getString("additions").contains("phoneme"))
+        assertFalse(params.getString("additions").contains("<speak"))
+    }
+
+    @Test
+    fun reportedSentenceKeepsDistinctWholeWordReadings() {
+        val marked = "银行(yin2hang2)的行长(hang2zhang3)去了重庆(chong2qing4)。他提醒我，重要(zhong4yao4)的合同要重新(chong2xin1)核对，别再落下(la4xia4)行李。"
+        val parsed = PronunciationMarkup.parse(marked)
+        assertEquals(
+            "银行的行长去了重庆。他提醒我，重要的合同要重新核对，别再落下行李。",
+            parsed.cleanText
+        )
+        assertEquals(
+            listOf(
+                "银行/(yin2)(hang2)",
+                "行长/(hang2)(zhang3)",
+                "重庆/(chong2)(qing4)",
+                "重要/(zhong4)(yao4)",
+                "重新/(chong2)(xin1)",
+                "落下/(la4)(xia4)"
+            ),
+            parsed.rules
+        )
+        val additions = JSONObject(
+            CloudApi().doubaoRequest(
+                ProviderConfig("tts", "https://openspeech.bytedance.com/api/v3/tts/unidirectional", "seed-icl-2.0", "key"),
+                "S_voice", 1f, marked
+            ).getJSONObject("req_params").getString("additions")
+        )
+        assertFalse(additions.getJSONObject("cache_config").getBoolean("use_cache"))
+        val tone = additions.getJSONObject("pronunciation_dict").getJSONArray("tone")
+        assertEquals(parsed.rules, (0 until tone.length()).map { tone.getString(it) })
+    }
+
+    @Test
+    fun narrationEditRetiresThePreviousVoiceFile() {
+        val shot = Shot(id = 3, text = "多领几石俸禄", imagePrompt = "提示", audioStatus = "done", audioRevision = "11111111-1111-1111-1111-111111111111")
+        shot.text = "多领几石(dan4)俸禄"
+        shot.retireVoiceIfNarrationChanged("多领几石俸禄")
+        assertEquals("pending", shot.audioStatus)
+        assertFalse(shot.audioRevision == "11111111-1111-1111-1111-111111111111")
+        assertTrue(shot.audioRevision.matches(Regex("[a-f0-9-]{36}")))
+        val unchanged = shot.audioRevision
+        shot.retireVoiceIfNarrationChanged(shot.text)
+        assertEquals(unchanged, shot.audioRevision)
     }
 
     @Test
