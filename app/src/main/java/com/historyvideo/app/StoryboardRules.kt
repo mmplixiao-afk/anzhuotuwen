@@ -18,12 +18,23 @@ internal object StoryboardRules {
         val rebuttalParts: List<String> = emptyList()
     )
 
+    private fun annotationRanges(text: String): List<IntRange> {
+        if ('(' !in text && '（' !in text) return emptyList()
+        return PronunciationMarkup.parse(text).marks.flatMap { it.annotations }
+    }
+
+    private fun spokenLetters(text: String): String {
+        val value = if ('(' in text || '（' in text) PronunciationMarkup.clean(text) else text
+        return value.filter(Char::isLetterOrDigit)
+    }
+
     private fun spokenCount(text: String): Int {
+        val silent = annotationRanges(text)
         var count = 0
         var index = 0
         while (index < text.length) {
             val codePoint = text.codePointAt(index)
-            if (Character.isLetterOrDigit(codePoint)) count++
+            if (silent.none { index in it } && Character.isLetterOrDigit(codePoint)) count++
             index += Character.charCount(codePoint)
         }
         return count
@@ -74,7 +85,7 @@ internal object StoryboardRules {
                 next += Character.charCount(following)
             }
             if (next < text.length &&
-                text.substring(0, cursor).filter(Char::isLetterOrDigit) !in setOf("哼", "他娘的", "放屁")) return true
+                spokenLetters(text.substring(0, cursor)) !in setOf("哼", "他娘的", "放屁")) return true
         }
         return false
     }
@@ -136,6 +147,9 @@ internal object StoryboardRules {
         }
         val pieces = mutableListOf<Pair<String, Boolean>>()
         val plan = openingPlan(source)
+        val pronunciationMarks = if ('(' in source || '（' in source) PronunciationMarkup.parse(source).marks else emptyList()
+        fun inAnnotation(index: Int) = pronunciationMarks.any { mark -> mark.annotations.any { index in it } }
+        fun insideMark(boundary: Int) = pronunciationMarks.any { boundary > it.start && boundary < it.end }
         var cursor = 0
         if (plan != null) {
             pieces += plan.title to true
@@ -145,29 +159,30 @@ internal object StoryboardRules {
             var start = rangeStart
             var spoken = 0
             var index = rangeStart
-            fun flush(end: Int) {
-                if (end > start) pieces += source.substring(start, end) to false
-                start = end
+            fun flush(end: Int): Int {
+                val mark = pronunciationMarks.firstOrNull { end > it.start && end < it.end }
+                val boundary = if (mark != null) minOf(mark.end, rangeEnd) else end
+                if (boundary > start) pieces += source.substring(start, boundary) to false
+                start = boundary
                 spoken = 0
+                return boundary
             }
             while (index < rangeEnd) {
                 val codePoint = source.codePointAt(index)
                 val end = index + Character.charCount(codePoint)
-                if (Character.isLetterOrDigit(codePoint)) spoken++
-                val punctuation = codePoint == '\n'.code || codePoint == '\r'.code ||
-                    codePoint.toChar() in "，,；;：:。！？!?、…—"
+                if (!inAnnotation(index) && Character.isLetterOrDigit(codePoint)) spoken++
+                val punctuation = !inAnnotation(index) && (codePoint == '\n'.code || codePoint == '\r'.code ||
+                    codePoint.toChar() in "，,；;：:。！？!?、…—")
                 if (punctuation) {
                     var boundary = end
                     while (boundary < rangeEnd && source[boundary] in closingQuotes) boundary++
-                    flush(boundary)
-                    index = boundary
+                    index = flush(boundary)
                     continue
                 }
-                if (spoken >= maxUnitLength) {
+                if (spoken >= maxUnitLength && !insideMark(end)) {
                     var boundary = end
                     while (boundary < rangeEnd && source[boundary] in closingQuotes) boundary++
-                    flush(boundary)
-                    index = boundary
+                    index = flush(boundary)
                     continue
                 }
                 index = end
@@ -226,13 +241,19 @@ internal object StoryboardRules {
 
     fun reconstructVoiceoverSegments(source: String, modelVoiceovers: List<String>): List<String> {
         require(modelVoiceovers.isNotEmpty()) { "分镜没有voiceover片段" }
+        val sourceAnnotations = annotationRanges(source)
         fun spoken(value: String): String = buildString {
+            val silent = if (value === source) sourceAnnotations else annotationRanges(value)
             var offset = 0
             while (offset < value.length) {
                 val codePoint = value.codePointAt(offset)
-                if (Character.isLetterOrDigit(codePoint)) appendCodePoint(codePoint)
+                if (silent.none { offset in it } && Character.isLetterOrDigit(codePoint)) appendCodePoint(codePoint)
                 offset += Character.charCount(codePoint)
             }
+        }
+        fun sourceSpoken(index: Int): Boolean {
+            if (sourceAnnotations.any { index in it }) return false
+            return Character.isLetterOrDigit(source.codePointAt(index))
         }
         require(spoken(modelVoiceovers.joinToString("")) == spoken(source)) {
             "模型voiceover存在漏字、重复或改写，无法映射回原文"
@@ -245,15 +266,14 @@ internal object StoryboardRules {
             val start = cursor
             var count = 0
             while (cursor < source.length && count < targetCount) {
-                val codePoint = source.codePointAt(cursor)
-                if (Character.isLetterOrDigit(codePoint)) count++
-                cursor += Character.charCount(codePoint)
+                if (sourceSpoken(cursor)) count++
+                cursor += Character.charCount(source.codePointAt(cursor))
             }
             require(count == targetCount) { "第 ${index + 1} 镜voiceover无法从原文定位" }
             if (index == modelVoiceovers.lastIndex) {
                 cursor = source.length
             } else {
-                while (cursor < source.length && !Character.isLetterOrDigit(source.codePointAt(cursor))) {
+                while (cursor < source.length && !sourceSpoken(cursor)) {
                     cursor += Character.charCount(source.codePointAt(cursor))
                 }
             }
@@ -310,7 +330,7 @@ internal object StoryboardRules {
                 val points = listOf(offset) + cuts + end
                 for (i in 0 until points.size - 1) {
                     val text = source.substring(points[i], points[i + 1])
-                    val tag = if (i == 0) "" else "（续镜$i：${text.filter(Char::isLetterOrDigit).take(12)}）"
+                    val tag = if (i == 0) "" else "（续镜$i：${spokenLetters(text).take(12)}）"
                     out += shot.copy(
                         text = text,
                         visual = shot.visual + tag,
@@ -462,7 +482,7 @@ internal object StoryboardRules {
                 "开头反驳必须从“放屁”处开始"
             }
             val hookShots = shots.subList(1, startIndex)
-            require(hookShots.none { it.text.filter(Char::isLetterOrDigit) in setOf("哼", "他娘的") }) {
+            require(hookShots.none { spokenLetters(it.text) in setOf("哼", "他娘的") }) {
                 "开头钩子的语气词不能单独占一镜"
             }
             require(hookShots.all {
@@ -485,7 +505,7 @@ internal object StoryboardRules {
             rebuttalStartShot = startIndex
             rebuttalEndShot = endIndex
         }
-        require(shots.none { it.text.filter(Char::isLetterOrDigit) == "放屁" }) {
+        require(shots.none { spokenLetters(it.text) == "放屁" }) {
             "放屁不能单独占一镜，必须接上第一拍反驳"
         }
         shots.forEach { shot ->

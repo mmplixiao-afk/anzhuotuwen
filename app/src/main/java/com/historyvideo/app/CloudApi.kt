@@ -1,9 +1,12 @@
 package com.historyvideo.app
 
 import android.util.Base64
+import kotlinx.coroutines.CancellationException
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
@@ -11,6 +14,7 @@ import org.json.JSONException
 import org.json.JSONTokener
 import android.graphics.BitmapFactory
 import java.io.File
+import java.io.IOException
 import java.net.URI
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -58,9 +62,8 @@ private fun imageAspect(size: String): Double? = when (size.trim()) {
 }
 
 private fun cangyuanImageSize(config: ProviderConfig): String {
-    val host = runCatching { URI(config.baseUrl).host.orEmpty().lowercase() }.getOrDefault("")
     val model = config.model.trim().lowercase()
-    val isCangyuan = host in setOf("ai.cangyuansuanli.cn", "www.ai.cangyuansuanli.cn", "direct-api.cangyuansuanli.cn")
+    val isCangyuan = isCangyuanImageHost(config.baseUrl)
     if (!isCangyuan || model !in setOf("gpt-image-2", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare")) {
         return config.imageSize.ifBlank { "1024x1792" }
     }
@@ -79,7 +82,14 @@ private fun imageRatioInstruction(size: String): String = when (imageAspect(size
     else -> ""
 }
 
-data class StoryboardResult(val title: String, val stylePreset: String, val shots: MutableList<Shot>)
+data class StoryboardResult(
+    val title: String,
+    val stylePreset: String,
+    val shots: MutableList<Shot>,
+    val characters: List<StoryCharacter> = emptyList()
+)
+
+data class SavedImage(val remoteUrl: String)
 
 internal class StoryboardTruncatedException(message: String, cause: Throwable? = null) :
     IllegalArgumentException(message, cause)
@@ -329,6 +339,7 @@ class CloudApi {
         val merged = mutableListOf<Shot>()
         var title = ""
         var stylePreset = ""
+        var characters = emptyList<StoryCharacter>()
         var unitOffset = 0
         batches.forEachIndexed { batchIndex, batch ->
             // 批次内编号从 1 开始，模型只需要看本批的原文分段。
@@ -349,11 +360,12 @@ class CloudApi {
             unitOffset += batch.size
             if (title.isBlank()) title = result.title
             if (stylePreset.isBlank()) stylePreset = result.stylePreset
+            if (characters.isEmpty() && result.characters.isNotEmpty()) characters = result.characters
             result.shots.forEach { shot -> merged += shot.copy(id = merged.size + 1) }
         }
         val aligned = StoryboardRules.alignOpening(expectedScript, merged)
         StoryboardRules.validate(expectedScript, aligned, granularity)
-        return StoryboardResult(title, stylePreset, aligned)
+        return StoryboardResult(title, stylePreset, aligned, characters)
     }
 
     private fun storyboardBatch(config: ProviderConfig, prompt: String, input: String,
@@ -373,7 +385,7 @@ class CloudApi {
             append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
             append(JSONArray().apply {
                 units.forEach { unit -> put(JSONObject().put("id", unit.id)
-                    .put("text", unit.text).put("fixed_shot", unit.fixedShot)
+                    .put("text", PronunciationMarkup.clean(unit.text)).put("fixed_shot", unit.fixedShot)
                     .put("can_end_shot", unit.id == units.size || StoryboardRules.endsAtPunctuation(unit.text))) }
             }.toString())
         }
@@ -411,7 +423,8 @@ class CloudApi {
             StoryboardResult(
                 leftResult.title.ifBlank { rightResult.title },
                 leftResult.stylePreset.ifBlank { rightResult.stylePreset },
-                merged)
+                merged,
+                leftResult.characters.ifEmpty { rightResult.characters })
         }
     }
 
@@ -594,16 +607,32 @@ class CloudApi {
         }
         val aligned = StoryboardRules.alignOpening(expectedScript, shots)
         if (validateResult) StoryboardRules.validate(expectedScript, aligned, granularity)
-        return StoryboardResult(root?.optString("title").orEmpty(), root?.optString("style_preset").orEmpty(), aligned)
+        return StoryboardResult(
+            root?.optString("title").orEmpty(),
+            root?.optString("style_preset").orEmpty(),
+            aligned,
+            parseStoryCharacters(root)
+        )
     }
 
-    fun image(config: ProviderConfig, prompt: String, out: File, onGenerated: () -> Unit = {}) {
+    fun image(
+        config: ProviderConfig,
+        prompt: String,
+        out: File,
+        onGenerated: () -> Unit = {},
+        isActive: () -> Boolean = { true }
+    ): SavedImage {
         require(config.model.isNotBlank()) { "请设置生图模型 ID" }
+        if (!isActive()) throw CancellationException("已暂停")
         val requestSize = cangyuanImageSize(config)
-        val instruction = imageRatioInstruction(config.imageSize)
-        val finalPrompt = if (instruction.isBlank()) prompt else "$prompt\n\n$instruction"
-        val result = if (isCangyuan(config)) {
-            cangyuanImage(config, finalPrompt, requestSize)
+        val finalPrompt = withImageRatio(config, prompt)
+        val result = if (isCangyuanImageHost(config.baseUrl)) {
+            cangyuanImageTask(
+                config,
+                "/v1/images/generations",
+                cangyuanGenerationRequestBody(config.model, finalPrompt, requestSize),
+                isActive
+            )
         } else {
             val body = JSONObject().put("model", config.model).put("prompt", finalPrompt)
                 .put("size", requestSize).put("n", 1)
@@ -611,18 +640,72 @@ class CloudApi {
                 .put("stream", false)
                 .put("watermark", false)
                 .put("sequential_image_generation", "disabled")
-            JSONObject(post(endpoint(config.baseUrl, "/v1/images/generations"), body, config.key))
+            JSONObject(postJson(endpoint(config.baseUrl, "/v1/images/generations"), body, config.key, isActive))
         }
+        return saveImageResponse(config, result, out, onGenerated, isActive)
+    }
+
+    fun editImage(
+        config: ProviderConfig,
+        prompt: String,
+        out: File,
+        referenceUrls: List<String>,
+        referenceFiles: List<File>,
+        onGenerated: () -> Unit = {},
+        isActive: () -> Boolean = { true }
+    ): SavedImage {
+        require(config.model.isNotBlank()) { "请设置生图模型 ID" }
+        if (!isActive()) throw CancellationException("已暂停")
+        val requestSize = cangyuanImageSize(config)
+        val finalPrompt = withImageRatio(config, prompt)
+        val result = if (isCangyuanImageHost(config.baseUrl)) {
+            val body = cangyuanEditRequestBody(config.model, finalPrompt, requestSize, referenceUrls)
+            cangyuanImageTask(config, "/v1/images/edits", body, isActive)
+        } else {
+            require(referenceFiles.isNotEmpty()) { "缺少主角参考图文件" }
+            val spec = multipartEditSpec(config.model, finalPrompt, requestSize, referenceFiles.size)
+            val body = MultipartBody.Builder().setType(MultipartBody.FORM).apply {
+                spec.fields.forEach { (name, value) -> addFormDataPart(name, value) }
+                referenceFiles.forEach { file ->
+                    require(file.isFile && file.length() > 1_000) { "主角参考图文件无效" }
+                    val mime = when (file.extension.lowercase()) {
+                        "png" -> "image/png"
+                        "webp" -> "image/webp"
+                        else -> "image/jpeg"
+                    }
+                    addFormDataPart(spec.fileField, file.name, file.asRequestBody(mime.toMediaType()))
+                }
+            }.build()
+            JSONObject(postMultipart(endpoint(config.baseUrl, "/v1/images/edits"), body, config.key, isActive))
+        }
+        return saveImageResponse(config, result, out, onGenerated, isActive)
+    }
+
+    private fun withImageRatio(config: ProviderConfig, prompt: String): String {
+        val instruction = imageRatioInstruction(config.imageSize)
+        return if (instruction.isBlank()) prompt else "$prompt\n\n$instruction"
+    }
+
+    private fun saveImageResponse(
+        config: ProviderConfig,
+        result: JSONObject,
+        out: File,
+        onGenerated: () -> Unit,
+        isActive: () -> Boolean
+    ): SavedImage {
         val items = result.optJSONArray("data") ?: result.optJSONArray("images")
             ?: error("生图接口没有返回 data")
         require(items.length() > 0) { "生图接口返回了空图片列表" }
         val item = items.getJSONObject(0)
-        require(item.optString("b64_json").isNotBlank() || item.optString("url").isNotBlank()) { "生图接口没有返回图片" }
+        val rawUrl = item.optString("url").trim()
+        val remoteUrl = persistedImageUrl(rawUrl)
+        val encoded = item.optString("b64_json")
+        require(encoded.isNotBlank() || rawUrl.isNotBlank()) { "生图接口没有返回图片" }
         onGenerated()
+        if (!isActive()) throw CancellationException("已暂停")
         val bytes = when {
-            item.optString("b64_json").isNotBlank() ->
-                Base64.decode(item.getString("b64_json"), Base64.DEFAULT)
-            item.optString("url").isNotBlank() -> download(item.getString("url"))
+            encoded.isNotBlank() -> Base64.decode(encoded, Base64.DEFAULT)
+            rawUrl.isNotBlank() -> download(rawUrl, isActive)
             else -> error("生图接口没有返回图片")
         }
         require(bytes.size in 1_000..20_000_000) { "图片大小无效" }
@@ -636,72 +719,155 @@ class CloudApi {
                 "图片接口返回 ${bounds.outWidth}×${bounds.outHeight}，与所选画幅不符"
             }
         }
-        val pending = File(out.parentFile, out.name + ".tmp")
-        pending.writeBytes(bytes)
-        Files.move(pending.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
-    }
-
-    private fun isCangyuan(config: ProviderConfig): Boolean {
-        val host = runCatching { URI(config.baseUrl).host.orEmpty().lowercase() }.getOrDefault("")
-        return host in setOf("ai.cangyuansuanli.cn", "www.ai.cangyuansuanli.cn", "direct-api.cangyuansuanli.cn")
-    }
-
-    /**
-     * The Cangyuan relay can keep a synchronous image request open long enough
-     * to be terminated by its gateway. Submit a task first, then poll the same
-     * task so a gateway timeout does not create a second paid generation.
-     */
-    private fun cangyuanImage(config: ProviderConfig, prompt: String, requestSize: String): JSONObject {
-        val taskEndpoint = endpoint(config.baseUrl, "/v1/images/generations")
-        val body = JSONObject().put("model", config.model).put("prompt", prompt)
-            .put("size", requestSize).put("n", 1)
-            .put("response_format", "url")
-            .put("async", true)
-        var result = JSONObject(post(taskEndpoint, body, config.key))
-        fun hasImage(value: JSONObject): Boolean {
-            val data = value.optJSONArray("data") ?: value.optJSONArray("images") ?: return false
-            if (data.length() == 0) return false
-            val item = data.optJSONObject(0) ?: return false
-            return item.optString("url").isNotBlank() || item.optString("b64_json").isNotBlank()
+        val parent = out.parentFile ?: error("图片目录无效")
+        parent.mkdirs()
+        val pending = File(parent, out.name + ".tmp")
+        try {
+            pending.writeBytes(bytes)
+            Files.move(pending.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        } catch (error: Exception) {
+            pending.delete()
+            throw error
         }
-        if (hasImage(result)) return result
-        val firstItem = (result.optJSONArray("data") ?: result.optJSONArray("images"))
-            ?.optJSONObject(0)
+        return SavedImage(remoteUrl)
+    }
+
+    private fun cangyuanImageTask(
+        config: ProviderConfig,
+        suffix: String,
+        body: JSONObject,
+        isActive: () -> Boolean
+    ): JSONObject {
+        if (!isActive()) throw CancellationException("已暂停")
+        val taskEndpoint = endpoint(config.baseUrl, suffix)
+        var result = JSONObject(postJson(taskEndpoint, body, config.key, isActive))
+        if (imagePayloadReady(result)) return result
+        val firstItem = (result.optJSONArray("data") ?: result.optJSONArray("images"))?.optJSONObject(0)
         val taskId = result.optString("id")
             .ifBlank { result.optString("task_id") }
             .ifBlank { firstItem?.optString("id").orEmpty() }
             .ifBlank { firstItem?.optString("task_id").orEmpty() }
             .trim()
-        require(taskId.isNotBlank()) { "生图接口未返回任务 ID，未自动重试以避免重复扣费" }
+        val pollUrl = cangyuanPollUrl(taskEndpoint, taskId)
         repeat(120) {
+            if (!isActive()) throw CancellationException("已暂停")
             val status = result.optString("status").lowercase()
             if (status in setOf("failed", "error", "cancelled", "canceled")) {
                 val detail = result.opt("error") ?: result.opt("message") ?: status
                 error("生图任务失败：$detail")
             }
-            if (hasImage(result)) return result
-            Thread.sleep(2_500L)
-            result = JSONObject(get("$taskEndpoint/$taskId", config.key))
+            if (imagePayloadReady(result)) return result
+            waitForNextImagePoll(isActive)
+            if (!isActive()) throw CancellationException("已暂停")
+            result = JSONObject(getJson(pollUrl, config.key, isActive))
         }
-        error("生图任务等待超时，任务 ID：$taskId；未重复提交")
+        if (imagePayloadReady(result)) return result
+        error(imagePollTimeout(taskId))
     }
 
-    private fun download(url: String): ByteArray {
+    private fun imagePayloadReady(value: JSONObject): Boolean {
+        val data = value.optJSONArray("data") ?: value.optJSONArray("images") ?: return false
+        if (data.length() == 0) return false
+        val item = data.optJSONObject(0) ?: return false
+        return item.optString("url").isNotBlank() || item.optString("b64_json").isNotBlank()
+    }
+
+    private fun waitForNextImagePoll(isActive: () -> Boolean) {
+        repeat(10) {
+            if (!isActive()) throw CancellationException("已暂停")
+            Thread.sleep(250)
+        }
+    }
+
+    private fun postJson(url: String, body: JSONObject, key: String, isActive: () -> Boolean): String {
+        require(key.isNotBlank()) { "请先填写 API Key" }
+        val request = Request.Builder().url(url)
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer $key")
+            .post(body.toString().toRequestBody(jsonType))
+            .build()
+        return execute(request, isActive) { response -> readApiResponse(response) }
+    }
+
+    private fun postMultipart(url: String, body: MultipartBody, key: String, isActive: () -> Boolean): String {
+        require(key.isNotBlank()) { "请先填写 API Key" }
+        val request = Request.Builder().url(url)
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer $key")
+            .post(body)
+            .build()
+        return execute(request, isActive) { response -> readApiResponse(response) }
+    }
+
+    private fun getJson(url: String, key: String, isActive: () -> Boolean): String {
+        require(key.isNotBlank()) { "请先填写 API Key" }
+        val request = Request.Builder().url(url)
+            .header("Accept", "application/json")
+            .header("Authorization", "Bearer $key")
+            .get()
+            .build()
+        return execute(request, isActive) { response -> readApiResponse(response) }
+    }
+
+    private fun readApiResponse(response: okhttp3.Response): String {
+        val responseText = response.body?.string().orEmpty()
+        if (!response.isSuccessful) {
+            val detail = responseText.replace(Regex("\\s+"), " ").trim().take(300)
+            error("API HTTP ${response.code}${detail.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()}")
+        }
+        return responseText.ifBlank { error("API 响应为空") }
+    }
+
+    private fun <T> execute(request: Request, isActive: () -> Boolean, block: (okhttp3.Response) -> T): T {
+        if (!isActive()) throw CancellationException("已暂停")
+        val call = client.newCall(request)
+        val watch = Thread {
+            try {
+                while (!call.isCanceled()) {
+                    if (!isActive()) {
+                        call.cancel()
+                        return@Thread
+                    }
+                    Thread.sleep(200)
+                }
+            } catch (_: InterruptedException) {
+            }
+        }
+        watch.isDaemon = true
+        watch.name = "image-cancel"
+        watch.start()
+        try {
+            return call.execute().use { response ->
+                if (!isActive() || call.isCanceled()) throw CancellationException("已暂停")
+                block(response)
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: IOException) {
+            if (!isActive() || call.isCanceled()) throw CancellationException("已暂停")
+            throw error
+        } finally {
+            watch.interrupt()
+        }
+    }
+
+    private fun download(url: String, isActive: () -> Boolean): ByteArray {
         val uri = URI(url)
         require(uri.scheme == "https" && uri.host != null) { "图片链接必须使用 HTTPS" }
         val request = Request.Builder().url(url).get().build()
-        client.newCall(request).execute().use { response ->
+        return execute(request, isActive) { response ->
             if (!response.isSuccessful) error("下载图片 HTTP ${response.code}")
             val source = response.body?.byteStream() ?: error("图片响应为空")
             val output = java.io.ByteArrayOutputStream()
             val buffer = ByteArray(16_384)
             while (true) {
+                if (!isActive()) throw CancellationException("已暂停")
                 val count = source.read(buffer)
                 if (count < 0) break
                 require(output.size() + count <= 20_000_000) { "图片超过 20 MB" }
                 output.write(buffer, 0, count)
             }
-            return output.toByteArray()
+            output.toByteArray()
         }
     }
 
@@ -709,27 +875,8 @@ class CloudApi {
                onGenerated: () -> Unit = {}) {
         val url = config.baseUrl.ifBlank { "https://openspeech.bytedance.com/api/v3/tts/unidirectional" }
         require(url.startsWith("https://")) { "TTS URL 必须使用 HTTPS" }
-        val additions = JSONObject()
-            .put("disable_markdown_filter", true)
-            .put("enable_language_detector", true)
-            .put("enable_latex_tn", true)
-            .put("disable_default_bit_rate", true)
-            .put("max_length_to_filter_parenthesis", 0)
-            .put("cache_config", JSONObject().put("text_type", 1).put("use_cache", true))
-        if (config.model == "seed-icl-2.0") additions.put("tone_fidelity", true)
-        val requestParams = JSONObject()
-            .put("text", spoken)
-            .put("speaker", voiceId)
-            .put("audio_params", JSONObject().put("format", "mp3")
-                .put("sample_rate", 24000).put("bit_rate", 128000)
-                .put("speech_rate", ((speed - 1f) * 100).toInt().coerceIn(-50, 100))
-                .put("loudness_rate", 0))
-            .put("additions", additions.toString())
-        if (config.model == "seed-icl-2.0") {
-            requestParams.put("model", "seed-tts-2.0-expressive")
-        }
-        val body = JSONObject().put("user", JSONObject().put("uid", "rensheng-fuben"))
-            .put("req_params", requestParams)
+        val body = doubaoRequest(config, voiceId, speed, spoken)
+        logDoubaoRequest(config.model, body)
         val response = post(url, body, config.key, true,
             config.model.ifBlank { "volc.service_type.10029" })
         val parts = parseDoubaoResponse(response)
@@ -749,5 +896,61 @@ class CloudApi {
         }
         require(pending.length() > 1000) { "TTS 返回了空音频" }
         Files.move(pending.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
+    }
+
+    internal fun doubaoRequest(config: ProviderConfig, voiceId: String, speed: Float, spoken: String): JSONObject {
+        val additions = JSONObject()
+            .put("disable_markdown_filter", true)
+            .put("enable_language_detector", true)
+            .put("enable_latex_tn", true)
+            .put("disable_default_bit_rate", true)
+            .put("max_length_to_filter_parenthesis", 0)
+            .put("cache_config", JSONObject().put("text_type", 1).put("use_cache", true))
+        if (config.model == "seed-icl-2.0") additions.put("tone_fidelity", true)
+        // Marks become pronunciation_dict entries. req_params.text stays unmarked:
+        // parenthesis content can be read as an aside, and ICL 2.0 does not support SSML.
+        val textForSpeech = PronunciationMarkup.mergeIntoAdditions(additions, spoken)
+        // Volcano's cache key is the text, not the dictionary. The same clean
+        // sentence would otherwise come back with the previous pronunciation.
+        val ruleCount = additions.optJSONObject("pronunciation_dict")?.optJSONArray("tone")?.length() ?: 0
+        if (ruleCount > 0) {
+            val cache = additions.optJSONObject("cache_config") ?: JSONObject()
+            cache.put("use_cache", false)
+            additions.put("cache_config", cache)
+        }
+        val requestParams = JSONObject()
+            .put("text", textForSpeech)
+            .put("speaker", voiceId)
+            .put("audio_params", JSONObject().put("format", "mp3")
+                .put("sample_rate", 24000).put("bit_rate", 128000)
+                .put("speech_rate", ((speed - 1f) * 100).toInt().coerceIn(-50, 100))
+                .put("loudness_rate", 0))
+            .put("additions", additions.toString())
+        if (config.model == "seed-icl-2.0") {
+            requestParams.put("model", "seed-tts-2.0-expressive")
+        }
+        return JSONObject().put("user", JSONObject().put("uid", "rensheng-fuben"))
+            .put("req_params", requestParams)
+    }
+
+    private fun logDoubaoRequest(resource: String, body: JSONObject) {
+        val params = body.optJSONObject("req_params") ?: return
+        val additions = runCatching { JSONObject(params.optString("additions")) }.getOrNull()
+        val rules = additions?.optJSONObject("pronunciation_dict")?.optJSONArray("tone")
+        val shown = buildString {
+            if (rules == null) return@buildString
+            val limit = minOf(rules.length(), 8)
+            for (index in 0 until limit) {
+                if (index > 0) append(" | ")
+                append(rules.optString(index))
+            }
+            if (rules.length() > limit) append(" | …")
+        }
+        android.util.Log.i(
+            "DoubaoTts",
+            "resource=$resource model=${params.optString("model")} textChars=${params.optString("text").length} " +
+                "rules=${rules?.length() ?: 0} useCache=${additions?.optJSONObject("cache_config")?.optBoolean("use_cache")} " +
+                "toneFidelity=${additions?.opt("tone_fidelity")} dict=$shown"
+        )
     }
 }
