@@ -380,6 +380,87 @@ class PronunciationMarkupTest {
     }
 
     @Test
+    fun provenRewriteSendsShiAsDanAndKeepsShiOnSubtitles() {
+        val marked = "哼，你以为考上状元也就是多领几石(=担)俸禄、"
+        val subtitle = "哼，你以为考上状元也就是多领几石俸禄、"
+        val parsed = PronunciationMarkup.parse(marked)
+        assertEquals(subtitle, parsed.cleanText)
+        assertEquals(subtitle, PronunciationMarkup.subtitleText(marked))
+        assertEquals(listOf("石/担"), parsed.rules)
+        assertFalse(parsed.cleanText.contains("担"))
+        assertEquals(
+            listOf("哼，你以为考上状元也就是多领几", "石俸禄、"),
+            PronunciationMarkup.cleanChunks(
+                listOf("哼，你以为考上状元也就是多领几", "石(=担)俸禄、"),
+                subtitle
+            )
+        )
+        val server = "哼，你以为考上状元也就是多领几担俸禄、"
+        assertEquals(subtitle, PronunciationMarkup.restoreServerTranscript(server, marked))
+        assertEquals(subtitle, PronunciationMarkup.restoreServerTranscript(subtitle, marked))
+
+        val params = CloudApi().doubaoRequest(
+            ProviderConfig("tts", "https://openspeech.bytedance.com/api/v3/tts/unidirectional", "seed-icl-2.0", "key"),
+            "S_voice", 1f, marked
+        ).getJSONObject("req_params")
+        assertEquals(subtitle, params.getString("text"))
+        assertEquals("seed-tts-2.0-expressive", params.getString("model"))
+        assertFalse(params.has("ssml"))
+        val additions = JSONObject(params.getString("additions"))
+        assertEquals(true, additions.getBoolean("tone_fidelity"))
+        assertFalse(additions.getJSONObject("cache_config").getBoolean("use_cache"))
+        val tone = additions.getJSONObject("pronunciation_dict").getJSONArray("tone")
+        assertEquals(1, tone.length())
+        assertEquals("石/担", tone.getString(0))
+        assertFalse(params.getString("additions").contains("phoneme"))
+
+        val units = StoryboardRules.sourceUnits(marked, "fine")
+        assertEquals(marked, units.joinToString("") { it.text })
+        assertTrue(units.any { "石(=担)" in it.text })
+        assertTrue(units.none { "(=担)" in it.text && "石(=担)" !in it.text })
+    }
+
+    @Test
+    fun phraseRewriteAndPinyinStayDistinct() {
+        val phrase = PronunciationMarkup.parse("领几石(=几担)俸禄")
+        assertEquals("领几石俸禄", phrase.cleanText)
+        assertEquals(listOf("几石/几担"), phrase.rules)
+        assertEquals(
+            "领几石俸禄",
+            PronunciationMarkup.restoreServerTranscript("领几担俸禄", "领几石(=几担)俸禄")
+        )
+        val pinyin = PronunciationMarkup.parse("多领几石(dan4)俸禄")
+        assertEquals(listOf("石/(dan4)"), pinyin.rules)
+        assertFalse(pinyin.rules.contains("石/担"))
+        val mixed = PronunciationMarkup.parse("银行(yin2hang2)的石(=担)")
+        assertEquals("银行的石", mixed.cleanText)
+        assertEquals(listOf("银行/(yin2)(hang2)", "石/担"), mixed.rules)
+        assertEquals(
+            listOf("石/担", "头/投"),
+            PronunciationMarkup.parse("石(=担)头(=投)").rules
+        )
+    }
+
+    @Test
+    fun rewriteConflictsAndOrdinaryParentheses() {
+        val clash = assertThrows(IllegalArgumentException::class.java) {
+            PronunciationMarkup.parse("几石(=担)，又一块石(=旦)")
+        }
+        assertTrue(clash.message!!.contains("两种读音"))
+        val withPinyin = assertThrows(IllegalArgumentException::class.java) {
+            PronunciationMarkup.parse("石(=担)和石(dan4)")
+        }
+        assertTrue(withPinyin.message!!.contains("两种读音"))
+        val letters = assertThrows(IllegalArgumentException::class.java) {
+            PronunciationMarkup.parse("石(=dan4)")
+        }
+        assertTrue(letters.message!!.contains("汉字"))
+        assertEquals("几石（注意）俸禄(OK)", PronunciationMarkup.clean("几石（注意）俸禄(OK)"))
+        assertTrue(PronunciationMarkup.parse("几石（注意）俸禄(OK)").rules.isEmpty())
+        assertEquals("石(=担", PronunciationMarkup.display("石(=担"))
+    }
+
+    @Test
     fun narrationEditRetiresThePreviousVoiceFile() {
         val shot = Shot(id = 3, text = "多领几石俸禄", imagePrompt = "提示", audioStatus = "done", audioRevision = "11111111-1111-1111-1111-111111111111")
         shot.text = "多领几石(dan4)俸禄"

@@ -316,14 +316,16 @@ class VideoRenderer(private val store: ProjectStore) {
     }
 
     private fun subtitleSource(project: VideoProject, shot: Shot): Pair<String, List<String>> {
-        val spoken = PronunciationMarkup.clean(shot.text)
+        // Subtitles stay on the author's glyphs. A rewrite such as 石(=担) is
+        // spoken as 担, but the line is still 石 and is timed from that text.
+        val spoken = PronunciationMarkup.subtitleText(shot.text)
         val chunks = PronunciationMarkup.cleanChunks(shot.subtitleChunks, spoken)
         val hasCover = normalizeCoverText(project.coverText).isNotBlank()
         if (!hasCover) return spoken to chunks
         if (shot.id == 1) return "" to emptyList()
         if (project.shotNumber(shot.id) == 2) {
             val firstShot = project.shots.firstOrNull { it.id == 1 }
-            val remainder = firstShot?.let { openingBody(PronunciationMarkup.clean(it.text)) }
+            val remainder = firstShot?.let { openingBody(PronunciationMarkup.subtitleText(it.text)) }
             if (!remainder.isNullOrBlank()) return remainder + spoken to emptyList()
         }
         return spoken to chunks

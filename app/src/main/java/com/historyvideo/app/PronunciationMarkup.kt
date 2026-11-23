@@ -6,18 +6,19 @@ import org.json.JSONObject
 /**
  * Inline polyphonic pronunciation for narration text.
  *
- * Authors write 银行(yin2hang2) or 银(yin2)行(hang2). The editable script keeps
- * those marks. TTS receives the clean sentence plus Volcano's pronunciation_dict;
- * subtitles and other spoken displays use the clean sentence only.
+ * Authors write 石(=担) when a cloned voice must say another character, or
+ * 银行(yin2hang2) / 银(yin2)行(hang2) for pinyin. The editable script keeps
+ * those marks. TTS receives the original sentence plus Volcano's tone
+ * dictionary. Subtitles stay on the original glyphs: 石(=担) is spoken as 担
+ * and still printed as 石.
  *
- * Syllable count selects the word by walking backward from the parenthesis:
- * 银行(yin2hang2) marks 银行, and a single syllable marks only the character
- * immediately before the parenthesis. Adjacent per-character marks merge into
- * one dictionary entry so the engine's longest match stays on that word.
+ * Rewrite length selects the word by walking backward: 石(=担) marks 石, and
+ * 几石(=几担) marks 几石. Pinyin uses syllable count the same way. Pinyin is
+ * never turned into a guessed character.
  */
 internal object PronunciationMarkup {
     const val HINT =
-        "多音字写在配音正文里，只影响朗读；字幕和列表仍显示去掉标注后的原文。整词写银行(yin2hang2)，或逐字写银(yin2)行(hang2)。从括号往前数，几个音节就标注几个字。声调用 1–4，轻声用 5。括号要紧挨汉字，中英文括号都可以。"
+        "多音字写在配音正文里，只影响朗读；字幕和列表仍显示原文。克隆音色若拼音不生效，写石(=担)，配音按「担」读，字幕仍是「石」；整词写几石(=几担)。拼音仍可用银行(yin2hang2)或银(yin2)行(hang2)，声调用 1–4，轻声用 5。括号要紧挨汉字。"
 
     private const val MAX_ENTRIES = 5000
     private const val MAX_WORD_CHARS = 9
@@ -58,7 +59,8 @@ internal object PronunciationMarkup {
         val end: Int,
         val word: String,
         val syllables: List<Syllable>,
-        val annotations: List<IntRange>
+        val annotations: List<IntRange>,
+        val spoken: String? = null
     )
 
     internal data class Parsed(
@@ -76,21 +78,37 @@ internal object PronunciationMarkup {
             val close = text.indexOfAny(charArrayOf(')', '）'), open + 1)
             if (close < 0) {
                 val rest = text.substring(open + 1)
-                if (isUnclosedPronunciation(rest)) {
+                if (isUnclosedRewrite(rest) || isUnclosedPronunciation(rest)) {
                     throw IllegalArgumentException("读音标注缺少右括号：「${snippet(text, open)}」")
                 }
                 break
             }
             val body = text.substring(open + 1, close)
-            val syllables = classify(body, snippet(text, open))
+            val snippet = snippet(text, open)
+            val rewrite = rewriteSpoken(body, snippet)
+            if (rewrite != null) {
+                val count = rewrite.codePointCount(0, rewrite.length)
+                val wordStart = wordStartBefore(text, open, count, snippet, rewrite = true)
+                found += Mark(
+                    start = wordStart,
+                    end = close + 1,
+                    word = text.substring(wordStart, open),
+                    syllables = emptyList(),
+                    annotations = listOf(open until close + 1),
+                    spoken = rewrite
+                )
+                index = close + 1
+                continue
+            }
+            val syllables = classify(body, snippet)
             if (syllables == null) {
                 index = open + 1
                 continue
             }
             if (syllables.size > MAX_WORD_CHARS) {
-                throw IllegalArgumentException("一次最多标注 $MAX_WORD_CHARS 个字：「${snippet(text, open)}」")
+                throw IllegalArgumentException("一次最多标注 $MAX_WORD_CHARS 个字：「$snippet」")
             }
-            val wordStart = wordStartBefore(text, open, syllables.size, snippet(text, open))
+            val wordStart = wordStartBefore(text, open, syllables.size, snippet)
             found += Mark(
                 start = wordStart,
                 end = close + 1,
@@ -105,6 +123,48 @@ internal object PronunciationMarkup {
     }
 
     fun clean(text: String): String = parse(text).cleanText
+
+    /** Original glyphs for burned-in and on-screen subtitles. Never the spoken rewrite. */
+    fun subtitleText(marked: String): String = clean(marked)
+
+    /**
+     * Maps a server transcript that used text rewrites back onto the source glyphs.
+     * 石/担 may come back as 担; the returned line is the original sentence, so
+     * subtitle timing stays on those glyphs instead of the rewritten tokens.
+     * A transcript that does not line up falls back to the original sentence.
+     */
+    fun restoreServerTranscript(serverText: String, markedSource: String): String {
+        val parsed = parse(markedSource)
+        val clean = parsed.cleanText
+        if (serverText == clean) return clean
+        val out = StringBuilder()
+        var serverAt = 0
+        var cleanAt = 0
+        var removed = 0
+        for (mark in parsed.marks) {
+            val cleanStart = mark.start - removed
+            if (mark.spoken != null) {
+                val gap = clean.substring(cleanAt, cleanStart)
+                if (!serverText.startsWith(gap, serverAt)) return clean
+                out.append(gap)
+                serverAt += gap.length
+                val spoken = mark.spoken
+                if (serverText.startsWith(spoken, serverAt)) {
+                    out.append(mark.word)
+                    serverAt += spoken.length
+                } else if (serverText.startsWith(mark.word, serverAt)) {
+                    out.append(mark.word)
+                    serverAt += mark.word.length
+                } else return clean
+                cleanAt = cleanStart + mark.word.length
+            }
+            removed += mark.annotations.sumOf { it.last - it.first + 1 }
+        }
+        val tail = clean.substring(cleanAt)
+        if (serverText.substring(serverAt) != tail) return clean
+        out.append(tail)
+        return out.toString()
+    }
 
     /**
      * Cleans subtitle slices of a marked sentence. A slice that breaks a mark, or
@@ -188,7 +248,7 @@ internal object PronunciationMarkup {
         val merged = mutableListOf<Mark>()
         for (mark in found) {
             val previous = merged.lastOrNull()
-            if (previous != null && previous.end == mark.start) {
+            if (previous != null && previous.end == mark.start && previous.spoken == null && mark.spoken == null) {
                 val word = previous.word + mark.word
                 if (word.codePointCount(0, word.length) > MAX_WORD_CHARS) {
                     throw IllegalArgumentException("「$word」超过 $MAX_WORD_CHARS 个字，发音词典不接受更长的词。请拆成更短的词")
@@ -211,7 +271,8 @@ internal object PronunciationMarkup {
                 "读音词「${mark.word}」无效"
             }
             require(!mark.word.any { it.isWhitespace() || it == '/' }) { "读音词「${mark.word}」不能包含空格或斜杠" }
-            val reading = mark.syllables.joinToString("") { "(${it.pinyin}${it.tone})" }
+            val reading = mark.spoken ?: mark.syllables.joinToString("") { "(${it.pinyin}${it.tone})" }
+            require(reading.isNotEmpty() && '/' !in reading) { "读音「${mark.word}」无效" }
             putRule(byWord, mark.word, reading, existing = false)
         }
         if (byWord.size > MAX_ENTRIES) {
@@ -233,7 +294,33 @@ internal object PronunciationMarkup {
         }
     }
 
-    private fun wordStartBefore(text: String, open: Int, syllableCount: Int, snippet: String): Int {
+    private fun rewriteSpoken(body: String, snippet: String): String? {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty() || (trimmed[0] != '=' && trimmed[0] != '＝')) return null
+        val spoken = trimmed.substring(1).trim()
+        if (spoken.isEmpty()) {
+            throw IllegalArgumentException("「$snippet」等号后面要写读出来的汉字，例如石(=担)")
+        }
+        var index = 0
+        while (index < spoken.length) {
+            val codePoint = spoken.codePointAt(index)
+            if (!isCjk(codePoint)) {
+                throw IllegalArgumentException("「$snippet」请直接写要读成的汉字，例如石(=担)。拼音请写石(dan4)，不会自动把拼音换成字")
+            }
+            index += Character.charCount(codePoint)
+        }
+        if (spoken.codePointCount(0, spoken.length) > MAX_WORD_CHARS) {
+            throw IllegalArgumentException("「$snippet」一次最多改 $MAX_WORD_CHARS 个字")
+        }
+        return spoken
+    }
+
+    private fun isUnclosedRewrite(rest: String): Boolean {
+        val line = rest.substringBefore('\n').substringBefore('\r').trimStart()
+        return line.startsWith("=") || line.startsWith("＝")
+    }
+
+    private fun wordStartBefore(text: String, open: Int, syllableCount: Int, snippet: String, rewrite: Boolean = false): Int {
         var cursor = open
         var taken = 0
         while (taken < syllableCount && cursor > 0) {
@@ -244,7 +331,13 @@ internal object PronunciationMarkup {
         }
         if (taken == syllableCount) return cursor
         if (taken == 0) {
-            throw IllegalArgumentException("读音「$snippet」前面没有汉字。请紧挨着要标注的词，例如银行(yin2hang2)")
+            val example = if (rewrite) "石(=担)" else "银行(yin2hang2)"
+            throw IllegalArgumentException("读音「$snippet」前面没有汉字。请紧挨着要标注的词，例如$example")
+        }
+        if (rewrite) {
+            throw IllegalArgumentException(
+                "「$snippet」等号里有 $syllableCount 个汉字，括号前只有 $taken 个。等号里几个汉字，就改括号前同样多个汉字，例如石(=担)或几石(=几担)"
+            )
         }
         throw IllegalArgumentException(
             "「$snippet」有 $syllableCount 个音节，括号前只有 $taken 个汉字。几个汉字就写几个音节，例如银行(yin2hang2)或银(yin2)行(hang2)"
