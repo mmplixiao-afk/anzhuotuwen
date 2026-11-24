@@ -79,6 +79,7 @@ class GenerationService : Service() {
         val id = intent?.getStringExtra(EXTRA_PROJECT) ?: return START_NOT_STICKY
         val promptOverride = intent.getStringExtra(EXTRA_PROMPT).orEmpty()
         val shotImagePrompt = intent.getStringExtra(EXTRA_SHOT_IMAGE_PROMPT)
+        val characterName = intent.getStringExtra(EXTRA_CHARACTER).orEmpty()
         activeProject = id
         activeProjectId = id
         store.markCurrentProject(id)
@@ -135,7 +136,7 @@ class GenerationService : Service() {
                         }
                         VOICE_ALL -> generateAudio(project)
                         IMAGE_ALL -> generateImages(project, promptOverride)
-                        CHARACTER_REFERENCE -> regenerateCharacterReference(project, promptOverride)
+                        CHARACTER_REFERENCE -> regenerateCharacterReference(project, promptOverride, characterName)
                         RENDER -> render(project)
                         IMAGE -> regenerateImage(project, intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
                         IMAGE_OPTIMIZE -> optimizeAndRegenerateImage(project,
@@ -285,6 +286,7 @@ class GenerationService : Service() {
         project.storyboardStylePreset = storyboard.stylePreset
         project.characters = storyboard.characters.toMutableList()
         store.applyStoryboard(project, storyboard.shots)
+        applyIdentifiedCast(project)
         if (styleChanged) {
             project.shots.forEach { shot ->
                 shot.imageRevision = java.util.UUID.randomUUID().toString()
@@ -301,12 +303,11 @@ class GenerationService : Service() {
         return { context.isActive }
     }
 
-    private fun referenceReady(project: VideoProject): Boolean {
-        val file = store.characterReferenceImage(project)
-        val url = project.characterReferences.firstOrNull()?.remoteUrl.orEmpty()
-        return referenceAssetUsable(
+    private fun referenceReady(project: VideoProject, reference: CharacterReference): Boolean {
+        val file = store.characterReferenceImage(project, reference)
+        return referenceReadyFor(
             if (file.isFile) file.length() else 0L,
-            url,
+            reference.remoteUrl,
             isCangyuanImageHost(settings.provider("image").baseUrl)
         )
     }
@@ -322,24 +323,25 @@ class GenerationService : Service() {
         }
         val running = activeFlag()
         referenceGate.reset()
-        val plan = planImageBatch(pending.map { it.id to it.usesProtagonistReference }, referenceReady(project))
-        var sheetError: String? = null
-        if (plan.generateSheet) {
+        applyIdentifiedCast(project)
+        val neededNames = pending.flatMap { shot -> charactersForShot(shot, project.characters).map { it.name } }
+            .distinct()
+        for (name in neededNames) {
+            val reference = project.characterReferences.firstOrNull { it.name == name } ?: continue
+            if (referenceReady(project, reference)) continue
+            if (!running()) throw CancellationException("已暂停")
             try {
-                referenceGate.ensure(true, { referenceReady(project) }, { !running() }) {
-                    generateCharacterSheet(project, imagePrompt, running)
-                }
+                generateCharacterSheet(project, imagePrompt, running, name)
             } catch (error: CancellationException) {
                 throw error
-            } catch (error: Exception) {
-                sheetError = error.message ?: "主角参考图生成失败"
+            } catch (_: Exception) {
+                // A missing sheet does not block the shot. Text generation still runs.
             }
         }
         if (pending.isEmpty()) {
             update(project, "images", "review", "图片生成完成，请继续生成配音", project.shots.size, project.shots.size)
             return
         }
-        val ready = referenceReady(project)
         val semaphore = Semaphore(settings.concurrency.coerceIn(1, 10))
         update(project, "images", "running", "正在生成图片",
             project.shots.count { it.imageStatus == "done" }, project.shots.size)
@@ -348,22 +350,16 @@ class GenerationService : Service() {
                 async {
                     semaphore.withPermit {
                         val target = store.image(project, shot)
-                        val route = shotImageRoute(shot.usesProtagonistReference, ready)
                         var regenerated = false
                         if (target.length() < 1000 || shot.imageStatus != "done") {
-                            if (route == ShotImageRoute.BLOCKED) {
-                                shot.imageStatus = "failed"
-                                shot.error = (sheetError ?: referenceBlockedMessage(
-                                    isCangyuanImageHost(imageProvider.baseUrl)
-                                )).take(180)
-                            } else {
+                            run {
                                 var last: Exception? = null
                                 for (attempt in 0..2) {
                                     if (!running()) throw CancellationException("已暂停")
                                     try {
                                         val saved = requestShotImage(
                                             project, shot, imagePrompt, shot.imagePrompt, target,
-                                            "第 ${project.shotNumber(shot.id)} 镜生图", route == ShotImageRoute.EDIT, running
+                                            "第 ${project.shotNumber(shot.id)} 镜生图", running
                                         )
                                         shot.imageUrl = saved.remoteUrl
                                         last = null
@@ -404,18 +400,30 @@ class GenerationService : Service() {
         update(project, "images", "review", "图片生成完成，请继续生成配音", project.shots.size, project.shots.size)
     }
 
-    private suspend fun regenerateCharacterReference(project: VideoProject, promptOverride: String = "") {
+    private suspend fun regenerateCharacterReference(
+        project: VideoProject,
+        promptOverride: String = "",
+        characterName: String = ""
+    ) {
         require(project.shots.isNotEmpty()) { "请先确认分镜" }
         val imagePrompt = configuredPrompt("image", promptOverride)
         referenceGate.reset()
         val running = activeFlag()
-        update(project, "images", "running", "正在生成人物参考图", 0, 1)
-        generateCharacterSheet(project, imagePrompt, running)
-        val flagged = project.shots.count { it.usesProtagonistReference }
-        update(project, "images", "review",
-            if (flagged == 0) "人物参考图已更新。当前没有标明主角出镜的镜头，已有图片不会自动重做。"
-            else "人物参考图已更新。已有镜头不会自动重做；之后生成标明主角出镜的镜头时会使用它。",
-            project.shots.count { it.imageStatus == "done" }, project.shots.size)
+        applyIdentifiedCast(project)
+        val names = if (characterName.isBlank()) project.characterReferences.map { it.name }
+        else listOf(characterName)
+        require(names.isNotEmpty()) { "还没有识别到角色，请先拆分镜头" }
+        if (characterName.isNotBlank()) {
+            require(project.characterReferences.any { it.name == characterName }) { "找不到角色$characterName" }
+        }
+        names.forEachIndexed { index, name ->
+            update(project, "references", "running", "正在生成${name}的参考图 ${index + 1}/${names.size}", index, names.size)
+            generateCharacterSheet(project, imagePrompt, running, name)
+        }
+        val label = if (characterName.isBlank()) "全部角色参考图已更新" else "${characterName}的参考图已更新"
+        update(project, "references", "review",
+            "$label。已有镜头不会自动重画；之后生图会按镜头里的角色垫上对应参考图。",
+            project.shots.count { it.imageStatus == "done" }, project.shots.size.coerceAtLeast(1))
     }
 
     private suspend fun generateAudio(project: VideoProject) {
@@ -452,13 +460,18 @@ class GenerationService : Service() {
         require(shotPrompt.isNotBlank()) { "请先填写本镜生图提示词" }
         if (resetReference) referenceGate.reset()
         val running = activeFlag()
-        if (shot.usesProtagonistReference) {
-            if (publishStatus) update(project, "images", "running", "正在准备主角参考图", 0, 1)
-            referenceGate.ensure(true, { referenceReady(project) }, { !running() }) {
-                generateCharacterSheet(project, imagePrompt, running)
-            }
-            if (!referenceReady(project)) {
-                error(referenceBlockedMessage(isCangyuanImageHost(settings.provider("image").baseUrl)))
+        applyIdentifiedCast(project)
+        val shotNames = charactersForShot(project.shots.first { it.id == shotId }, project.characters).map { it.name }
+        for (name in shotNames) {
+            val reference = project.characterReferences.firstOrNull { it.name == name } ?: continue
+            if (referenceReady(project, reference)) continue
+            if (publishStatus) update(project, "references", "running", "正在准备${name}的参考图", 0, 1)
+            try {
+                generateCharacterSheet(project, imagePrompt, running, name)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // This character stays unmatched. Other ready references are still attached.
             }
         }
         if (publishStatus) {
@@ -478,7 +491,7 @@ class GenerationService : Service() {
         try {
             val saved = requestShotImage(
                 project, shot, imagePrompt, shotPrompt, replacement,
-                "第 ${project.shotNumber(shotId)} 镜重生图片", shot.usesProtagonistReference, running
+                "第 ${project.shotNumber(shotId)} 镜重生图片", running
             )
             Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
             shot.imageUrl = saved.remoteUrl
@@ -510,47 +523,68 @@ class GenerationService : Service() {
         shotPrompt: String,
         out: File,
         label: String,
-        useReference: Boolean,
         isActive: () -> Boolean
     ): SavedImage {
         val provider = settings.provider("image")
-        val prompt = buildShotImagePrompt(globalPrompt, project.storyboardStylePreset, shotPrompt, useReference)
+        val prepared = prepareShotReferences(shot, project.characters, project.characterReferences) { reference ->
+            referenceReady(project, reference)
+        }
+        val prompt = buildShotImagePrompt(
+            globalPrompt,
+            project.storyboardStylePreset,
+            shotPrompt,
+            prepared.references.isNotEmpty(),
+            prepared.references.map { displayReferenceName(it) }
+        )
         val costEntry = CostEntry.image(label, settings.imageUnitPrice, shotId = shot.id, prompt = prompt)
         val onGenerated = { ProjectCosts(store).add(project.id, costEntry) }
-        val saved = if (!useReference) {
+        val saved = if (prepared.references.isEmpty()) {
             api.image(provider, prompt, out, onGenerated, isActive)
         } else if (isCangyuanImageHost(provider.baseUrl)) {
-            val url = project.characterReferences.firstOrNull()?.remoteUrl.orEmpty()
-            if (!isPublicHttpsImageUrl(url)) error(referenceBlockedMessage(true))
-            api.editImage(provider, prompt, out, listOf(url), emptyList(), onGenerated, isActive)
+            val urls = prepared.references.map { it.remoteUrl }
+            api.editImage(provider, prompt, out, urls, emptyList(), onGenerated, isActive)
         } else {
-            val file = store.characterReferenceImage(project)
-            if (!file.isFile || file.length() <= 1000) error(referenceBlockedMessage(false))
-            api.editImage(provider, prompt, out, emptyList(), listOf(file), onGenerated, isActive)
+            val files = prepared.references.map { store.characterReferenceImage(project, it) }
+            api.editImage(provider, prompt, out, emptyList(), files, onGenerated, isActive)
         }
         ProjectCosts(store).attachMedia(project.id, costEntry.id, out)
         return saved
     }
 
-    private suspend fun generateCharacterSheet(project: VideoProject, globalPrompt: String, isActive: () -> Boolean) {
+    private suspend fun generateCharacterSheet(
+        project: VideoProject,
+        globalPrompt: String,
+        isActive: () -> Boolean,
+        characterName: String = ""
+    ) {
         val provider = settings.provider("image")
         val requiresUrl = isCangyuanImageHost(provider.baseUrl)
-        val appearance = sheetAppearance(
-            project.characters,
-            project.shots.filter { it.usesProtagonistReference }.map { it.imagePrompt }
-        )
-        val computed = buildCharacterSheetPrompt(globalPrompt, project.storyboardStylePreset, appearance)
-        val prompt = characterSheetRequestPrompt(project.characterReferences.firstOrNull()?.prompt.orEmpty(), computed)
-        val file = store.characterReferenceImage(project)
+        applyIdentifiedCast(project)
+        val reference = if (characterName.isBlank()) {
+            project.characterReferences.firstOrNull() ?: CharacterReference().also { project.characterReferences += it }
+        } else {
+            project.characterReferences.firstOrNull { it.name == characterName }
+                ?: error("找不到角色$characterName")
+        }
+        val appearance = reference.appearance.ifBlank {
+            sheetAppearance(
+                project.characters.filter { it.name == reference.name },
+                emptyList()
+            )
+        }
+        val computed = buildNamedCharacterPrompt(reference.name, appearance)
+        val savedPrompt = if (looksLikeStructuredPrompt(reference.prompt)) "" else reference.prompt
+        val prompt = characterSheetRequestPrompt(savedPrompt, computed)
+        val file = store.characterReferenceImage(project, reference)
         file.parentFile?.mkdirs()
         val replacement = File(file.parentFile, file.name + ".new")
-        update(project, "images", "running", "正在生成人物参考图", 0, 1)
+        update(project, "references", "running", "正在生成${reference.name}的参考图", 0, 1)
         var saved: SavedImage? = null
         var last: Exception? = null
         for (attempt in 0..2) {
             if (!isActive()) throw CancellationException("已暂停")
             replacement.delete()
-            val costEntry = CostEntry.image("人物参考图", settings.imageUnitPrice, prompt = prompt)
+            val costEntry = CostEntry.image("${reference.name}的参考图", settings.imageUnitPrice, prompt = prompt)
             try {
                 saved = api.image(provider, prompt, replacement, onGenerated = {
                     ProjectCosts(store).add(project.id, costEntry)
@@ -573,15 +607,12 @@ class GenerationService : Service() {
             error("人物参考图没有返回可公开访问的 HTTPS 地址")
         }
         Files.move(replacement.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        val reference = project.characterReferences.firstOrNull() ?: CharacterReference().also {
-            project.characterReferences += it
-        }
-        reference.name = "主角"
+        if (reference.name.isBlank()) reference.name = "主角"
         reference.remoteUrl = image.remoteUrl
         reference.status = "done"
         reference.appearance = appearance
         reference.prompt = prompt
-        update(project, "images", "running", "人物参考图已生成", 1, 1)
+        update(project, "references", "running", "${reference.name}的参考图已生成", 1, 1)
     }
 
     private suspend fun optimizeAndRegenerateImage(project: VideoProject, shotId: Int,
@@ -781,6 +812,7 @@ class GenerationService : Service() {
         const val EXTRA_SHOT = "shot_id"
         const val EXTRA_PROMPT = "prompt_override"
         const val EXTRA_SHOT_IMAGE_PROMPT = "shot_image_prompt"
+        const val EXTRA_CHARACTER = "character_name"
         const val SCRIPT = "script"
         const val SHOTS = "shots"
         const val FINISH = "finish"

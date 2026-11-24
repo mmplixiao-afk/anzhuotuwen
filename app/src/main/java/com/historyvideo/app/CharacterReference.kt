@@ -10,15 +10,21 @@ import java.net.URI
 data class StoryCharacter(
     val name: String,
     val appearance: String,
-    val role: String = ""
+    val role: String = "",
+    val sex: String = ""
 ) {
-    fun json() = JSONObject().put("name", name).put("appearance", appearance).put("role", role)
+    fun json() = JSONObject()
+        .put("name", name)
+        .put("appearance", appearance)
+        .put("role", role)
+        .put("sex", sex)
 
     companion object {
         fun from(value: JSONObject) = StoryCharacter(
             name = value.optString("name").trim().ifBlank { "主角" },
             appearance = value.optString("appearance", value.optString("description")).trim(),
-            role = value.optString("role").trim()
+            role = value.optString("role").trim(),
+            sex = value.optString("sex").trim()
         )
     }
 }
@@ -28,7 +34,11 @@ data class CharacterReference(
     var remoteUrl: String = "",
     var status: String = "pending",
     var appearance: String = "",
-    var prompt: String = ""
+    var prompt: String = "",
+    var role: String = "",
+    var sex: String = "",
+    var fileKey: String = "",
+    var promptCustom: Boolean = false
 ) {
     fun json() = JSONObject().apply {
         put("name", name)
@@ -36,6 +46,10 @@ data class CharacterReference(
         put("status", status)
         put("appearance", appearance)
         put("prompt", prompt)
+        put("role", role)
+        put("sex", sex)
+        put("file_key", fileKey)
+        put("prompt_custom", promptCustom)
     }
 
     companion object {
@@ -44,7 +58,12 @@ data class CharacterReference(
             remoteUrl = persistedImageUrl(value.optString("remote_url")),
             status = value.optString("status").trim().ifBlank { "pending" },
             appearance = value.optString("appearance"),
-            prompt = value.optString("prompt")
+            prompt = value.optString("prompt"),
+            role = value.optString("role"),
+            sex = value.optString("sex"),
+            fileKey = value.optString("file_key").trim(),
+            promptCustom = if (value.has("prompt_custom")) value.optBoolean("prompt_custom")
+            else value.optString("prompt").trim().isNotEmpty()
         )
     }
 }
@@ -196,7 +215,7 @@ internal fun cangyuanGenerationRequestBody(model: String, prompt: String, size: 
 
 internal fun referenceImageUrls(urls: List<String>): List<String> {
     val clean = urls.map { it.trim() }.filter { isPublicHttpsImageUrl(it) }.distinct().take(9)
-    require(clean.isNotEmpty()) { "主角参考图缺少可公开访问的 HTTPS 地址" }
+    require(clean.isNotEmpty()) { "人物参考图缺少可公开访问的 HTTPS 地址" }
     return clean
 }
 
@@ -223,10 +242,11 @@ internal fun parseStoryCharacters(root: JSONObject?): List<StoryCharacter> {
     val array = root?.optJSONArray("characters") ?: return emptyList()
     val result = mutableListOf<StoryCharacter>()
     for (index in 0 until array.length()) {
-        if (result.size == 9) break
+        if (result.size == 12) break
         val item = array.optJSONObject(index) ?: continue
         val character = StoryCharacter.from(item)
-        if (character.appearance.isNotBlank()) result += character
+        val named = character.name.isNotBlank() && !genericCharacterName(character.name)
+        if (character.appearance.isNotBlank() || named) result += character
     }
     return result
 }
@@ -242,6 +262,7 @@ internal fun characterSheetRequestPrompt(savedPrompt: String, computedPrompt: St
 /** Saves the edited sheet prompt and leaves the existing image, URL, and status untouched. */
 internal fun storeReferencePrompt(reference: CharacterReference, prompt: String) {
     reference.prompt = prompt.trim()
+    reference.promptCustom = true
 }
 
 internal fun buildCharacterSheetPrompt(globalImagePrompt: String, stylePreset: String, appearance: String): String {
@@ -263,10 +284,12 @@ internal fun buildShotImagePrompt(
     globalImagePrompt: String,
     stylePreset: String,
     shotPrompt: String,
-    useReference: Boolean
+    useReference: Boolean,
+    referenceNames: List<String> = emptyList()
 ): String {
     val lock = if (useReference) CHARACTER_REFERENCE_LOCK else ""
-    return listOf(globalImagePrompt, stylePreset, lock, shotPrompt).filter { it.isNotBlank() }.joinToString("\n")
+    val identity = if (useReference) referenceIdentityLine(referenceNames) else ""
+    return listOf(globalImagePrompt, stylePreset, lock, identity, shotPrompt).filter { it.isNotBlank() }.joinToString("\n")
 }
 
 internal fun referenceBlockedMessage(requiresPublicUrl: Boolean): String =

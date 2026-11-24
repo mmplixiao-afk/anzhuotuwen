@@ -645,6 +645,11 @@ class CloudApi {
         return saveImageResponse(config, result, out, onGenerated, isActive)
     }
 
+    /**
+     * Reference images are sent in list order, at most 9.
+     * Cangyuan hosts receive an `images` URL array. Other hosts receive multipart `image` or repeated `image[]`.
+     * The prompt must name each attachment in this same order.
+     */
     fun editImage(
         config: ProviderConfig,
         prompt: String,

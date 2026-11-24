@@ -391,6 +391,9 @@ class ProjectStore(context: Context) {
         "images/%03d%s.jpg".format(shot.id, revisionSuffix(shot.imageRevision)))
     fun characterReferenceImage(project: VideoProject) =
         File(directory(project.id), "images/character_ref_01.jpg")
+
+    fun characterReferenceImage(project: VideoProject, reference: CharacterReference) =
+        File(directory(project.id), "images/${characterReferenceFileName(reference.fileKey)}")
     fun audio(project: VideoProject, shot: Shot) = File(directory(project.id),
         "audio/%03d%s.mp3".format(shot.id, revisionSuffix(shot.audioRevision)))
     fun output(project: VideoProject) = File(directory(project.id),
