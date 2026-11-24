@@ -1,0 +1,720 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index 897c26a..1242f94 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@ android {
+         applicationId 'com.historyvideo.app'
+         minSdk 29
+         targetSdk 35
+-        versionCode 47
+-        versionName '0.5.16'
++        versionCode 48
++        versionName '0.5.17'
+     }
+ 
+     // 👇 新增的签名配置块
+diff --git a/app/src/main/assets/prompts/shots.md b/app/src/main/assets/prompts/shots.md
+index a1a9128..0286387 100644
+--- a/app/src/main/assets/prompts/shots.md
++++ b/app/src/main/assets/prompts/shots.md
+@@ -8,9 +8,10 @@
+ - 每条反驳短镜分别生成贴合本镜口播的独立 visual 和 image_prompt，不得重复使用同一画面描述。第一镜承载封面大字，第二镜开始普通正文字幕。
+ - 人物动作镜头、双人互动、表情近景、屋舍街道全景、食物衣物等器物特写交替出现。讲“以前”和“如今”时分成独立镜头，保持对比物与构图可辨认。
+ - 开场迅速呈现关键人物或核心处境，避免与主题无关的风景铺垫。结尾画面呼应开场问题。
+-- 在内部先确定每一个有名有姓、可区分的角色外观，再在每条涉及该人物的 image_prompt 中重复简短且稳定的姓名、性别、年龄、脸型、发式和衣着锚点。不能把不同角色写成同一个人，也不能只写“同一人”。只有该角色在故事里明确是男性，或原文写了胡须时，才给这个角色写胡须；女性不要写胡须。看不出性别就写“性别未说明”，不要默认成男性。剧情换装保留脸与发型；配角各有可辨认外观。
+-- 根对象的 characters 必须列出文案和镜头里出现的全部可区分角色，不要只写主角，也不要把配角合并成主角。每个角色一条明文外观，不要把提示词写成嵌套说明：{"name":"盛长风","role":"protagonist","sex":"male","appearance":"男性，年龄、脸型、发式、服装"}。配角 role 写 supporting，sex 只写 male、female 或留空。name 用角色姓名。appearance 必须写出该角色自己的性别；看不出来就写“性别未说明”。
+-- 只有主角的脸或身体清楚出现时，该镜才加 "uses_protagonist_reference": true。空镜、器物、没有主角的镜头必须为 false。其他角色把姓名写进 visual 和 image_prompt，程序会按姓名匹配参考图。缺少该字段按 false，不要为此改动分镜边界。
++- 先按全文已经写明的身份，确定故事世界里真实在场、会参与剧情的人。第二人称口播里的「你」一旦被文中点名为某人，就是这个主角，不要再为「你」单独建档。同一人的姓名、职衔、官称、绰号、昵称，以及文中用来指他的代词，全部写入同一个 id 的 aliases。换装、女扮男装、微服、加袍不改变他是谁，也不改变性别。只有原文写明该角色是男性或写了胡须，才写胡须；女性不要写胡须。看不出性别写 unspecified，不要默认男性。亲属、上司、对手若是另一个人，必须单独建档。
++- 比较、比喻、假设和旁白对照不是角色。由像、好比、不像、哪像、若是、如果、假如、后世，或「那些……一样」引出的人或群体，只是拿来对照，不要收入 characters，也不要做成 role=group。role=group 只给故事当时确实在场的人群，例如现场观众、在场官员或在场队友，不要把每个名词都建成角色。
++- characters 与 shots 必须在同一次输出里给出。字段仍是稳定 id、规范名 name、aliases、role、sex 和明文 appearance。后一批如果已经给出角色 id，必须复用，并把新出现的职衔、绰号、代词补进该 id 的 aliases，不要为这些称呼新建角色。
++- 每镜 character_ids 只放本镜画面里脸或身体实际出现、正在做动作或被描写外形的人，按出场顺序。口播里点到名字、用来打比方，或说到一个不在画面中的人，不要放进该镜。主角若在本镜里以「你」、职衔或绰号做出可见动作，必须写入主角 id，不能因为没用规范名就漏掉。空镜和器物镜的 character_ids 为空。uses_protagonist_reference 仅当主角本人清楚出镜时为 true。缺少字段按空名单，不要为此改动分镜边界。
+ - visual 用中文写清时代、地点、主体、动作和情绪；image_prompt 是独立可用的中文生图指令，约 100 至 180 字，包含出场人物的姓名和外观锚点、单一场景、景别、动作、光线及写实古装风格。无人物空镜不必强塞人物。
+ - 不画可读文字、字幕、花字、水印；底部保留字幕位置。画幅服从用户选择，不强行写竖屏。
+ - video_prompt 只描述适合静态图的轻微推近、平移或静止，不要求角色完成连续动作；它是镜头意图，不能假设程序会生成真人动态视频。
+@@ -22,8 +23,7 @@
+   "title": "string",
+   "style_preset": "string",
+   "characters": [
+-    {"name": "盛长风", "role": "protagonist", "sex": "male", "appearance": "男性，年龄、脸型、发式和衣着"},
+-    {"name": "叶青城", "role": "supporting", "sex": "female", "appearance": "女性，年龄、脸型、发式和衣着"}
++    {"id": "c1", "name": "规范名", "aliases": ["别称"], "role": "protagonist", "sex": "unspecified", "appearance": "性别、年龄、脸型、发式和衣着"}
+   ],
+   "shots": [
+     {
+@@ -34,6 +34,7 @@
+       "punch": "2到6字的画面关键词",
+       "image_prompt": "string",
+       "video_prompt": "string",
++      "character_ids": ["c1"],
+       "uses_protagonist_reference": true
+     }
+   ]
+diff --git a/app/src/main/java/com/historyvideo/app/CharacterReference.kt b/app/src/main/java/com/historyvideo/app/CharacterReference.kt
+index 8f719e1..7fb16d4 100644
+--- a/app/src/main/java/com/historyvideo/app/CharacterReference.kt
++++ b/app/src/main/java/com/historyvideo/app/CharacterReference.kt
+@@ -11,21 +11,36 @@ data class StoryCharacter(
+     val name: String,
+     val appearance: String,
+     val role: String = "",
+-    val sex: String = ""
++    val sex: String = "",
++    val id: String = "",
++    val aliases: List<String> = emptyList()
+ ) {
+     fun json() = JSONObject()
++        .put("id", id)
+         .put("name", name)
+         .put("appearance", appearance)
+         .put("role", role)
+         .put("sex", sex)
++        .put("aliases", JSONArray(aliases))
+ 
+     companion object {
+         fun from(value: JSONObject) = StoryCharacter(
+             name = value.optString("name").trim().ifBlank { "主角" },
+             appearance = value.optString("appearance", value.optString("description")).trim(),
+             role = value.optString("role").trim(),
+-            sex = value.optString("sex").trim()
++            sex = value.optString("sex").trim(),
++            id = value.optString("id").trim(),
++            aliases = readAliases(value)
+         )
++
++        private fun readAliases(value: JSONObject): List<String> {
++            val array = value.optJSONArray("aliases") ?: value.optJSONArray("alias")
++            if (array != null) {
++                return (0 until array.length()).map { array.optString(it).trim() }.filter { it.isNotBlank() }
++            }
++            return value.optString("aliases").split('、', ',', '，', '/', '|')
++                .map { it.trim() }.filter { it.isNotBlank() }
++        }
+     }
+ }
+ 
+@@ -38,7 +53,9 @@ data class CharacterReference(
+     var role: String = "",
+     var sex: String = "",
+     var fileKey: String = "",
+-    var promptCustom: Boolean = false
++    var promptCustom: Boolean = false,
++    var characterId: String = "",
++    var aliases: MutableList<String> = mutableListOf()
+ ) {
+     fun json() = JSONObject().apply {
+         put("name", name)
+@@ -50,6 +67,8 @@ data class CharacterReference(
+         put("sex", sex)
+         put("file_key", fileKey)
+         put("prompt_custom", promptCustom)
++        put("character_id", characterId)
++        put("aliases", JSONArray(aliases))
+     }
+ 
+     companion object {
+@@ -63,7 +82,17 @@ data class CharacterReference(
+             sex = value.optString("sex"),
+             fileKey = value.optString("file_key").trim(),
+             promptCustom = if (value.has("prompt_custom")) value.optBoolean("prompt_custom")
+-            else value.optString("prompt").trim().isNotEmpty()
++            else value.optString("prompt").trim().isNotEmpty(),
++            characterId = value.optString("character_id").trim(),
++            aliases = mutableListOf<String>().apply {
++                val array = value.optJSONArray("aliases")
++                if (array != null) {
++                    for (index in 0 until array.length()) {
++                        val alias = array.optString(index).trim()
++                        if (alias.isNotBlank()) add(alias)
++                    }
++                }
++            }
+         )
+     }
+ }
+diff --git a/app/src/main/java/com/historyvideo/app/CloudApi.kt b/app/src/main/java/com/historyvideo/app/CloudApi.kt
+index 550d6fd..76d7c3b 100644
+--- a/app/src/main/java/com/historyvideo/app/CloudApi.kt
++++ b/app/src/main/java/com/historyvideo/app/CloudApi.kt
+@@ -23,9 +23,86 @@ import java.nio.file.StandardCopyOption
+ import kotlin.math.abs
+ 
+ /** 单次分镜请求覆盖的 source unit 数量：分批控制输出长度，避免被服务端 max_tokens 截断。 */
+-private const val STORYBOARD_UNITS_PER_CALL = 24
++internal const val STORYBOARD_UNITS_PER_CALL = 24
+ /** 文本补全上限：PC 格式分镜含 visual/image_prompt/video_prompt，默认上限过低会截断 JSON。 */
+-private const val STORYBOARD_MAX_TOKENS = 8192
++internal const val STORYBOARD_MAX_TOKENS = 8192
++internal const val STORYBOARD_TEMPERATURE = 0.6
++internal const val STORYBOARD_SYSTEM_PROMPT = "你是一个严格执行用户任务提示词的生成器。"
++
++internal fun storyboardUserContent(taskPrompt: String, sourceInput: String, extraInstruction: String = ""): String = buildString {
++    append("请严格按照下面的【本次任务提示词】完成任务。它是本次请求的唯一内容规则，优先级高于模型默认风格；不得套用其他示例的字数、结构或主题。\n\n")
++    append("【本次任务提示词】\n")
++    append(taskPrompt)
++    append("\n\n【本次输入】\n")
++    append(sourceInput)
++    if (extraInstruction.isNotBlank()) {
++        append("\n\n")
++        append(extraInstruction.trim())
++    }
++}
++
++internal fun storyboardKnownCastBlock(characters: List<StoryCharacter>): String {
++    if (characters.isEmpty()) return ""
++    return buildString {
++        append("\n已确定角色，后续批次必须复用这些 id，同一人不要另起 id：")
++        append(JSONArray().apply { characters.forEach { put(it.json()) } }.toString())
++        append("\n")
++    }
++}
++
++internal fun storyboardSourceInput(input: String, units: List<StoryboardRules.SourceUnit>): String = buildString {
++    append(input.trim())
++    append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
++    append(JSONArray().apply {
++        units.forEach { unit ->
++            put(JSONObject().put("id", unit.id)
++                .put("text", PronunciationMarkup.clean(unit.text))
++                .put("fixed_shot", unit.fixedShot)
++                .put("can_end_shot", unit.id == units.size || StoryboardRules.endsAtPunctuation(unit.text)))
++        }
++    }.toString())
++}
++
++internal fun storyboardRetryInstruction(failure: String) =
++    "\n上次分镜不合格：$failure。请只为每镜返回连续完整的source_unit_ids编号分组和PC格式画面字段，不要输出或重写voiceover；每个source unit必须按顺序恰好覆盖一次。输出必须完整闭合，勿截断 JSON。"
++
++internal fun storyboardTaskPrompt(
++    shotsPrompt: String,
++    header: String,
++    knownCharacters: List<StoryCharacter>,
++    instruction: String,
++    retryInstruction: String = ""
++): String = shotsPrompt + header + storyboardKnownCastBlock(knownCharacters) + instruction + retryInstruction
++
++internal fun storyboardBatchHeader(
++    batchIndex: Int,
++    batchCount: Int,
++    totalUnits: Int,
++    unitOffset: Int,
++    batchSize: Int
++): String {
++    if (batchCount <= 1 && batchSize >= totalUnits) return ""
++    return buildString {
++        append("\n\n【分批生成】全文共 $totalUnits 个 source unit，本批是第 ${batchIndex + 1}/$batchCount 批，")
++        append("对应全文第 ${unitOffset + 1}–${unitOffset + batchSize}")
++        append(" 段；本批编号已从 1 重新开始。只输出本批的镜头，不要补全其他段落。\n")
++    }
++}
++
++internal fun storyboardBatches(units: List<StoryboardRules.SourceUnit>): List<List<StoryboardRules.SourceUnit>> {
++    val batches = mutableListOf<List<StoryboardRules.SourceUnit>>()
++    var pending = mutableListOf<StoryboardRules.SourceUnit>()
++    for (unit in units) {
++        pending += unit
++        if (pending.size >= STORYBOARD_UNITS_PER_CALL && StoryboardRules.endsAtPunctuation(unit.text)) {
++            batches += pending.toList()
++            pending = mutableListOf()
++        }
++    }
++    if (pending.isNotEmpty()) batches += pending.toList()
++    if (batches.isEmpty()) batches += units
++    return batches
++}
+ 
+ private data class DoubaoResponseParts(
+     val codes: List<Int>,
+@@ -285,21 +362,11 @@ class CloudApi {
+         val taskPrompt = system.trim()
+         require(taskPrompt.isNotBlank()) { "提示词不能为空" }
+         val instruction = outputInstruction.trim()
+-        val userContent = buildString {
+-            append("请严格按照下面的【本次任务提示词】完成任务。它是本次请求的唯一内容规则，优先级高于模型默认风格；不得套用其他示例的字数、结构或主题。\n\n")
+-            append("【本次任务提示词】\n")
+-            append(taskPrompt)
+-            append("\n\n【本次输入】\n")
+-            append(input)
+-            if (instruction.isNotBlank()) {
+-                append("\n\n")
+-                append(instruction)
+-            }
+-        }
+-        val body = JSONObject().put("model", config.model).put("temperature", 0.6)
++        val userContent = storyboardUserContent(taskPrompt, input, instruction)
++        val body = JSONObject().put("model", config.model).put("temperature", STORYBOARD_TEMPERATURE)
+             .put("max_tokens", STORYBOARD_MAX_TOKENS)
+             .put("messages", JSONArray()
+-                .put(JSONObject().put("role", "system").put("content", "你是一个严格执行用户任务提示词的生成器。"))
++                .put(JSONObject().put("role", "system").put("content", STORYBOARD_SYSTEM_PROMPT))
+                 .put(JSONObject().put("role", "user").put("content", userContent)))
+         val url = endpoint(config.baseUrl, "/v1/chat/completions")
+         require(config.key.isNotBlank()) { "请先填写 API Key" }
+@@ -325,17 +392,7 @@ class CloudApi {
+                    onRetry: () -> Unit = {}, onUsage: (TextUsage) -> Unit = {}): StoryboardResult {
+         val units = StoryboardRules.sourceUnits(expectedScript, granularity)
+         // 长文按 source unit 分批；每批只在标点边界结束，合并后再校验全文分镜边界。
+-        val batches = mutableListOf<List<StoryboardRules.SourceUnit>>()
+-        var pendingBatch = mutableListOf<StoryboardRules.SourceUnit>()
+-        for (unit in units) {
+-            pendingBatch += unit
+-            if (pendingBatch.size >= STORYBOARD_UNITS_PER_CALL && StoryboardRules.endsAtPunctuation(unit.text)) {
+-                batches += pendingBatch.toList()
+-                pendingBatch = mutableListOf()
+-            }
+-        }
+-        if (pendingBatch.isNotEmpty()) batches += pendingBatch.toList()
+-        if (batches.isEmpty()) batches += units
++        val batches = storyboardBatches(units)
+         val merged = mutableListOf<Shot>()
+         var title = ""
+         var stylePreset = ""
+@@ -349,7 +406,7 @@ class CloudApi {
+             val result = try {
+                 storyboardBatch(config, prompt, input, expectedScript, localUnits, granularity,
+                     batchIndex, batches.size, units.size, unitOffset, onRetry, onUsage,
+-                    firstBatch = batchIndex == 0)
++                    firstBatch = batchIndex == 0, knownCharacters = characters)
+             } catch (error: IllegalStateException) {
+                 throw IllegalStateException(
+                     "第 ${batchIndex + 1}/${batches.size} 批分镜失败：${error.message}", error)
+@@ -360,35 +417,27 @@ class CloudApi {
+             unitOffset += batch.size
+             if (title.isBlank()) title = result.title
+             if (stylePreset.isBlank()) stylePreset = result.stylePreset
+-            if (characters.isEmpty() && result.characters.isNotEmpty()) characters = result.characters
++            characters = mergeStoryCasts(characters, result.characters)
+             result.shots.forEach { shot -> merged += shot.copy(id = merged.size + 1) }
+         }
+         val aligned = StoryboardRules.alignOpening(expectedScript, merged)
+         StoryboardRules.validate(expectedScript, aligned, granularity)
+-        return StoryboardResult(title, stylePreset, aligned, characters)
++        val cast = normalizeStoryCast(characters)
++        bindShotCharacterIds(aligned, cast)
++        return StoryboardResult(title, stylePreset, aligned, cast)
+     }
+ 
+     private fun storyboardBatch(config: ProviderConfig, prompt: String, input: String,
+                                 expectedScript: String, units: List<StoryboardRules.SourceUnit>,
+                                 granularity: String, batchIndex: Int, batchCount: Int, totalUnits: Int,
+                                 unitOffset: Int, onRetry: () -> Unit, onUsage: (TextUsage) -> Unit,
+-                                firstBatch: Boolean): StoryboardResult {
+-        val header = if (batchCount <= 1 && units.size >= totalUnits) "" else buildString {
+-            append("\n\n【分批生成】全文共 $totalUnits 个 source unit，本批是第 ${batchIndex + 1}/$batchCount 批，")
+-            append("对应全文第 ${unitOffset + 1}–${unitOffset + units.size}")
+-            append(" 段；本批编号已从 1 重新开始。只输出本批的镜头，不要补全其他段落。\n")
+-        }
+-        val taskPrompt = prompt + header +
+-            StoryboardRules.instruction(expectedScript, units, granularity, firstBatch = firstBatch)
+-        val sourceInput = buildString {
+-            append(input.trim())
+-            append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
+-            append(JSONArray().apply {
+-                units.forEach { unit -> put(JSONObject().put("id", unit.id)
+-                    .put("text", PronunciationMarkup.clean(unit.text)).put("fixed_shot", unit.fixedShot)
+-                    .put("can_end_shot", unit.id == units.size || StoryboardRules.endsAtPunctuation(unit.text))) }
+-            }.toString())
+-        }
++                                firstBatch: Boolean,
++                                knownCharacters: List<StoryCharacter> = emptyList()): StoryboardResult {
++        val header = storyboardBatchHeader(batchIndex, batchCount, totalUnits, unitOffset, units.size)
++        val knownCast = storyboardKnownCastBlock(knownCharacters)
++        val instruction = StoryboardRules.instruction(expectedScript, units, granularity, firstBatch = firstBatch)
++        val taskPrompt = prompt + header + knownCast + instruction
++        val sourceInput = storyboardSourceInput(input, units)
+         // 首批用本批原文校验开头边界和钩子长度；完整结果合并后再做一次全文校验。
+         val validateBatch = firstBatch
+         val batchScript = if (validateBatch) units.joinToString("") { it.text } else expectedScript
+@@ -413,10 +462,10 @@ class CloudApi {
+             onRetry()
+             val (left, right) = splitStoryboardUnits(units)
+             val leftResult = storyboardBatch(config, prompt, input, expectedScript, left, granularity,
+-                batchIndex, batchCount, totalUnits, unitOffset, onRetry, onUsage, firstBatch)
++                batchIndex, batchCount, totalUnits, unitOffset, onRetry, onUsage, firstBatch, knownCharacters)
+             val rightResult = storyboardBatch(config, prompt, input, expectedScript, right, granularity,
+                 batchIndex, batchCount, totalUnits, unitOffset + left.size, onRetry, onUsage,
+-                firstBatch = false)
++                firstBatch = false, knownCharacters = mergeStoryCasts(knownCharacters, leftResult.characters))
+             val merged = mutableListOf<Shot>()
+             leftResult.shots.forEach { merged += it.copy(id = merged.size + 1) }
+             rightResult.shots.forEach { merged += it.copy(id = merged.size + 1) }
+@@ -424,7 +473,7 @@ class CloudApi {
+                 leftResult.title.ifBlank { rightResult.title },
+                 leftResult.stylePreset.ifBlank { rightResult.stylePreset },
+                 merged,
+-                leftResult.characters.ifEmpty { rightResult.characters })
++                mergeStoryCasts(leftResult.characters, rightResult.characters))
+         }
+     }
+ 
+@@ -445,8 +494,7 @@ class CloudApi {
+         var lastFailure = ""
+         var truncated = false
+         for (attempt in 0..1) {
+-            val retryInstruction = if (attempt == 0) "" else
+-                "\n上次分镜不合格：$lastFailure。请只为每镜返回连续完整的source_unit_ids编号分组和PC格式画面字段，不要输出或重写voiceover；每个source unit必须按顺序恰好覆盖一次。输出必须完整闭合，勿截断 JSON。"
++            val retryInstruction = if (attempt == 0) "" else storyboardRetryInstruction(lastFailure)
+             // Only invalid model output is retried. A transport error may already be billed.
+             val content = request(retryInstruction)
+             try {
+diff --git a/app/src/main/java/com/historyvideo/app/MainActivity.kt b/app/src/main/java/com/historyvideo/app/MainActivity.kt
+index 1530b65..5809a7f 100644
+--- a/app/src/main/java/com/historyvideo/app/MainActivity.kt
++++ b/app/src/main/java/com/historyvideo/app/MainActivity.kt
+@@ -3073,6 +3073,10 @@ private fun ReferencesScreen(project: VideoProject, store: ProjectStore,
+                             contentScale = ContentScale.Crop)
+                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                             Text(reference.name, style = MaterialTheme.typography.titleLarge)
++                            if (reference.aliases.isNotEmpty()) {
++                                Text("又称 ${reference.aliases.joinToString("、")}", style = MaterialTheme.typography.bodySmall,
++                                    color = HistoryColors.muted)
++                            }
+                             Text(characterSexCaption(reference.sex), style = MaterialTheme.typography.bodySmall,
+                                 color = HistoryColors.muted)
+                             StatusPill(if (ready) "已有参考图" else "未生成",
+diff --git a/app/src/main/java/com/historyvideo/app/MultiCharacterReference.kt b/app/src/main/java/com/historyvideo/app/MultiCharacterReference.kt
+index c935e4e..d97eddd 100644
+--- a/app/src/main/java/com/historyvideo/app/MultiCharacterReference.kt
++++ b/app/src/main/java/com/historyvideo/app/MultiCharacterReference.kt
+@@ -91,6 +91,9 @@ internal data class PreparedShotReferences(
+ )
+ 
+ internal fun findCharacterReference(character: StoryCharacter, references: List<CharacterReference>): CharacterReference? {
++    if (character.id.isNotBlank()) {
++        references.firstOrNull { it.characterId == character.id }?.let { return it }
++    }
+     references.firstOrNull { it.name == character.name }?.let { return it }
+     if (character.role.equals("protagonist", true) || character.name == "主角") {
+         references.firstOrNull { it.name == "主角" }?.let { return it }
+@@ -100,17 +103,10 @@ internal fun findCharacterReference(character: StoryCharacter, references: List<
+ }
+ 
+ internal fun charactersForShot(shot: Shot, cast: List<StoryCharacter>): List<StoryCharacter> {
+-    val blob = shotCharacterBlob(shot)
+-    val mentioned = cast.filter { !genericCharacterName(it.name) && it.name.isNotBlank() && blob.contains(it.name) }
+-        .sortedBy { blob.indexOf(it.name) }
+-    if (mentioned.isNotEmpty()) {
+-        if (shot.usesProtagonistReference) {
+-            val protagonist = cast.firstOrNull { it.role.equals("protagonist", true) && !genericCharacterName(it.name) }
+-            if (protagonist != null && mentioned.none { it.name == protagonist.name }) {
+-                return (listOf(protagonist) + mentioned).distinctBy { it.name }.take(9)
+-            }
+-        }
+-        return mentioned.distinctBy { it.name }.take(9)
++    if (shot.characterIds.isNotEmpty()) {
++        return shot.characterIds.mapNotNull { token -> resolveCastMember(token, cast) }
++            .distinctBy { it.id.ifBlank { it.name } }
++            .take(9)
+     }
+     if (shot.usesProtagonistReference) {
+         val protagonist = cast.firstOrNull { it.role.equals("protagonist", true) || it.name == "主角" }
+@@ -119,6 +115,66 @@ internal fun charactersForShot(shot: Shot, cast: List<StoryCharacter>): List<Sto
+     return emptyList()
+ }
+ 
++internal fun resolveCastMember(token: String, cast: List<StoryCharacter>): StoryCharacter? {
++    val key = token.trim()
++    if (key.isBlank()) return null
++    return cast.firstOrNull { it.id == key || it.name == key || key in it.aliases }
++}
++
++/** Assign stable ids from the storyboard payload. Does not scan narration for names. */
++internal fun normalizeStoryCast(raw: List<StoryCharacter>): List<StoryCharacter> {
++    val result = mutableListOf<StoryCharacter>()
++    raw.forEach { character ->
++        val name = character.name.trim()
++        if (name.isBlank() || genericCharacterName(name)) return@forEach
++        val sex = when (val labeled = parseSexLabel(character.sex)) {
++            ProtagonistSex.UNSPECIFIED -> sexStorageLabel(protagonistSex(character.appearance))
++            else -> sexStorageLabel(labeled)
++        }
++        val id = character.id.trim().ifBlank { "c${result.size + 1}" }
++        if (result.any { it.id == id }) return@forEach
++        val aliases = character.aliases.map { it.trim() }.filter { it.isNotBlank() && it != name }.distinct()
++        result += character.copy(id = id, name = name, sex = sex, aliases = aliases)
++    }
++    return result
++}
++
++internal fun mergeStoryCasts(base: List<StoryCharacter>, incoming: List<StoryCharacter>): List<StoryCharacter> {
++    val merged = normalizeStoryCast(base).toMutableList()
++    normalizeStoryCast(incoming).forEach { character ->
++        val index = merged.indexOfFirst {
++            it.id == character.id || it.name == character.name || character.name in it.aliases || it.name in character.aliases
++        }
++        if (index < 0) {
++            val id = if (merged.any { it.id == character.id }) "c${merged.size + 1}" else character.id
++            merged += character.copy(id = id)
++        } else {
++            val current = merged[index]
++            val aliases = (current.aliases + character.aliases + character.name)
++                .map { it.trim() }.filter { it.isNotBlank() && it != current.name }.distinct()
++            merged[index] = current.copy(
++                appearance = current.appearance.ifBlank { character.appearance },
++                sex = current.sex.ifBlank { character.sex },
++                role = current.role.ifBlank { character.role },
++                aliases = aliases
++            )
++        }
++    }
++    return merged
++}
++
++internal fun bindShotCharacterIds(shots: List<Shot>, cast: List<StoryCharacter>) {
++    val protagonistId = cast.firstOrNull { it.role.equals("protagonist", true) }?.id.orEmpty()
++    shots.forEach { shot ->
++        val resolved = shot.characterIds.mapNotNull { resolveCastMember(it, cast)?.id }.distinct()
++        if (resolved.isNotEmpty()) {
++            shot.characterIds = resolved.toMutableList()
++        } else if (shot.characterIds.isEmpty() && shot.usesProtagonistReference && protagonistId.isNotBlank()) {
++            shot.characterIds = mutableListOf(protagonistId)
++        }
++    }
++}
++
+ internal fun prepareShotReferences(
+     shot: Shot,
+     cast: List<StoryCharacter>,
+@@ -135,6 +191,7 @@ internal fun prepareShotReferences(
+ internal fun displayReferenceName(reference: CharacterReference): String =
+     reference.name.trim().ifBlank { "主角" }
+ 
++/** Legacy narration scan. 拆镜 and 参考图 do not call this; they use the storyboard JSON cast. */
+ internal fun identifyStoryCharacters(
+     script: String,
+     shots: List<Shot>,
+@@ -218,12 +275,16 @@ internal fun syncCharacterReferences(
+         used += key
+     }
+     return cast.map { character ->
+-        val current = pool.firstOrNull { it.name == character.name } ?: CharacterReference(name = character.name).also {
+-            it.fileKey = allocateReferenceFileKey(used)
+-            used += it.fileKey
+-            pool += it
+-        }
++        val current = pool.firstOrNull { it.characterId.isNotBlank() && it.characterId == character.id }
++            ?: pool.firstOrNull { it.name == character.name }
++            ?: CharacterReference(name = character.name).also {
++                it.fileKey = allocateReferenceFileKey(used)
++                used += it.fileKey
++                pool += it
++            }
++        current.characterId = character.id
+         current.name = character.name
++        current.aliases = character.aliases.toMutableList()
+         current.role = character.role
+         current.sex = character.sex
+         val appearance = character.appearance.ifBlank { current.appearance }
+@@ -243,11 +304,21 @@ internal fun syncCharacterReferences(
+     }
+ }
+ 
++/**
++ * Persists the cast already returned by the storyboard response.
++ * Narration is not scanned for names.
++ */
+ internal fun applyIdentifiedCast(project: VideoProject): Boolean {
+-    val identified = identifyStoryCharacters(project.script, project.shots, project.characters)
+-    val synced = syncCharacterReferences(identified, project.characterReferences)
+-    if (sameCharacters(project.characters, identified) && sameReferences(project.characterReferences, synced)) return false
+-    project.characters = identified.toMutableList()
++    val cast = normalizeStoryCast(project.characters)
++    if (cast.isEmpty()) return false
++    val beforeIds = project.shots.map { it.characterIds.toList() }
++    bindShotCharacterIds(project.shots, cast)
++    val synced = syncCharacterReferences(cast, project.characterReferences)
++    val shotsSame = project.shots.map { it.characterIds } == beforeIds
++    if (shotsSame && sameCharacters(project.characters, cast) && sameReferences(project.characterReferences, synced)) {
++        return false
++    }
++    project.characters = cast.toMutableList()
+     project.characterReferences = synced.toMutableList()
+     return true
+ }
+@@ -261,7 +332,8 @@ internal fun referenceReadyFor(
+ private fun sameCharacters(left: List<StoryCharacter>, right: List<StoryCharacter>): Boolean {
+     if (left.size != right.size) return false
+     return left.zip(right).all { (a, b) ->
+-        a.name == b.name && a.appearance == b.appearance && a.role == b.role && a.sex == b.sex
++        a.id == b.id && a.name == b.name && a.appearance == b.appearance && a.role == b.role &&
++            a.sex == b.sex && a.aliases == b.aliases
+     }
+ }
+ 
+@@ -270,7 +342,8 @@ private fun sameReferences(left: List<CharacterReference>, right: List<Character
+     return left.zip(right).all { (a, b) ->
+         a.name == b.name && a.remoteUrl == b.remoteUrl && a.status == b.status &&
+             a.appearance == b.appearance && a.prompt == b.prompt && a.role == b.role &&
+-            a.sex == b.sex && a.fileKey == b.fileKey && a.promptCustom == b.promptCustom
++            a.sex == b.sex && a.fileKey == b.fileKey && a.promptCustom == b.promptCustom &&
++            a.characterId == b.characterId && a.aliases == b.aliases
+     }
+ }
+ 
+diff --git a/app/src/main/java/com/historyvideo/app/ProjectStore.kt b/app/src/main/java/com/historyvideo/app/ProjectStore.kt
+index c1562c9..85f5690 100644
+--- a/app/src/main/java/com/historyvideo/app/ProjectStore.kt
++++ b/app/src/main/java/com/historyvideo/app/ProjectStore.kt
+@@ -100,7 +100,8 @@ data class Shot(
+     var imageUrl: String = "",
+     var usesProtagonistReference: Boolean = false,
+     var motionSetting: ShotMotionSetting? = null,
+-    var motionPlanSetting: ShotMotionSetting? = null
++    var motionPlanSetting: ShotMotionSetting? = null,
++    var characterIds: MutableList<String> = mutableListOf()
+ ) {
+     /**
+      * A changed narration must not keep the previous MP3. Render treats any
+@@ -131,6 +132,7 @@ data class Shot(
+         put("image_revision", imageRevision); put("audio_revision", audioRevision)
+         put("image_url", imageUrl)
+         put("uses_protagonist_reference", usesProtagonistReference)
++        put("character_ids", JSONArray(characterIds))
+     }
+ 
+     companion object {
+@@ -176,9 +178,20 @@ data class Shot(
+             audioRevision = value.optString("audio_revision"),
+             imageUrl = persistedImageUrl(value.optString("image_url")),
+             usesProtagonistReference = usesProtagonistReference(value),
++            characterIds = readCharacterIds(value),
+             motionSetting = if (value.optBoolean("cutout_enabled")) null else ShotMotionSetting.from(value.optJSONObject("motion_setting")),
+             motionPlanSetting = if (value.optBoolean("cutout_enabled")) null else ShotMotionSetting.from(value.optJSONObject("motion_plan_setting"))
+         )
++
++        private fun readCharacterIds(value: JSONObject): MutableList<String> {
++            val array = value.optJSONArray("character_ids") ?: value.optJSONArray("characterIds") ?: return mutableListOf()
++            return mutableListOf<String>().apply {
++                for (index in 0 until array.length()) {
++                    val id = array.optString(index).trim()
++                    if (id.isNotBlank()) add(id)
++                }
++            }
++        }
+     }
+ }
+ 
+diff --git a/app/src/main/java/com/historyvideo/app/StoryboardRules.kt b/app/src/main/java/com/historyvideo/app/StoryboardRules.kt
+index bfb4d18..b08e5b8 100644
+--- a/app/src/main/java/com/historyvideo/app/StoryboardRules.kt
++++ b/app/src/main/java/com/historyvideo/app/StoryboardRules.kt
+@@ -220,8 +220,10 @@ internal object StoryboardRules {
+         if (firstBatch) append("前两镜须有清晰可辨人物。")
+         append("\n")
+         append("subtitle_chunks也由程序从原文还原。你只需为每镜返回subtitle_unit_groups：每个子数组是一个字幕自然停顿对应的source unit编号组；按原顺序分完本镜source_unit_ids中的所有编号，不漏、不重、不调序。style_preset填写全局画风。不得输出voiceover或字幕文字副本。\n")
++        append("同一份 JSON 必须同时给出 characters 和 shots，不要另写角色提取说明。characters 只收故事世界里真实在场、会参与剧情的人。第二人称里的「你」被文中点名后就是该主角，不要为「你」另建角色。id 全篇稳定；name 用规范名；aliases 必须写上指向同一人的姓名、职衔、官称、绰号、昵称和代词，没有则空数组。换装、女扮男装、微服、加袍不改变身份，也不改变性别。sex 只写 male、female 或 unspecified；看不出性别写 unspecified，不要默认男性。亲属、上司、对手是另一个人时单独建档。像、好比、不像、哪像、若是、如果、假如、后世，以及「那些……一样」引出的对照人或对照群体，都不是角色，不要收入 characters，也不要标成 role=group。role=group 只用于当时确实在场的人群，不要把每个名词都建成角色。appearance 用该角色自己的明文外貌，不要嵌套 JSON。已给出的角色 id 必须复用，新称呼补进 aliases。\n")
++        append("每镜 character_ids 只列本镜画面里脸或身体实际出现、正在做动作或被描写外形的角色 id，按出场顺序。只是被提到、用来比较，或不在画面中的人不要写入。主角若以「你」、职衔或绰号在本镜做出可见动作，必须写入主角 id。空镜用空数组。uses_protagonist_reference 仅当主角清楚出镜时为 true。\n")
+         append("JSON 必须紧凑（不要换行缩进），并且必须完整闭合；输出被截断会导致本次分镜失败。\n")
+-        append("""只输出严格JSON，结构为：{"title":"原主题","style_preset":"统一全局画风","shots":[{"id":1,"source_unit_ids":[1],"subtitle_unit_groups":[[1]],"visual":"","punch":"2到6字","image_prompt":"","video_prompt":""}]}""")
++        append("""只输出严格JSON，结构为：{"title":"原主题","style_preset":"统一全局画风","characters":[{"id":"c1","name":"规范名","aliases":[],"role":"protagonist","sex":"unspecified","appearance":"性别、年龄、脸型、发式、服装"}],"shots":[{"id":1,"source_unit_ids":[1],"subtitle_unit_groups":[[1]],"visual":"","punch":"2到6字","image_prompt":"","video_prompt":"","character_ids":["c1"],"uses_protagonist_reference":false}]}""")
+     }
+ 
+     fun reconstruct(units: List<SourceUnit>, groups: List<List<Int>>): List<String> {
+diff --git a/app/src/test/java/com/historyvideo/app/MultiCharacterReferenceTest.kt b/app/src/test/java/com/historyvideo/app/MultiCharacterReferenceTest.kt
+index ab84964..f70f578 100644
+--- a/app/src/test/java/com/historyvideo/app/MultiCharacterReferenceTest.kt
++++ b/app/src/test/java/com/historyvideo/app/MultiCharacterReferenceTest.kt
+@@ -119,18 +119,25 @@ class MultiCharacterReferenceTest {
+ 
+     @Test
+     fun shotsAttachOnlyTheCharactersWhoAppearAndKeepOrder() {
+-        val cast = identifyStoryCharacters(script, storyShots())
++        val cast = listOf(
++            StoryCharacter("盛长风", "三十岁男子，方脸短须，青袍", "protagonist", "male", "c1"),
++            StoryCharacter("叶青城", "十八岁女子，柳叶眉，罗裙", "supporting", "female", "c2"),
++            StoryCharacter("关武", "络腮胡大汉，玄铁甲", "supporting", "male", "c3")
++        )
++        val shots = storyShots().toMutableList()
++        shots[3].characterIds = mutableListOf("c1", "c2")
++        shots[1].characterIds = mutableListOf("c2")
+         val references = syncCharacterReferences(cast, emptyList())
+         references.forEach { it.remoteUrl = "https://cdn.example.com/${it.fileKey}.png"; it.status = "done" }
+         val usable = { reference: CharacterReference -> isPublicHttpsImageUrl(reference.remoteUrl) }
+-        val pair = prepareShotReferences(storyShots()[3], cast, references, usable)
++        val pair = prepareShotReferences(shots[3], cast, references, usable)
+         assertEquals(listOf("盛长风", "叶青城"), pair.references.map { it.name })
+         assertEquals("第一张参考图是盛长风，第二张参考图是叶青城。", pair.identityLine)
+-        val woman = prepareShotReferences(storyShots()[1], cast, references, usable)
++        val woman = prepareShotReferences(shots[1], cast, references, usable)
+         assertEquals(listOf("叶青城"), woman.references.map { it.name })
+         assertTrue(woman.identityLine.contains("这张参考图是叶青城"))
+         assertTrue(woman.identityLine.contains("叶青城"))
+-        val empty = prepareShotReferences(storyShots()[4], cast, references, usable)
++        val empty = prepareShotReferences(shots[4], cast, references, usable)
+         assertTrue(empty.references.isEmpty())
+         assertEquals("", empty.identityLine)
+         val legacyShot = Shot(id = 8, text = "甲。", imagePrompt = "街市", usesProtagonistReference = true)
+@@ -145,11 +152,16 @@ class MultiCharacterReferenceTest {
+ 
+     @Test
+     fun missingReferenceIsSkippedWithoutReorderingTheRest() {
+-        val cast = identifyStoryCharacters(script, storyShots())
++        val cast = listOf(
++            StoryCharacter("盛长风", "三十岁男子", "protagonist", "male", "c1"),
++            StoryCharacter("叶青城", "十八岁女子", "supporting", "female", "c2"),
++            StoryCharacter("关武", "络腮胡大汉", "supporting", "male", "c3")
++        )
+         val references = syncCharacterReferences(cast, emptyList())
+         references.first { it.name == "盛长风" }.remoteUrl = "https://cdn.example.com/sheng.png"
+         references.first { it.name == "关武" }.remoteUrl = "https://cdn.example.com/guan.png"
+-        val shot = Shot(id = 6, text = "盛长风、叶青城和关武同框。", imagePrompt = "盛长风、叶青城、关武同框。")
++        val shot = Shot(id = 6, text = "盛长风、叶青城和关武同框。", imagePrompt = "盛长风、叶青城、关武同框。",
++            characterIds = mutableListOf("c1", "c2", "c3"))
+         val prepared = prepareShotReferences(shot, cast, references) { isPublicHttpsImageUrl(it.remoteUrl) }
+         assertEquals(listOf("盛长风", "关武"), prepared.references.map { it.name })
+         assertEquals("第一张参考图是盛长风，第二张参考图是关武。", prepared.identityLine)
+@@ -159,6 +171,42 @@ class MultiCharacterReferenceTest {
+         assertTrue(prompt.endsWith("三人同框。"))
+         val plain = buildShotImagePrompt("全局画风", "统一画风", "空镜屋檐。", false, listOf("盛长风"))
+         assertFalse(plain.contains("参考图是"))
++        val mentionedOnly = Shot(id = 7, text = "叶倾城女扮男装，皇帝老儿和叶太师都在。", imagePrompt = "看台。")
++        assertTrue(charactersForShot(mentionedOnly, cast).isEmpty())
++    }
++
++    @Test
++    fun storyboardCastKeepsIdsAliasesAndDoesNotScanNarration() {
++        val parsed = parseStoryCharacters(JSONObject().put("characters", JSONArray()
++            .put(JSONObject().put("id", "c1").put("name", "杨伟").put("role", "protagonist").put("sex", "male")
++                .put("aliases", JSONArray().put("你").put("杨爱卿").put("球王"))
++                .put("appearance", "男子，八块腹肌"))
++            .put(JSONObject().put("id", "c2").put("name", "叶倾城").put("role", "supporting").put("sex", "female")
++                .put("aliases", JSONArray().put("相府千金"))
++                .put("appearance", "女性，女扮男装，丹凤眼"))
++            .put(JSONObject().put("id", "c3").put("name", "叶太师").put("role", "supporting").put("sex", "male")
++                .put("appearance", "老年男子，太师官服"))))
++        val cast = normalizeStoryCast(parsed)
++        assertEquals(listOf("c1", "c2", "c3"), cast.map { it.id })
++        assertEquals("female", cast.first { it.name == "叶倾城" }.sex)
++        assertTrue(cast.first { it.name == "杨伟" }.aliases.containsAll(listOf("你", "杨爱卿", "球王")))
++        val woman = buildNamedCharacterPrompt("叶倾城", cast.first { it.name == "叶倾城" }.appearance)
++        assertTrue(woman.contains("叶倾城是女性"))
++        assertFalse(woman.contains("叶倾城是男性"))
++        val shot = Shot(id = 1, text = "你一个蝎子摆尾。", imagePrompt = "杨伟踢球。", characterIds = mutableListOf("你", "c2"))
++        bindShotCharacterIds(mutableListOf(shot), cast)
++        assertEquals(listOf("c1", "c2"), shot.characterIds)
++        assertEquals(listOf("杨伟", "叶倾城"), charactersForShot(shot, cast).map { it.name })
++        val crowd = Shot(id = 2, text = "海参队和御史大夫都在骂。", imagePrompt = "空镜看台。")
++        assertTrue(charactersForShot(crowd, cast).isEmpty())
++        val merged = mergeStoryCasts(cast, listOf(StoryCharacter("宋徽宗", "男子，皇帝冠服", "supporting", "male", "c4", listOf("皇帝老儿"))))
++        assertEquals("c4", merged.first { it.name == "宋徽宗" }.id)
++        val instruction = StoryboardRules.instruction("主题句。", listOf(StoryboardRules.SourceUnit(1, "主题句。", true)))
++        assertTrue(instruction.contains("\"characters\""))
++        assertTrue(instruction.contains("character_ids"))
++        assertTrue(instruction.contains("aliases"))
++        assertFalse(instruction.contains("杨伟"))
++        assertFalse(instruction.contains("叶倾城"))
+     }
+ 
+     @Test
+@@ -185,6 +233,12 @@ class MultiCharacterReferenceTest {
+         val project = VideoProject(UUID.randomUUID().toString(), "旧项目")
+         project.script = script
+         project.shots = storyShots().toMutableList()
++        project.characters = mutableListOf(
++            StoryCharacter("盛长风", "三十岁男子，方脸短须，青袍", "protagonist", "male", "c1", listOf("杨爱卿")),
++            StoryCharacter("叶青城", "十八岁女子，柳叶眉，罗裙", "supporting", "female", "c2")
++        )
++        project.shots[0].characterIds = mutableListOf("c1")
++        project.shots[3].characterIds = mutableListOf("c1", "c2")
+         project.characterReferences += legacy
+         assertTrue(applyIdentifiedCast(project))
+         val lead = project.characterReferences.first { it.name == "盛长风" }

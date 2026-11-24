@@ -23,9 +23,85 @@ import java.nio.file.StandardCopyOption
 import kotlin.math.abs
 
 /** 单次分镜请求覆盖的 source unit 数量：分批控制输出长度，避免被服务端 max_tokens 截断。 */
-private const val STORYBOARD_UNITS_PER_CALL = 24
+internal const val STORYBOARD_UNITS_PER_CALL = 24
 /** 文本补全上限：PC 格式分镜含 visual/image_prompt/video_prompt，默认上限过低会截断 JSON。 */
-private const val STORYBOARD_MAX_TOKENS = 8192
+internal const val STORYBOARD_MAX_TOKENS = 8192
+internal const val STORYBOARD_TEMPERATURE = 0.6
+internal const val STORYBOARD_SYSTEM_PROMPT = "你是一个严格执行用户任务提示词的生成器。"
+
+internal fun storyboardUserContent(taskPrompt: String, sourceInput: String, extraInstruction: String = ""): String = buildString {
+    append("请严格按照下面的【本次任务提示词】完成任务。它是本次请求的唯一内容规则，优先级高于模型默认风格；不得套用其他示例的字数、结构或主题。\n\n")
+    append("【本次任务提示词】\n")
+    append(taskPrompt)
+    append("\n\n【本次输入】\n")
+    append(sourceInput)
+    if (extraInstruction.isNotBlank()) {
+        append("\n\n")
+        append(extraInstruction.trim())
+    }
+}
+
+internal fun storyboardKnownCastBlock(characters: List<StoryCharacter>): String {
+    if (characters.isEmpty()) return ""
+    return buildString {
+        append("\n已确定角色，后续批次必须复用这些 id，同一人不要另起 id：")
+        append(JSONArray().apply { characters.forEach { put(it.json()) } }.toString())
+        append("\n")
+    }
+}
+
+internal fun storyboardSourceInput(input: String, units: List<StoryboardRules.SourceUnit>): String = buildString {
+    append(input.trim())
+    append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
+    append(JSONArray().apply {
+        units.forEach { unit ->
+            put(JSONObject().put("id", unit.id)
+                .put("text", PronunciationMarkup.clean(unit.text))
+                .put("fixed_shot", unit.fixedShot)
+                .put("can_end_shot", unit.id == units.size || StoryboardRules.endsAtPunctuation(unit.text)))
+        }
+    }.toString())
+}
+
+internal fun storyboardRetryInstruction(failure: String) =
+    "\n上次分镜不合格：$failure。请只为每镜返回连续完整的source_unit_ids编号分组和PC格式画面字段，不要输出或重写voiceover；每个source unit必须按顺序恰好覆盖一次。输出必须完整闭合，勿截断 JSON。"
+
+internal fun storyboardTaskPrompt(
+    shotsPrompt: String,
+    header: String,
+    instruction: String,
+    retryInstruction: String = ""
+): String = shotsPrompt + header + instruction + retryInstruction
+
+internal fun storyboardBatchHeader(
+    batchIndex: Int,
+    batchCount: Int,
+    totalUnits: Int,
+    unitOffset: Int,
+    batchSize: Int
+): String {
+    if (batchCount <= 1 && batchSize >= totalUnits) return ""
+    return buildString {
+        append("\n\n【分批生成】全文共 $totalUnits 个 source unit，本批是第 ${batchIndex + 1}/$batchCount 批，")
+        append("对应全文第 ${unitOffset + 1}–${unitOffset + batchSize}")
+        append(" 段；本批编号已从 1 重新开始。只输出本批的镜头，不要补全其他段落。\n")
+    }
+}
+
+internal fun storyboardBatches(units: List<StoryboardRules.SourceUnit>): List<List<StoryboardRules.SourceUnit>> {
+    val batches = mutableListOf<List<StoryboardRules.SourceUnit>>()
+    var pending = mutableListOf<StoryboardRules.SourceUnit>()
+    for (unit in units) {
+        pending += unit
+        if (pending.size >= STORYBOARD_UNITS_PER_CALL && StoryboardRules.endsAtPunctuation(unit.text)) {
+            batches += pending.toList()
+            pending = mutableListOf()
+        }
+    }
+    if (pending.isNotEmpty()) batches += pending.toList()
+    if (batches.isEmpty()) batches += units
+    return batches
+}
 
 private data class DoubaoResponseParts(
     val codes: List<Int>,
@@ -285,21 +361,11 @@ class CloudApi {
         val taskPrompt = system.trim()
         require(taskPrompt.isNotBlank()) { "提示词不能为空" }
         val instruction = outputInstruction.trim()
-        val userContent = buildString {
-            append("请严格按照下面的【本次任务提示词】完成任务。它是本次请求的唯一内容规则，优先级高于模型默认风格；不得套用其他示例的字数、结构或主题。\n\n")
-            append("【本次任务提示词】\n")
-            append(taskPrompt)
-            append("\n\n【本次输入】\n")
-            append(input)
-            if (instruction.isNotBlank()) {
-                append("\n\n")
-                append(instruction)
-            }
-        }
-        val body = JSONObject().put("model", config.model).put("temperature", 0.6)
+        val userContent = storyboardUserContent(taskPrompt, input, instruction)
+        val body = JSONObject().put("model", config.model).put("temperature", STORYBOARD_TEMPERATURE)
             .put("max_tokens", STORYBOARD_MAX_TOKENS)
             .put("messages", JSONArray()
-                .put(JSONObject().put("role", "system").put("content", "你是一个严格执行用户任务提示词的生成器。"))
+                .put(JSONObject().put("role", "system").put("content", STORYBOARD_SYSTEM_PROMPT))
                 .put(JSONObject().put("role", "user").put("content", userContent)))
         val url = endpoint(config.baseUrl, "/v1/chat/completions")
         require(config.key.isNotBlank()) { "请先填写 API Key" }
@@ -325,17 +391,7 @@ class CloudApi {
                    onRetry: () -> Unit = {}, onUsage: (TextUsage) -> Unit = {}): StoryboardResult {
         val units = StoryboardRules.sourceUnits(expectedScript, granularity)
         // 长文按 source unit 分批；每批只在标点边界结束，合并后再校验全文分镜边界。
-        val batches = mutableListOf<List<StoryboardRules.SourceUnit>>()
-        var pendingBatch = mutableListOf<StoryboardRules.SourceUnit>()
-        for (unit in units) {
-            pendingBatch += unit
-            if (pendingBatch.size >= STORYBOARD_UNITS_PER_CALL && StoryboardRules.endsAtPunctuation(unit.text)) {
-                batches += pendingBatch.toList()
-                pendingBatch = mutableListOf()
-            }
-        }
-        if (pendingBatch.isNotEmpty()) batches += pendingBatch.toList()
-        if (batches.isEmpty()) batches += units
+        val batches = storyboardBatches(units)
         val merged = mutableListOf<Shot>()
         var title = ""
         var stylePreset = ""
@@ -373,22 +429,10 @@ class CloudApi {
                                 granularity: String, batchIndex: Int, batchCount: Int, totalUnits: Int,
                                 unitOffset: Int, onRetry: () -> Unit, onUsage: (TextUsage) -> Unit,
                                 firstBatch: Boolean): StoryboardResult {
-        val header = if (batchCount <= 1 && units.size >= totalUnits) "" else buildString {
-            append("\n\n【分批生成】全文共 $totalUnits 个 source unit，本批是第 ${batchIndex + 1}/$batchCount 批，")
-            append("对应全文第 ${unitOffset + 1}–${unitOffset + units.size}")
-            append(" 段；本批编号已从 1 重新开始。只输出本批的镜头，不要补全其他段落。\n")
-        }
-        val taskPrompt = prompt + header +
-            StoryboardRules.instruction(expectedScript, units, granularity, firstBatch = firstBatch)
-        val sourceInput = buildString {
-            append(input.trim())
-            append("\n\n原文source_units（必须按编号连续分组，禁止复述文本）：\n")
-            append(JSONArray().apply {
-                units.forEach { unit -> put(JSONObject().put("id", unit.id)
-                    .put("text", PronunciationMarkup.clean(unit.text)).put("fixed_shot", unit.fixedShot)
-                    .put("can_end_shot", unit.id == units.size || StoryboardRules.endsAtPunctuation(unit.text))) }
-            }.toString())
-        }
+        val header = storyboardBatchHeader(batchIndex, batchCount, totalUnits, unitOffset, units.size)
+        val instruction = StoryboardRules.instruction(expectedScript, units, granularity, firstBatch = firstBatch)
+        val taskPrompt = prompt + header + instruction
+        val sourceInput = storyboardSourceInput(input, units)
         // 首批用本批原文校验开头边界和钩子长度；完整结果合并后再做一次全文校验。
         val validateBatch = firstBatch
         val batchScript = if (validateBatch) units.joinToString("") { it.text } else expectedScript
@@ -445,8 +489,7 @@ class CloudApi {
         var lastFailure = ""
         var truncated = false
         for (attempt in 0..1) {
-            val retryInstruction = if (attempt == 0) "" else
-                "\n上次分镜不合格：$lastFailure。请只为每镜返回连续完整的source_unit_ids编号分组和PC格式画面字段，不要输出或重写voiceover；每个source unit必须按顺序恰好覆盖一次。输出必须完整闭合，勿截断 JSON。"
+            val retryInstruction = if (attempt == 0) "" else storyboardRetryInstruction(lastFailure)
             // Only invalid model output is retried. A transport error may already be billed.
             val content = request(retryInstruction)
             try {

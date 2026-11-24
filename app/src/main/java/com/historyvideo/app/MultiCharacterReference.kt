@@ -91,6 +91,9 @@ internal data class PreparedShotReferences(
 )
 
 internal fun findCharacterReference(character: StoryCharacter, references: List<CharacterReference>): CharacterReference? {
+    if (character.id.isNotBlank()) {
+        references.firstOrNull { it.characterId == character.id }?.let { return it }
+    }
     references.firstOrNull { it.name == character.name }?.let { return it }
     if (character.role.equals("protagonist", true) || character.name == "主角") {
         references.firstOrNull { it.name == "主角" }?.let { return it }
@@ -100,23 +103,76 @@ internal fun findCharacterReference(character: StoryCharacter, references: List<
 }
 
 internal fun charactersForShot(shot: Shot, cast: List<StoryCharacter>): List<StoryCharacter> {
-    val blob = shotCharacterBlob(shot)
-    val mentioned = cast.filter { !genericCharacterName(it.name) && it.name.isNotBlank() && blob.contains(it.name) }
-        .sortedBy { blob.indexOf(it.name) }
-    if (mentioned.isNotEmpty()) {
-        if (shot.usesProtagonistReference) {
-            val protagonist = cast.firstOrNull { it.role.equals("protagonist", true) && !genericCharacterName(it.name) }
-            if (protagonist != null && mentioned.none { it.name == protagonist.name }) {
-                return (listOf(protagonist) + mentioned).distinctBy { it.name }.take(9)
-            }
-        }
-        return mentioned.distinctBy { it.name }.take(9)
+    if (shot.characterIds.isNotEmpty()) {
+        return shot.characterIds.mapNotNull { token -> resolveCastMember(token, cast) }
+            .distinctBy { it.id.ifBlank { it.name } }
+            .take(9)
     }
     if (shot.usesProtagonistReference) {
         val protagonist = cast.firstOrNull { it.role.equals("protagonist", true) || it.name == "主角" }
         if (protagonist != null) return listOf(protagonist)
     }
     return emptyList()
+}
+
+internal fun resolveCastMember(token: String, cast: List<StoryCharacter>): StoryCharacter? {
+    val key = token.trim()
+    if (key.isBlank()) return null
+    return cast.firstOrNull { it.id == key || it.name == key || key in it.aliases }
+}
+
+/** Assign stable ids from the storyboard payload. Does not scan narration for names. */
+internal fun normalizeStoryCast(raw: List<StoryCharacter>): List<StoryCharacter> {
+    val result = mutableListOf<StoryCharacter>()
+    raw.forEach { character ->
+        val name = character.name.trim()
+        if (name.isBlank() || genericCharacterName(name)) return@forEach
+        val sex = when (val labeled = parseSexLabel(character.sex)) {
+            ProtagonistSex.UNSPECIFIED -> sexStorageLabel(protagonistSex(character.appearance))
+            else -> sexStorageLabel(labeled)
+        }
+        val id = character.id.trim().ifBlank { "c${result.size + 1}" }
+        if (result.any { it.id == id }) return@forEach
+        val aliases = character.aliases.map { it.trim() }.filter { it.isNotBlank() && it != name }.distinct()
+        result += character.copy(id = id, name = name, sex = sex, aliases = aliases)
+    }
+    return result
+}
+
+internal fun mergeStoryCasts(base: List<StoryCharacter>, incoming: List<StoryCharacter>): List<StoryCharacter> {
+    val merged = normalizeStoryCast(base).toMutableList()
+    normalizeStoryCast(incoming).forEach { character ->
+        val index = merged.indexOfFirst {
+            it.id == character.id || it.name == character.name || character.name in it.aliases || it.name in character.aliases
+        }
+        if (index < 0) {
+            val id = if (merged.any { it.id == character.id }) "c${merged.size + 1}" else character.id
+            merged += character.copy(id = id)
+        } else {
+            val current = merged[index]
+            val aliases = (current.aliases + character.aliases + character.name)
+                .map { it.trim() }.filter { it.isNotBlank() && it != current.name }.distinct()
+            merged[index] = current.copy(
+                appearance = current.appearance.ifBlank { character.appearance },
+                sex = current.sex.ifBlank { character.sex },
+                role = current.role.ifBlank { character.role },
+                aliases = aliases
+            )
+        }
+    }
+    return merged
+}
+
+internal fun bindShotCharacterIds(shots: List<Shot>, cast: List<StoryCharacter>) {
+    val protagonistId = cast.firstOrNull { it.role.equals("protagonist", true) }?.id.orEmpty()
+    shots.forEach { shot ->
+        val resolved = shot.characterIds.mapNotNull { resolveCastMember(it, cast)?.id }.distinct()
+        if (resolved.isNotEmpty()) {
+            shot.characterIds = resolved.toMutableList()
+        } else if (shot.characterIds.isEmpty() && shot.usesProtagonistReference && protagonistId.isNotBlank()) {
+            shot.characterIds = mutableListOf(protagonistId)
+        }
+    }
 }
 
 internal fun prepareShotReferences(
@@ -135,6 +191,7 @@ internal fun prepareShotReferences(
 internal fun displayReferenceName(reference: CharacterReference): String =
     reference.name.trim().ifBlank { "主角" }
 
+/** Legacy narration scan. 拆镜 and 参考图 do not call this; they use the storyboard JSON cast. */
 internal fun identifyStoryCharacters(
     script: String,
     shots: List<Shot>,
@@ -218,12 +275,16 @@ internal fun syncCharacterReferences(
         used += key
     }
     return cast.map { character ->
-        val current = pool.firstOrNull { it.name == character.name } ?: CharacterReference(name = character.name).also {
-            it.fileKey = allocateReferenceFileKey(used)
-            used += it.fileKey
-            pool += it
-        }
+        val current = pool.firstOrNull { it.characterId.isNotBlank() && it.characterId == character.id }
+            ?: pool.firstOrNull { it.name == character.name }
+            ?: CharacterReference(name = character.name).also {
+                it.fileKey = allocateReferenceFileKey(used)
+                used += it.fileKey
+                pool += it
+            }
+        current.characterId = character.id
         current.name = character.name
+        current.aliases = character.aliases.toMutableList()
         current.role = character.role
         current.sex = character.sex
         val appearance = character.appearance.ifBlank { current.appearance }
@@ -243,11 +304,21 @@ internal fun syncCharacterReferences(
     }
 }
 
+/**
+ * Persists the cast already returned by the storyboard response.
+ * Narration is not scanned for names.
+ */
 internal fun applyIdentifiedCast(project: VideoProject): Boolean {
-    val identified = identifyStoryCharacters(project.script, project.shots, project.characters)
-    val synced = syncCharacterReferences(identified, project.characterReferences)
-    if (sameCharacters(project.characters, identified) && sameReferences(project.characterReferences, synced)) return false
-    project.characters = identified.toMutableList()
+    val cast = normalizeStoryCast(project.characters)
+    if (cast.isEmpty()) return false
+    val beforeIds = project.shots.map { it.characterIds.toList() }
+    bindShotCharacterIds(project.shots, cast)
+    val synced = syncCharacterReferences(cast, project.characterReferences)
+    val shotsSame = project.shots.map { it.characterIds } == beforeIds
+    if (shotsSame && sameCharacters(project.characters, cast) && sameReferences(project.characterReferences, synced)) {
+        return false
+    }
+    project.characters = cast.toMutableList()
     project.characterReferences = synced.toMutableList()
     return true
 }
@@ -261,7 +332,8 @@ internal fun referenceReadyFor(
 private fun sameCharacters(left: List<StoryCharacter>, right: List<StoryCharacter>): Boolean {
     if (left.size != right.size) return false
     return left.zip(right).all { (a, b) ->
-        a.name == b.name && a.appearance == b.appearance && a.role == b.role && a.sex == b.sex
+        a.id == b.id && a.name == b.name && a.appearance == b.appearance && a.role == b.role &&
+            a.sex == b.sex && a.aliases == b.aliases
     }
 }
 
@@ -270,7 +342,8 @@ private fun sameReferences(left: List<CharacterReference>, right: List<Character
     return left.zip(right).all { (a, b) ->
         a.name == b.name && a.remoteUrl == b.remoteUrl && a.status == b.status &&
             a.appearance == b.appearance && a.prompt == b.prompt && a.role == b.role &&
-            a.sex == b.sex && a.fileKey == b.fileKey && a.promptCustom == b.promptCustom
+            a.sex == b.sex && a.fileKey == b.fileKey && a.promptCustom == b.promptCustom &&
+            a.characterId == b.characterId && a.aliases == b.aliases
     }
 }
 

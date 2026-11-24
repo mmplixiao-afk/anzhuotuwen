@@ -11,21 +11,36 @@ data class StoryCharacter(
     val name: String,
     val appearance: String,
     val role: String = "",
-    val sex: String = ""
+    val sex: String = "",
+    val id: String = "",
+    val aliases: List<String> = emptyList()
 ) {
     fun json() = JSONObject()
+        .put("id", id)
         .put("name", name)
         .put("appearance", appearance)
         .put("role", role)
         .put("sex", sex)
+        .put("aliases", JSONArray(aliases))
 
     companion object {
         fun from(value: JSONObject) = StoryCharacter(
             name = value.optString("name").trim().ifBlank { "主角" },
             appearance = value.optString("appearance", value.optString("description")).trim(),
             role = value.optString("role").trim(),
-            sex = value.optString("sex").trim()
+            sex = value.optString("sex").trim(),
+            id = value.optString("id").trim(),
+            aliases = readAliases(value)
         )
+
+        private fun readAliases(value: JSONObject): List<String> {
+            val array = value.optJSONArray("aliases") ?: value.optJSONArray("alias")
+            if (array != null) {
+                return (0 until array.length()).map { array.optString(it).trim() }.filter { it.isNotBlank() }
+            }
+            return value.optString("aliases").split('、', ',', '，', '/', '|')
+                .map { it.trim() }.filter { it.isNotBlank() }
+        }
     }
 }
 
@@ -38,7 +53,9 @@ data class CharacterReference(
     var role: String = "",
     var sex: String = "",
     var fileKey: String = "",
-    var promptCustom: Boolean = false
+    var promptCustom: Boolean = false,
+    var characterId: String = "",
+    var aliases: MutableList<String> = mutableListOf()
 ) {
     fun json() = JSONObject().apply {
         put("name", name)
@@ -50,6 +67,8 @@ data class CharacterReference(
         put("sex", sex)
         put("file_key", fileKey)
         put("prompt_custom", promptCustom)
+        put("character_id", characterId)
+        put("aliases", JSONArray(aliases))
     }
 
     companion object {
@@ -63,7 +82,17 @@ data class CharacterReference(
             sex = value.optString("sex"),
             fileKey = value.optString("file_key").trim(),
             promptCustom = if (value.has("prompt_custom")) value.optBoolean("prompt_custom")
-            else value.optString("prompt").trim().isNotEmpty()
+            else value.optString("prompt").trim().isNotEmpty(),
+            characterId = value.optString("character_id").trim(),
+            aliases = mutableListOf<String>().apply {
+                val array = value.optJSONArray("aliases")
+                if (array != null) {
+                    for (index in 0 until array.length()) {
+                        val alias = array.optString(index).trim()
+                        if (alias.isNotBlank()) add(alias)
+                    }
+                }
+            }
         )
     }
 }
