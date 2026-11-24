@@ -119,18 +119,25 @@ class MultiCharacterReferenceTest {
 
     @Test
     fun shotsAttachOnlyTheCharactersWhoAppearAndKeepOrder() {
-        val cast = identifyStoryCharacters(script, storyShots())
+        val cast = listOf(
+            StoryCharacter("盛长风", "三十岁男子，方脸短须，青袍", "protagonist", "male", "c1"),
+            StoryCharacter("叶青城", "十八岁女子，柳叶眉，罗裙", "supporting", "female", "c2"),
+            StoryCharacter("关武", "络腮胡大汉，玄铁甲", "supporting", "male", "c3")
+        )
+        val shots = storyShots().toMutableList()
+        shots[3].characterIds = mutableListOf("c1", "c2")
+        shots[1].characterIds = mutableListOf("c2")
         val references = syncCharacterReferences(cast, emptyList())
         references.forEach { it.remoteUrl = "https://cdn.example.com/${it.fileKey}.png"; it.status = "done" }
         val usable = { reference: CharacterReference -> isPublicHttpsImageUrl(reference.remoteUrl) }
-        val pair = prepareShotReferences(storyShots()[3], cast, references, usable)
+        val pair = prepareShotReferences(shots[3], cast, references, usable)
         assertEquals(listOf("盛长风", "叶青城"), pair.references.map { it.name })
         assertEquals("第一张参考图是盛长风，第二张参考图是叶青城。", pair.identityLine)
-        val woman = prepareShotReferences(storyShots()[1], cast, references, usable)
+        val woman = prepareShotReferences(shots[1], cast, references, usable)
         assertEquals(listOf("叶青城"), woman.references.map { it.name })
         assertTrue(woman.identityLine.contains("这张参考图是叶青城"))
         assertTrue(woman.identityLine.contains("叶青城"))
-        val empty = prepareShotReferences(storyShots()[4], cast, references, usable)
+        val empty = prepareShotReferences(shots[4], cast, references, usable)
         assertTrue(empty.references.isEmpty())
         assertEquals("", empty.identityLine)
         val legacyShot = Shot(id = 8, text = "甲。", imagePrompt = "街市", usesProtagonistReference = true)
@@ -145,11 +152,16 @@ class MultiCharacterReferenceTest {
 
     @Test
     fun missingReferenceIsSkippedWithoutReorderingTheRest() {
-        val cast = identifyStoryCharacters(script, storyShots())
+        val cast = listOf(
+            StoryCharacter("盛长风", "三十岁男子", "protagonist", "male", "c1"),
+            StoryCharacter("叶青城", "十八岁女子", "supporting", "female", "c2"),
+            StoryCharacter("关武", "络腮胡大汉", "supporting", "male", "c3")
+        )
         val references = syncCharacterReferences(cast, emptyList())
         references.first { it.name == "盛长风" }.remoteUrl = "https://cdn.example.com/sheng.png"
         references.first { it.name == "关武" }.remoteUrl = "https://cdn.example.com/guan.png"
-        val shot = Shot(id = 6, text = "盛长风、叶青城和关武同框。", imagePrompt = "盛长风、叶青城、关武同框。")
+        val shot = Shot(id = 6, text = "盛长风、叶青城和关武同框。", imagePrompt = "盛长风、叶青城、关武同框。",
+            characterIds = mutableListOf("c1", "c2", "c3"))
         val prepared = prepareShotReferences(shot, cast, references) { isPublicHttpsImageUrl(it.remoteUrl) }
         assertEquals(listOf("盛长风", "关武"), prepared.references.map { it.name })
         assertEquals("第一张参考图是盛长风，第二张参考图是关武。", prepared.identityLine)
@@ -159,6 +171,40 @@ class MultiCharacterReferenceTest {
         assertTrue(prompt.endsWith("三人同框。"))
         val plain = buildShotImagePrompt("全局画风", "统一画风", "空镜屋檐。", false, listOf("盛长风"))
         assertFalse(plain.contains("参考图是"))
+        val mentionedOnly = Shot(id = 7, text = "叶倾城女扮男装，皇帝老儿和叶太师都在。", imagePrompt = "看台。")
+        assertTrue(charactersForShot(mentionedOnly, cast).isEmpty())
+    }
+
+    @Test
+    fun storyboardCastKeepsIdsAliasesAndDoesNotScanNarration() {
+        val parsed = parseStoryCharacters(JSONObject().put("characters", JSONArray()
+            .put(JSONObject().put("id", "c1").put("name", "杨伟").put("role", "protagonist").put("sex", "male")
+                .put("aliases", JSONArray().put("你").put("杨爱卿").put("球王"))
+                .put("appearance", "男子，八块腹肌"))
+            .put(JSONObject().put("id", "c2").put("name", "叶倾城").put("role", "supporting").put("sex", "female")
+                .put("aliases", JSONArray().put("相府千金"))
+                .put("appearance", "女性，女扮男装，丹凤眼"))
+            .put(JSONObject().put("id", "c3").put("name", "叶太师").put("role", "supporting").put("sex", "male")
+                .put("appearance", "老年男子，太师官服"))))
+        val cast = normalizeStoryCast(parsed)
+        assertEquals(listOf("c1", "c2", "c3"), cast.map { it.id })
+        assertEquals("female", cast.first { it.name == "叶倾城" }.sex)
+        assertTrue(cast.first { it.name == "杨伟" }.aliases.containsAll(listOf("你", "杨爱卿", "球王")))
+        val woman = buildNamedCharacterPrompt("叶倾城", cast.first { it.name == "叶倾城" }.appearance)
+        assertTrue(woman.contains("叶倾城是女性"))
+        assertFalse(woman.contains("叶倾城是男性"))
+        val shot = Shot(id = 1, text = "你一个蝎子摆尾。", imagePrompt = "杨伟踢球。", characterIds = mutableListOf("你", "c2"))
+        bindShotCharacterIds(mutableListOf(shot), cast)
+        assertEquals(listOf("c1", "c2"), shot.characterIds)
+        assertEquals(listOf("杨伟", "叶倾城"), charactersForShot(shot, cast).map { it.name })
+        val crowd = Shot(id = 2, text = "海参队和御史大夫都在骂。", imagePrompt = "空镜看台。")
+        assertTrue(charactersForShot(crowd, cast).isEmpty())
+        val merged = mergeStoryCasts(cast, listOf(StoryCharacter("宋徽宗", "男子，皇帝冠服", "supporting", "male", "c4", listOf("皇帝老儿"))))
+        assertEquals("c4", merged.first { it.name == "宋徽宗" }.id)
+        val instruction = StoryboardRules.instruction("主题句。", listOf(StoryboardRules.SourceUnit(1, "主题句。", true)))
+        assertFalse(instruction.contains("character_ids"))
+        assertFalse(instruction.contains("杨伟"))
+        assertFalse(instruction.contains("叶倾城"))
     }
 
     @Test
@@ -185,6 +231,12 @@ class MultiCharacterReferenceTest {
         val project = VideoProject(UUID.randomUUID().toString(), "旧项目")
         project.script = script
         project.shots = storyShots().toMutableList()
+        project.characters = mutableListOf(
+            StoryCharacter("盛长风", "三十岁男子，方脸短须，青袍", "protagonist", "male", "c1", listOf("杨爱卿")),
+            StoryCharacter("叶青城", "十八岁女子，柳叶眉，罗裙", "supporting", "female", "c2")
+        )
+        project.shots[0].characterIds = mutableListOf("c1")
+        project.shots[3].characterIds = mutableListOf("c1", "c2")
         project.characterReferences += legacy
         assertTrue(applyIdentifiedCast(project))
         val lead = project.characterReferences.first { it.name == "盛长风" }
@@ -218,22 +270,17 @@ class MultiCharacterReferenceTest {
         val root = generateSequence(java.io.File(System.getProperty("user.dir"))) { it.parentFile }
             .first { java.io.File(it, "app/src/main/java/com/historyvideo/app/MainActivity.kt").isFile }
         val activity = java.io.File(root, "app/src/main/java/com/historyvideo/app/MainActivity.kt").readText()
-        val shots = activity.substringAfter("private fun ShotsScreen").substringBefore("private fun ReferencesScreen")
-        val references = activity.substringAfter("private fun ReferencesScreen").substringBefore("private fun ShotListItem")
+        val shots = activity.substringAfter("private fun ShotsScreen").substringBefore("private fun ShotListItem")
         val settings = activity.substringAfter("private fun SettingsScreen").substringBefore("private fun AudioLibrarySettingsScreen")
+        assertFalse(activity.contains("private fun ReferencesScreen"))
+        assertFalse(shots.contains("参考图"))
         assertFalse(shots.contains("人物参考图"))
-        assertFalse(shots.contains("参考图生图提示词"))
-        assertTrue(references.contains("参考图生图提示词"))
-        assertTrue(references.contains("保存提示词"))
-        assertTrue(references.contains("生成全部参考图"))
-        assertTrue(references.contains("不要粘贴 JSON"))
         assertTrue(settings.contains("生图提示词"))
-        assertTrue(settings.contains("与参考图明文提示词分开保存"))
-        assertTrue(activity.contains("第一张") || activity.contains("referenceIdentityLine"))
         val service = java.io.File(root, "app/src/main/java/com/historyvideo/app/GenerationService.kt").readText()
-        val request = service.substringAfter("private fun requestShotImage").substringBefore("private suspend fun generateCharacterSheet")
-        assertTrue(request.contains("prepareShotReferences"))
-        assertTrue(request.contains("editImage"))
-        assertFalse(request.contains("characterReferences.firstOrNull()?.remoteUrl"))
+        val request = service.substringAfter("private fun requestShotImage").substringBefore("private suspend fun optimizeAndRegenerateImage")
+        assertTrue(request.contains("api.image"))
+        assertFalse(request.contains("editImage"))
+        assertFalse(request.contains("prepareShotReferences"))
+        assertFalse(service.contains("private suspend fun generateCharacterSheet"))
     }
 }

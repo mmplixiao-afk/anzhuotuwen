@@ -100,7 +100,8 @@ data class Shot(
     var imageUrl: String = "",
     var usesProtagonistReference: Boolean = false,
     var motionSetting: ShotMotionSetting? = null,
-    var motionPlanSetting: ShotMotionSetting? = null
+    var motionPlanSetting: ShotMotionSetting? = null,
+    var characterIds: MutableList<String> = mutableListOf()
 ) {
     /**
      * A changed narration must not keep the previous MP3. Render treats any
@@ -131,6 +132,7 @@ data class Shot(
         put("image_revision", imageRevision); put("audio_revision", audioRevision)
         put("image_url", imageUrl)
         put("uses_protagonist_reference", usesProtagonistReference)
+        put("character_ids", JSONArray(characterIds))
     }
 
     companion object {
@@ -176,9 +178,20 @@ data class Shot(
             audioRevision = value.optString("audio_revision"),
             imageUrl = persistedImageUrl(value.optString("image_url")),
             usesProtagonistReference = usesProtagonistReference(value),
+            characterIds = readCharacterIds(value),
             motionSetting = if (value.optBoolean("cutout_enabled")) null else ShotMotionSetting.from(value.optJSONObject("motion_setting")),
             motionPlanSetting = if (value.optBoolean("cutout_enabled")) null else ShotMotionSetting.from(value.optJSONObject("motion_plan_setting"))
         )
+
+        private fun readCharacterIds(value: JSONObject): MutableList<String> {
+            val array = value.optJSONArray("character_ids") ?: value.optJSONArray("characterIds") ?: return mutableListOf()
+            return mutableListOf<String>().apply {
+                for (index in 0 until array.length()) {
+                    val id = array.optString(index).trim()
+                    if (id.isNotBlank()) add(id)
+                }
+            }
+        }
     }
 }
 

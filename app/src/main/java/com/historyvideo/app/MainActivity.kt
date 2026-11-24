@@ -393,7 +393,7 @@ class MainActivity : ComponentActivity() {
             else -> route
         }
         val pageKey = when (screen) {
-            "project", "script", "references", "shots", "effects", "result", "costs" -> "$screen:$selectedId"
+            "project", "script", "shots", "effects", "result", "costs" -> "$screen:$selectedId"
             "shot" -> "$screen:$selectedId:$selectedShotId"
             "prompt_editor" -> "$screen:$selectedPromptType"
             else -> screen
@@ -505,10 +505,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        fun runCharacterReference(project: VideoProject, characterName: String = "") {
-            launchProjectTask(project, GenerationService.CHARACTER_REFERENCE, 0, characterName)
-        }
-
         fun runProject(project: VideoProject, action: String, shotId: Int = 0) {
             if (action == GenerationService.RENDER && (project.bgmId.isBlank() || project.bgmId == "none")) {
                 noBgmRenderProjectId = project.id
@@ -589,7 +585,6 @@ class MainActivity : ComponentActivity() {
                             } else Text(when (screen) {
                                 "project" -> "制作此卷"
                                 "script" -> "成文"
-                                "references" -> "参考图"
                                 "shots" -> "生图"
                                 "shot" -> "镜头详情"
                                 "effects" -> "画面与章法"
@@ -728,7 +723,6 @@ class MainActivity : ComponentActivity() {
                         selected,
                         store = store,
                         onOpenScript = { navigate("script") },
-                        onOpenReferences = { navigate("references") },
                         onOpenShots = { navigate("shots") },
                         onOpenEffects = { navigate("effects") },
                         onRender = { runProject(selected, GenerationService.RENDER, 0) },
@@ -749,12 +743,6 @@ class MainActivity : ComponentActivity() {
                         store,
                         onSave = ::saveProject,
                         onRun = ::runProject
-                    )
-                    "references" -> if (selected != null) ReferencesScreen(
-                        selected,
-                        store,
-                        onSave = ::saveProject,
-                        onGenerate = ::runCharacterReference
                     )
                     "shots" -> if (selected != null) ShotsScreen(
                         selected,
@@ -1111,7 +1099,7 @@ private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onImageProm
         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(ImagePromptSetting.title, style = MaterialTheme.typography.titleLarge)
-            Text("镜头通用生图提示词。与参考图明文提示词分开保存。", color = HistoryColors.muted)
+            Text("镜头通用生图提示词，生成图片时使用。", color = HistoryColors.muted)
         }
     }
     Card(onClick = onModels, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
@@ -1338,7 +1326,6 @@ private fun stageLabel(stage: String) = when (stage) {
     "tts" -> "配音"
     "render" -> "渲染"
     "script" -> "文案"
-    "references" -> "参考图"
     "shots" -> "分镜"
     "topic" -> "成文"
     else -> "任务"
@@ -1710,12 +1697,7 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
             }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
             StatusPill(imageSizeLabel(project.imageSize), if (shot.imageStatus == "failed") HistoryColors.cinnabar else HistoryColors.green)
         }
-        val shotCharacters = charactersForShot(shot, project.characters)
-        Text(when {
-            shotCharacters.isEmpty() -> "本镜没有需要对齐的角色参考图，仍按文字生图。"
-            shotCharacters.size == 1 -> "本镜会使用${shotCharacters[0].name}的参考图。这张参考图是${shotCharacters[0].name}。"
-            else -> referenceIdentityLine(shotCharacters.map { it.name })
-        }, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+        Text("本镜按文字提示词生图。", style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
         if (shot.imageStatus == "failed" && shot.error.isNotBlank()) {
             Text("失败原因：${shot.error}", color = HistoryColors.cinnabar, style = MaterialTheme.typography.bodySmall)
         }
@@ -2061,12 +2043,11 @@ private fun ProjectProgress(project: VideoProject) {
 
 @Composable
 private fun FlowStepBar(project: VideoProject) {
-    val steps = listOf("成文", "参考图", "生图", "章法", "成片")
+    val steps = listOf("成文", "生图", "章法", "成片")
     val current = when {
-        project.status == "done" || project.stage == "render" -> 4
-        project.stage == "effects" -> 3
-        project.stage in setOf("shots", "images", "tts") -> 2
-        project.stage == "references" -> 1
+        project.status == "done" || project.stage == "render" -> 3
+        project.stage == "effects" -> 2
+        project.stage in setOf("shots", "images", "tts") -> 1
         else -> 0
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -2330,7 +2311,6 @@ private fun ProjectCostDetailsScreen(project: VideoProject, store: ProjectStore,
 private fun ProjectOverviewScreen(project: VideoProject,
                                   store: ProjectStore,
                                   onOpenScript: () -> Unit,
-                                  onOpenReferences: () -> Unit,
                                   onOpenShots: () -> Unit,
                                   onOpenEffects: () -> Unit,
                                   onRender: () -> Unit,
@@ -2384,19 +2364,9 @@ private fun ProjectOverviewScreen(project: VideoProject,
     ProjectCostSummary(project, store, onOpenDetails = onOpenCosts,
         selectedCategory = "", onSelectCategory = onFilterCosts)
     Text("本卷内容", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 4.dp))
-    val referenceCount = project.characterReferences.size
-    val readyReferences = project.characterReferences.count { reference ->
-        val file = store.characterReferenceImage(project, reference)
-        file.isFile && file.length() > 1000
-    }
     val items = listOf(
         ProjectContentItem("成文", if (project.script.isBlank()) "题目、文案和封面文案" else "正文已保存 · ${PronunciationMarkup.display(project.script).length} 字", onOpenScript,
             project.script.isNotBlank()),
-        ProjectContentItem("参考图", when {
-            project.shots.isEmpty() -> "拆分镜头后识别全部角色"
-            referenceCount == 0 -> "等待识别角色"
-            else -> "$referenceCount 个角色 · 已有参考图 $readyReferences 张"
-        }, onOpenReferences, referenceCount > 0 && readyReferences == referenceCount),
         ProjectContentItem("生图", "${project.shots.size} 个镜头 · 图片与配音", onOpenShots, project.shots.isNotEmpty()),
         ProjectContentItem("画面与章法", "字幕、转场、封面与开头节奏", onOpenEffects, project.shots.isNotEmpty())
     )
@@ -2946,12 +2916,9 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
         shot.imageStatus != "done" || !image.isFile || image.length() <= 1000
     }.map { it.id }.toSet()
     val visibleShots = if (missingImagesOnly) project.shots.filter { it.id in missingImageIds } else project.shots
-    LaunchedEffect(project.id, project.script, project.shots.size, project.status) {
-        if (project.status != "running" && applyIdentifiedCast(project)) onSave(project)
-    }
     ProjectProgress(project)
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        StepCaption(3, "图片按镜头生成，并自动垫上该镜角色的参考图", Modifier.weight(1f))
+        StepCaption(2, "图片按镜头逐张生成，配音按正文批量生成", Modifier.weight(1f))
         Text("${project.shots.size} 镜", style = MaterialTheme.typography.titleMedium, color = HistoryColors.muted)
     }
     if (project.shots.isEmpty()) {
@@ -2998,9 +2965,7 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
         }
         visibleShots.forEach { shot ->
             key(project.id, shot.id) {
-                val referenceNames = charactersForShot(shot, project.characters).map { it.name }
                 ShotListItem(shot, project.shotNumber(shot.id), store.image(project, shot), busy, audioLibrary,
-                    referenceNames = referenceNames,
                     onClick = { onOpenShot(shot.id) }, onPlay = { onPlay(project, shot) })
             }
         }
@@ -3029,135 +2994,8 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
 }
 
 @Composable
-private fun ReferencesScreen(project: VideoProject, store: ProjectStore,
-                             onSave: (VideoProject) -> Unit,
-                             onGenerate: (VideoProject, String) -> Unit) {
-    val busy = project.status == "running"
-    LaunchedEffect(project.id, project.script, project.shots.size, project.status) {
-        if (project.status != "running" && applyIdentifiedCast(project)) onSave(project)
-    }
-    val roster = project.characterReferences
-    val signature = roster.joinToString("|") { "${it.name}:${it.prompt}:${it.remoteUrl}:${it.fileKey}" }
-    var drafts by remember(project.id, signature) {
-        mutableStateOf(roster.associate { reference ->
-            val computed = buildNamedCharacterPrompt(reference.name, reference.appearance)
-            reference.name to editableReferencePrompt(reference.prompt, computed)
-        })
-    }
-    var notes by remember(project.id) { mutableStateOf(mapOf<String, String>()) }
-    var confirmTarget by rememberSaveable(project.id) { mutableStateOf("") }
-    ProjectProgress(project)
-    StepCaption(2, "拆完镜头后识别每个角色，分别保存明文参考图提示词")
-    if (project.shots.isEmpty()) {
-        FormCard { Text("还没有镜头。请先在成文页拆分镜头，这里会列出识别出的全部角色。", color = HistoryColors.muted) }
-    } else if (roster.isEmpty()) {
-        FormCard { Text("这版正文里没有识别到需要单独画参考图的角色。空镜仍按文字生图。", color = HistoryColors.muted) }
-    } else {
-        Text("每个角色一张参考图。提示词是可修改的明文，不会显示 JSON。通用生图提示词在设置的「${ImagePromptSetting.title}」。",
-            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-        Button(onClick = { confirmTarget = "*" }, enabled = !busy,
-            modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(28.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) {
-            Text("生成全部参考图")
-        }
-        roster.forEach { reference ->
-            key(project.id, reference.fileKey, reference.name) {
-                val file = store.characterReferenceImage(project, reference)
-                val ready = file.isFile && file.length() > 1000
-                val draft = drafts[reference.name].orEmpty()
-                val computed = buildNamedCharacterPrompt(reference.name, reference.appearance)
-                FormCard {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically) {
-                        ShotThumbnail(file, Modifier.size(96.dp).clip(RoundedCornerShape(16.dp)),
-                            contentScale = ContentScale.Crop)
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(reference.name, style = MaterialTheme.typography.titleLarge)
-                            Text(characterSexCaption(reference.sex), style = MaterialTheme.typography.bodySmall,
-                                color = HistoryColors.muted)
-                            StatusPill(if (ready) "已有参考图" else "未生成",
-                                if (ready) HistoryColors.green else HistoryColors.muted)
-                        }
-                    }
-                    Text("参考图生图提示词", style = MaterialTheme.typography.titleMedium)
-                    Text(if (reference.promptCustom) "下次生成会原样使用这份已保存的明文。"
-                        else "下面是按这个角色的性别和外观写成的明文，可先改再保存。",
-                        style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
-                    CompactInput(draft, { value ->
-                        drafts = drafts + (reference.name to value)
-                        notes = notes - reference.name
-                    }, enabled = !busy, minLines = 6)
-                    val note = notes[reference.name].orEmpty()
-                    if (note.isNotBlank()) Text(note, style = MaterialTheme.typography.bodySmall, color = HistoryColors.teal)
-                    OutlinedButton(onClick = {
-                        val text = draft.trim().ifBlank { computed }
-                        if (looksLikeStructuredPrompt(text)) {
-                            notes = notes + (reference.name to "请保存明文提示词，不要粘贴 JSON。")
-                        } else {
-                            storeReferencePrompt(reference, text)
-                            drafts = drafts + (reference.name to text)
-                            onSave(project)
-                            notes = notes + (reference.name to "提示词已保存。重新生成后才会按这份文字重画参考图，已有镜头图片不会清除。")
-                        }
-                    }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
-                        Text("保存提示词")
-                    }
-                    OutlinedButton(onClick = { confirmTarget = reference.name }, enabled = !busy,
-                        modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
-                        Text(if (ready) "重新生成参考图" else "生成参考图")
-                    }
-                }
-            }
-        }
-    }
-    if (confirmTarget.isNotBlank()) {
-        val everyone = confirmTarget == "*"
-        AlertDialog(
-            onDismissRequest = { confirmTarget = "" },
-            title = { Text(if (everyone) "生成全部参考图" else "重新生成参考图") },
-            text = {
-                Text(if (everyone) "按每个角色已保存的明文提示词生成参考图。还没单独保存过的，用当前明文。已有镜头图片不会清除，也不会自动重画。每个角色按一张图片计费。"
-                else "按${confirmTarget}这份明文提示词重新生成参考图。已有镜头图片不会清除，也不会自动重画。此操作按一张图片计费。")
-            },
-            confirmButton = {
-                Button(onClick = {
-                    val target = confirmTarget
-                    confirmTarget = ""
-                    if (everyone) {
-                        project.characterReferences.forEach { reference ->
-                            val text = drafts[reference.name].orEmpty().trim().ifBlank {
-                                buildNamedCharacterPrompt(reference.name, reference.appearance)
-                            }
-                            if (!looksLikeStructuredPrompt(text)) storeReferencePrompt(reference, text)
-                        }
-                        onSave(project)
-                        onGenerate(project, "")
-                    } else {
-                        val reference = project.characterReferences.firstOrNull { it.name == target }
-                        if (reference != null) {
-                            val text = drafts[target].orEmpty().trim().ifBlank {
-                                buildNamedCharacterPrompt(reference.name, reference.appearance)
-                            }
-                            if (looksLikeStructuredPrompt(text)) {
-                                notes = notes + (target to "请保存明文提示词，不要粘贴 JSON。")
-                            } else {
-                                storeReferencePrompt(reference, text)
-                                onSave(project)
-                                onGenerate(project, target)
-                            }
-                        }
-                    }
-                }) { Text(if (everyone) "生成全部参考图" else "生成参考图") }
-            },
-            dismissButton = { TextButton(onClick = { confirmTarget = "" }) { Text("取消") } }
-        )
-    }
-}
-
-@Composable
 private fun ShotListItem(shot: Shot, displayNumber: Int, imageFile: File, busy: Boolean,
-                         audioLibrary: AudioLibrary, referenceNames: List<String> = emptyList(),
-                         onClick: () -> Unit, onPlay: () -> Unit) {
+                         audioLibrary: AudioLibrary, onClick: () -> Unit, onPlay: () -> Unit) {
     val imageReady = shot.imageStatus == "done" && imageFile.isFile && imageFile.length() > 1000
     val soundLabel = shot.soundEffects.mapNotNull { audioLibrary.asset(it.assetId)?.name }.joinToString("、").ifBlank { "无人声效" }
     Card(
@@ -3187,10 +3025,6 @@ private fun ShotListItem(shot: Shot, displayNumber: Int, imageFile: File, busy: 
                 }
                 Text(PronunciationMarkup.display(shot.text), maxLines = 2, overflow = TextOverflow.Ellipsis,
                     style = MaterialTheme.typography.bodyMedium)
-                if (referenceNames.isNotEmpty()) {
-                    Text("参考图：${referenceNames.joinToString("、")}", style = MaterialTheme.typography.bodySmall,
-                        color = HistoryColors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
                 Text("${"%.1f".format(shot.duration)} 秒 · $soundLabel", style = MaterialTheme.typography.bodySmall,
                     color = HistoryColors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -3219,7 +3053,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
     val transitionChoices = listOf("random" to "逐镜随机", "none" to "无", "fade" to "柔和叠化",
         "dissolve" to "颗粒溶解", "smoothleft" to "平滑左推", "zoomin" to "推近切换", "fadeblack" to "黑场淡化")
     val busy = project.status == "running"
-    StepCaption(4, "字幕、转场、封面与开头节奏")
+    StepCaption(3, "字幕、转场、封面与开头节奏")
     FormCard {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {

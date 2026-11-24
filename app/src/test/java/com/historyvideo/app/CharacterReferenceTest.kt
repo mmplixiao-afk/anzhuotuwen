@@ -248,15 +248,15 @@ class CharacterReferenceTest {
         val root = generateSequence(java.io.File(System.getProperty("user.dir"))) { it.parentFile }
             .first { java.io.File(it, "app/src/main/java/com/historyvideo/app/GenerationService.kt").isFile }
         val source = java.io.File(root, "app/src/main/java/com/historyvideo/app/GenerationService.kt").readText()
-        val sheet = source.substringAfter("private suspend fun generateCharacterSheet")
+        val request = source.substringAfter("private fun requestShotImage")
             .substringBefore("private suspend fun optimizeAndRegenerateImage")
-        assertTrue(sheet.contains("characterSheetRequestPrompt"))
-        assertTrue(sheet.contains("reference.remoteUrl = image.remoteUrl"))
-        assertTrue(sheet.contains("reference.prompt = prompt"))
-        assertFalse(sheet.contains("imageStatus = \"pending\""))
+        assertTrue(request.contains("api.image"))
+        assertFalse(request.contains("editImage"))
+        assertFalse(source.contains("private suspend fun generateCharacterSheet"))
         val activity = java.io.File(root, "app/src/main/java/com/historyvideo/app/MainActivity.kt").readText()
         assertTrue(activity.contains("import kotlinx.coroutines.isActive"))
-        assertTrue(activity.contains("保存提示词"))
-        assertTrue(activity.contains("参考图生图提示词"))
+        assertTrue(activity.contains("生图提示词"))
+        assertFalse(activity.contains("参考图生图提示词"))
+        assertFalse(activity.contains("private fun ReferencesScreen"))
     }
 }

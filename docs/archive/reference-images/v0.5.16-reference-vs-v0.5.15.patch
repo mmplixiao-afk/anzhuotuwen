@@ -1,0 +1,1664 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index 05b22ee..897c26a 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@ android {
+         applicationId 'com.historyvideo.app'
+         minSdk 29
+         targetSdk 35
+-        versionCode 46
+-        versionName '0.5.15'
++        versionCode 47
++        versionName '0.5.16'
+     }
+ 
+     // 👇 新增的签名配置块
+diff --git a/app/src/main/assets/prompts/shots.md b/app/src/main/assets/prompts/shots.md
+index f954bdf..a1a9128 100644
+--- a/app/src/main/assets/prompts/shots.md
++++ b/app/src/main/assets/prompts/shots.md
+@@ -8,10 +8,10 @@
+ - 每条反驳短镜分别生成贴合本镜口播的独立 visual 和 image_prompt，不得重复使用同一画面描述。第一镜承载封面大字，第二镜开始普通正文字幕。
+ - 人物动作镜头、双人互动、表情近景、屋舍街道全景、食物衣物等器物特写交替出现。讲“以前”和“如今”时分成独立镜头，保持对比物与构图可辨认。
+ - 开场迅速呈现关键人物或核心处境，避免与主题无关的风景铺垫。结尾画面呼应开场问题。
+-- 在内部先确定角色外观，再在每条涉及人物的 image_prompt 中重复简短且稳定的性别、年龄、脸型、发式和衣着锚点，不能只写“同一人”。只有故事明确是男性，或原文写了胡须时，才写胡须；女性不要写胡须。剧情换装保留脸与发型；配角各有可辨认外观。
+-- 可以额外在根对象写 characters，只描述主角：{"name":"主角","role":"protagonist","appearance":"性别、年龄、脸型、发式、服装"}。appearance 必须写出故事里主角的性别；看不出来就写“性别未说明”，不要套用男性、胡须或发髻。不要把配角写成主角。
+-- 只有主角的脸或身体清楚出现时，该镜才加 "uses_protagonist_reference": true。空镜、器物、只有配角或路人的镜头必须为 false。缺少该字段按 false，不要为此改动分镜边界。
+-- visual 用中文写清时代、地点、主体、动作和情绪；image_prompt 是独立可用的中文生图指令，约 100 至 180 字，包含人物锚点、单一场景、景别、动作、光线及写实古装风格。无人物空镜不必强塞主角。
++- 在内部先确定每一个有名有姓、可区分的角色外观，再在每条涉及该人物的 image_prompt 中重复简短且稳定的姓名、性别、年龄、脸型、发式和衣着锚点。不能把不同角色写成同一个人，也不能只写“同一人”。只有该角色在故事里明确是男性，或原文写了胡须时，才给这个角色写胡须；女性不要写胡须。看不出性别就写“性别未说明”，不要默认成男性。剧情换装保留脸与发型；配角各有可辨认外观。
++- 根对象的 characters 必须列出文案和镜头里出现的全部可区分角色，不要只写主角，也不要把配角合并成主角。每个角色一条明文外观，不要把提示词写成嵌套说明：{"name":"盛长风","role":"protagonist","sex":"male","appearance":"男性，年龄、脸型、发式、服装"}。配角 role 写 supporting，sex 只写 male、female 或留空。name 用角色姓名。appearance 必须写出该角色自己的性别；看不出来就写“性别未说明”。
++- 只有主角的脸或身体清楚出现时，该镜才加 "uses_protagonist_reference": true。空镜、器物、没有主角的镜头必须为 false。其他角色把姓名写进 visual 和 image_prompt，程序会按姓名匹配参考图。缺少该字段按 false，不要为此改动分镜边界。
++- visual 用中文写清时代、地点、主体、动作和情绪；image_prompt 是独立可用的中文生图指令，约 100 至 180 字，包含出场人物的姓名和外观锚点、单一场景、景别、动作、光线及写实古装风格。无人物空镜不必强塞人物。
+ - 不画可读文字、字幕、花字、水印；底部保留字幕位置。画幅服从用户选择，不强行写竖屏。
+ - video_prompt 只描述适合静态图的轻微推近、平移或静止，不要求角色完成连续动作；它是镜头意图，不能假设程序会生成真人动态视频。
+ - voiceover 与 subtitle_chunks 均由程序依据source unit编号从原文还原。每镜用 subtitle_unit_groups 按自然停顿分组本镜 source_unit_ids，字幕分组必须顺序完整覆盖本镜编号；不得输出口播或字幕文字副本。最终显示字幕由程序单独过滤语气词、粗口和标点，不能改变还原后的口播原文。
+@@ -22,7 +22,8 @@
+   "title": "string",
+   "style_preset": "string",
+   "characters": [
+-    {"name": "主角", "role": "protagonist", "appearance": "性别、年龄、脸型、发式和衣着"}
++    {"name": "盛长风", "role": "protagonist", "sex": "male", "appearance": "男性，年龄、脸型、发式和衣着"},
++    {"name": "叶青城", "role": "supporting", "sex": "female", "appearance": "女性，年龄、脸型、发式和衣着"}
+   ],
+   "shots": [
+     {
+diff --git a/app/src/main/java/com/historyvideo/app/AppSettings.kt b/app/src/main/java/com/historyvideo/app/AppSettings.kt
+index a94161d..f978f3a 100644
+--- a/app/src/main/java/com/historyvideo/app/AppSettings.kt
++++ b/app/src/main/java/com/historyvideo/app/AppSettings.kt
+@@ -135,7 +135,7 @@ class AppSettings(context: Context) {
+         private fun legacyDefaultPrompt(name: String) = when (name) {
+             "topic" -> "你是历史短视频选题策划。根据用户给出的方向，一次给出6个适合手机短视频的中文题材。题材要具体、有冲突、有画面感，避免重复。只输出严格JSON对象：{\"topics\":[\"题材1\",\"题材2\",\"题材3\",\"题材4\",\"题材5\",\"题材6\"]}。"
+             "script" -> "你是古代历史短视频口播作者。根据题材写约500字中文文案。使用第二人称，前3至5秒有冲突，口语化、强钩子、信息密集，每20至30秒有新信息或反转，不要长时间铺垫。只输出可直接配音的文案。"
+-            "shots" -> "你是写实古装短视频分镜导演。口播原文以source_units提供，只将相邻连续编号分组成镜，不输出voiceover，不得复述、增删或改写。字幕用subtitle_unit_groups按自然停顿分组本镜编号。默认平衡粒度每镜约20–35字，字数是目标；按动作、情绪、场景变化拆分。所有分镜边界必须落在标点之后，不得从句子中间截断；没有标点可切的长句保持完整。第一镜只放主题句；主题后的钩子按所选粒度和语义拆分，“哼/他娘的”不得单独成镜，禁止把放屁前的多句钩子固定为一个镜头。“放屁”必须作为反驳第一镜开头，不能并入钩子；后续反驳按标点灵活分组，保持原文完整。固定source_unit不得拆并。每镜按PC格式输出visual、2–6字punch、100–180字image_prompt及video_prompt；前两镜有人物、人物外观统一、画面无文字并留字幕区。输出title、style_preset和shots严格JSON。"
++            "shots" -> "你是写实古装短视频分镜导演。口播原文以source_units提供，只将相邻连续编号分组成镜，不输出voiceover，不得复述、增删或改写。字幕用subtitle_unit_groups按自然停顿分组本镜编号。默认平衡粒度每镜约20–35字，字数是目标；按动作、情绪、场景变化拆分。所有分镜边界必须落在标点之后，不得从句子中间截断；没有标点可切的长句保持完整。第一镜只放主题句；主题后的钩子按所选粒度和语义拆分，“哼/他娘的”不得单独成镜，禁止把放屁前的多句钩子固定为一个镜头。“放屁”必须作为反驳第一镜开头，不能并入钩子；后续反驳按标点灵活分组，保持原文完整。固定source_unit不得拆并。每镜按PC格式输出visual、2–6字punch、100–180字image_prompt及video_prompt；前两镜有人物、人物外观统一、画面无文字并留字幕区。characters列出全部可区分角色的姓名、性别和外观，不要只写主角，也不要把女性默认成男性。输出title、style_preset和shots严格JSON。"
+             "image_failure" -> "你是写实古装故事分镜的图片提示词优化师。只输出一条中文图片提示词，不输出 JSON、标题、编号或说明。\n\n保留当前镜头的历史背景、主体、人物身份、动作、道具、情绪和景别，不添加新剧情。原提示词中的年龄、脸型、发髻、胡须、衣服颜色及材质是连续性锚点，优化后仍须保留；不要把主角每次重新设计。\n\n用独立可理解的描述写出时代环境、人物锚点、单一动作、前中后景、光线和真实影视质感。适当交替中景、表情近景、全景和器物特写，不把所有镜头改成人像。\n\n保持原先指定的画幅；未指定时不要添加比例。底部留字幕位置，但不要要求图片生成文字、字幕、匾额字样、Logo 或水印。避免现代物件、卡通、无脸角色、Q版和塑料质感。\n\n如有冲突、灾害或亲密情节，用环境、表情及非露骨动作表达，保留事件含义。\n\n如果收到内容审核拒绝的报错，只改造成拒绝的血腥、暴力、伤病、未成年等画面细节。保留镜头的主题意思、时代地点、人物关系、动作目的、关键道具和情绪；可以用事前紧张、事后环境、人物神情等非露骨画面表达原事件。若未成年人物需要调整年龄，改成同一身份关系中的成年人物，不能把该角色和剧情一起删除。不得改为无关的街市日常、普通摊位或空镜。最终提示词用肯定式描述可见画面，不要写审核说明、否定句、暗语、谐音或编码。\n\n控制在 100 至 180 个中文字符；必要时可略长以保留人物一致性。"
+             else -> "中国古代真人影视剧照质感，写实比例，自然光，服装和建筑器物符合时代；单一清晰主体，画幅9:16，画面底部留字幕空间，不生成文字、水印。"
+         }
+diff --git a/app/src/main/java/com/historyvideo/app/CharacterReference.kt b/app/src/main/java/com/historyvideo/app/CharacterReference.kt
+index 7feb0ba..8f719e1 100644
+--- a/app/src/main/java/com/historyvideo/app/CharacterReference.kt
++++ b/app/src/main/java/com/historyvideo/app/CharacterReference.kt
+@@ -10,15 +10,21 @@ import java.net.URI
+ data class StoryCharacter(
+     val name: String,
+     val appearance: String,
+-    val role: String = ""
++    val role: String = "",
++    val sex: String = ""
+ ) {
+-    fun json() = JSONObject().put("name", name).put("appearance", appearance).put("role", role)
++    fun json() = JSONObject()
++        .put("name", name)
++        .put("appearance", appearance)
++        .put("role", role)
++        .put("sex", sex)
+ 
+     companion object {
+         fun from(value: JSONObject) = StoryCharacter(
+             name = value.optString("name").trim().ifBlank { "主角" },
+             appearance = value.optString("appearance", value.optString("description")).trim(),
+-            role = value.optString("role").trim()
++            role = value.optString("role").trim(),
++            sex = value.optString("sex").trim()
+         )
+     }
+ }
+@@ -28,7 +34,11 @@ data class CharacterReference(
+     var remoteUrl: String = "",
+     var status: String = "pending",
+     var appearance: String = "",
+-    var prompt: String = ""
++    var prompt: String = "",
++    var role: String = "",
++    var sex: String = "",
++    var fileKey: String = "",
++    var promptCustom: Boolean = false
+ ) {
+     fun json() = JSONObject().apply {
+         put("name", name)
+@@ -36,6 +46,10 @@ data class CharacterReference(
+         put("status", status)
+         put("appearance", appearance)
+         put("prompt", prompt)
++        put("role", role)
++        put("sex", sex)
++        put("file_key", fileKey)
++        put("prompt_custom", promptCustom)
+     }
+ 
+     companion object {
+@@ -44,7 +58,12 @@ data class CharacterReference(
+             remoteUrl = persistedImageUrl(value.optString("remote_url")),
+             status = value.optString("status").trim().ifBlank { "pending" },
+             appearance = value.optString("appearance"),
+-            prompt = value.optString("prompt")
++            prompt = value.optString("prompt"),
++            role = value.optString("role"),
++            sex = value.optString("sex"),
++            fileKey = value.optString("file_key").trim(),
++            promptCustom = if (value.has("prompt_custom")) value.optBoolean("prompt_custom")
++            else value.optString("prompt").trim().isNotEmpty()
+         )
+     }
+ }
+@@ -196,7 +215,7 @@ internal fun cangyuanGenerationRequestBody(model: String, prompt: String, size:
+ 
+ internal fun referenceImageUrls(urls: List<String>): List<String> {
+     val clean = urls.map { it.trim() }.filter { isPublicHttpsImageUrl(it) }.distinct().take(9)
+-    require(clean.isNotEmpty()) { "主角参考图缺少可公开访问的 HTTPS 地址" }
++    require(clean.isNotEmpty()) { "人物参考图缺少可公开访问的 HTTPS 地址" }
+     return clean
+ }
+ 
+@@ -223,10 +242,11 @@ internal fun parseStoryCharacters(root: JSONObject?): List<StoryCharacter> {
+     val array = root?.optJSONArray("characters") ?: return emptyList()
+     val result = mutableListOf<StoryCharacter>()
+     for (index in 0 until array.length()) {
+-        if (result.size == 9) break
++        if (result.size == 12) break
+         val item = array.optJSONObject(index) ?: continue
+         val character = StoryCharacter.from(item)
+-        if (character.appearance.isNotBlank()) result += character
++        val named = character.name.isNotBlank() && !genericCharacterName(character.name)
++        if (character.appearance.isNotBlank() || named) result += character
+     }
+     return result
+ }
+@@ -242,6 +262,7 @@ internal fun characterSheetRequestPrompt(savedPrompt: String, computedPrompt: St
+ /** Saves the edited sheet prompt and leaves the existing image, URL, and status untouched. */
+ internal fun storeReferencePrompt(reference: CharacterReference, prompt: String) {
+     reference.prompt = prompt.trim()
++    reference.promptCustom = true
+ }
+ 
+ internal fun buildCharacterSheetPrompt(globalImagePrompt: String, stylePreset: String, appearance: String): String {
+@@ -263,10 +284,12 @@ internal fun buildShotImagePrompt(
+     globalImagePrompt: String,
+     stylePreset: String,
+     shotPrompt: String,
+-    useReference: Boolean
++    useReference: Boolean,
++    referenceNames: List<String> = emptyList()
+ ): String {
+     val lock = if (useReference) CHARACTER_REFERENCE_LOCK else ""
+-    return listOf(globalImagePrompt, stylePreset, lock, shotPrompt).filter { it.isNotBlank() }.joinToString("\n")
++    val identity = if (useReference) referenceIdentityLine(referenceNames) else ""
++    return listOf(globalImagePrompt, stylePreset, lock, identity, shotPrompt).filter { it.isNotBlank() }.joinToString("\n")
+ }
+ 
+ internal fun referenceBlockedMessage(requiresPublicUrl: Boolean): String =
+diff --git a/app/src/main/java/com/historyvideo/app/CloudApi.kt b/app/src/main/java/com/historyvideo/app/CloudApi.kt
+index 29b0369..550d6fd 100644
+--- a/app/src/main/java/com/historyvideo/app/CloudApi.kt
++++ b/app/src/main/java/com/historyvideo/app/CloudApi.kt
+@@ -645,6 +645,11 @@ class CloudApi {
+         return saveImageResponse(config, result, out, onGenerated, isActive)
+     }
+ 
++    /**
++     * Reference images are sent in list order, at most 9.
++     * Cangyuan hosts receive an `images` URL array. Other hosts receive multipart `image` or repeated `image[]`.
++     * The prompt must name each attachment in this same order.
++     */
+     fun editImage(
+         config: ProviderConfig,
+         prompt: String,
+diff --git a/app/src/main/java/com/historyvideo/app/GenerationService.kt b/app/src/main/java/com/historyvideo/app/GenerationService.kt
+index 84f66ea..5e65798 100644
+--- a/app/src/main/java/com/historyvideo/app/GenerationService.kt
++++ b/app/src/main/java/com/historyvideo/app/GenerationService.kt
+@@ -79,6 +79,7 @@ class GenerationService : Service() {
+         val id = intent?.getStringExtra(EXTRA_PROJECT) ?: return START_NOT_STICKY
+         val promptOverride = intent.getStringExtra(EXTRA_PROMPT).orEmpty()
+         val shotImagePrompt = intent.getStringExtra(EXTRA_SHOT_IMAGE_PROMPT)
++        val characterName = intent.getStringExtra(EXTRA_CHARACTER).orEmpty()
+         activeProject = id
+         activeProjectId = id
+         store.markCurrentProject(id)
+@@ -135,7 +136,7 @@ class GenerationService : Service() {
+                         }
+                         VOICE_ALL -> generateAudio(project)
+                         IMAGE_ALL -> generateImages(project, promptOverride)
+-                        CHARACTER_REFERENCE -> regenerateCharacterReference(project, promptOverride)
++                        CHARACTER_REFERENCE -> regenerateCharacterReference(project, promptOverride, characterName)
+                         RENDER -> render(project)
+                         IMAGE -> regenerateImage(project, intent.getIntExtra(EXTRA_SHOT, 0), promptOverride, shotImagePrompt)
+                         IMAGE_OPTIMIZE -> optimizeAndRegenerateImage(project,
+@@ -285,6 +286,7 @@ class GenerationService : Service() {
+         project.storyboardStylePreset = storyboard.stylePreset
+         project.characters = storyboard.characters.toMutableList()
+         store.applyStoryboard(project, storyboard.shots)
++        applyIdentifiedCast(project)
+         if (styleChanged) {
+             project.shots.forEach { shot ->
+                 shot.imageRevision = java.util.UUID.randomUUID().toString()
+@@ -301,12 +303,11 @@ class GenerationService : Service() {
+         return { context.isActive }
+     }
+ 
+-    private fun referenceReady(project: VideoProject): Boolean {
+-        val file = store.characterReferenceImage(project)
+-        val url = project.characterReferences.firstOrNull()?.remoteUrl.orEmpty()
+-        return referenceAssetUsable(
++    private fun referenceReady(project: VideoProject, reference: CharacterReference): Boolean {
++        val file = store.characterReferenceImage(project, reference)
++        return referenceReadyFor(
+             if (file.isFile) file.length() else 0L,
+-            url,
++            reference.remoteUrl,
+             isCangyuanImageHost(settings.provider("image").baseUrl)
+         )
+     }
+@@ -322,24 +323,25 @@ class GenerationService : Service() {
+         }
+         val running = activeFlag()
+         referenceGate.reset()
+-        val plan = planImageBatch(pending.map { it.id to it.usesProtagonistReference }, referenceReady(project))
+-        var sheetError: String? = null
+-        if (plan.generateSheet) {
++        applyIdentifiedCast(project)
++        val neededNames = pending.flatMap { shot -> charactersForShot(shot, project.characters).map { it.name } }
++            .distinct()
++        for (name in neededNames) {
++            val reference = project.characterReferences.firstOrNull { it.name == name } ?: continue
++            if (referenceReady(project, reference)) continue
++            if (!running()) throw CancellationException("已暂停")
+             try {
+-                referenceGate.ensure(true, { referenceReady(project) }, { !running() }) {
+-                    generateCharacterSheet(project, imagePrompt, running)
+-                }
++                generateCharacterSheet(project, imagePrompt, running, name)
+             } catch (error: CancellationException) {
+                 throw error
+-            } catch (error: Exception) {
+-                sheetError = error.message ?: "主角参考图生成失败"
++            } catch (_: Exception) {
++                // A missing sheet does not block the shot. Text generation still runs.
+             }
+         }
+         if (pending.isEmpty()) {
+             update(project, "images", "review", "图片生成完成，请继续生成配音", project.shots.size, project.shots.size)
+             return
+         }
+-        val ready = referenceReady(project)
+         val semaphore = Semaphore(settings.concurrency.coerceIn(1, 10))
+         update(project, "images", "running", "正在生成图片",
+             project.shots.count { it.imageStatus == "done" }, project.shots.size)
+@@ -348,22 +350,16 @@ class GenerationService : Service() {
+                 async {
+                     semaphore.withPermit {
+                         val target = store.image(project, shot)
+-                        val route = shotImageRoute(shot.usesProtagonistReference, ready)
+                         var regenerated = false
+                         if (target.length() < 1000 || shot.imageStatus != "done") {
+-                            if (route == ShotImageRoute.BLOCKED) {
+-                                shot.imageStatus = "failed"
+-                                shot.error = (sheetError ?: referenceBlockedMessage(
+-                                    isCangyuanImageHost(imageProvider.baseUrl)
+-                                )).take(180)
+-                            } else {
++                            run {
+                                 var last: Exception? = null
+                                 for (attempt in 0..2) {
+                                     if (!running()) throw CancellationException("已暂停")
+                                     try {
+                                         val saved = requestShotImage(
+                                             project, shot, imagePrompt, shot.imagePrompt, target,
+-                                            "第 ${project.shotNumber(shot.id)} 镜生图", route == ShotImageRoute.EDIT, running
++                                            "第 ${project.shotNumber(shot.id)} 镜生图", running
+                                         )
+                                         shot.imageUrl = saved.remoteUrl
+                                         last = null
+@@ -404,18 +400,30 @@ class GenerationService : Service() {
+         update(project, "images", "review", "图片生成完成，请继续生成配音", project.shots.size, project.shots.size)
+     }
+ 
+-    private suspend fun regenerateCharacterReference(project: VideoProject, promptOverride: String = "") {
++    private suspend fun regenerateCharacterReference(
++        project: VideoProject,
++        promptOverride: String = "",
++        characterName: String = ""
++    ) {
+         require(project.shots.isNotEmpty()) { "请先确认分镜" }
+         val imagePrompt = configuredPrompt("image", promptOverride)
+         referenceGate.reset()
+         val running = activeFlag()
+-        update(project, "images", "running", "正在生成人物参考图", 0, 1)
+-        generateCharacterSheet(project, imagePrompt, running)
+-        val flagged = project.shots.count { it.usesProtagonistReference }
+-        update(project, "images", "review",
+-            if (flagged == 0) "人物参考图已更新。当前没有标明主角出镜的镜头，已有图片不会自动重做。"
+-            else "人物参考图已更新。已有镜头不会自动重做；之后生成标明主角出镜的镜头时会使用它。",
+-            project.shots.count { it.imageStatus == "done" }, project.shots.size)
++        applyIdentifiedCast(project)
++        val names = if (characterName.isBlank()) project.characterReferences.map { it.name }
++        else listOf(characterName)
++        require(names.isNotEmpty()) { "还没有识别到角色，请先拆分镜头" }
++        if (characterName.isNotBlank()) {
++            require(project.characterReferences.any { it.name == characterName }) { "找不到角色$characterName" }
++        }
++        names.forEachIndexed { index, name ->
++            update(project, "references", "running", "正在生成${name}的参考图 ${index + 1}/${names.size}", index, names.size)
++            generateCharacterSheet(project, imagePrompt, running, name)
++        }
++        val label = if (characterName.isBlank()) "全部角色参考图已更新" else "${characterName}的参考图已更新"
++        update(project, "references", "review",
++            "$label。已有镜头不会自动重画；之后生图会按镜头里的角色垫上对应参考图。",
++            project.shots.count { it.imageStatus == "done" }, project.shots.size.coerceAtLeast(1))
+     }
+ 
+     private suspend fun generateAudio(project: VideoProject) {
+@@ -452,13 +460,18 @@ class GenerationService : Service() {
+         require(shotPrompt.isNotBlank()) { "请先填写本镜生图提示词" }
+         if (resetReference) referenceGate.reset()
+         val running = activeFlag()
+-        if (shot.usesProtagonistReference) {
+-            if (publishStatus) update(project, "images", "running", "正在准备主角参考图", 0, 1)
+-            referenceGate.ensure(true, { referenceReady(project) }, { !running() }) {
+-                generateCharacterSheet(project, imagePrompt, running)
+-            }
+-            if (!referenceReady(project)) {
+-                error(referenceBlockedMessage(isCangyuanImageHost(settings.provider("image").baseUrl)))
++        applyIdentifiedCast(project)
++        val shotNames = charactersForShot(project.shots.first { it.id == shotId }, project.characters).map { it.name }
++        for (name in shotNames) {
++            val reference = project.characterReferences.firstOrNull { it.name == name } ?: continue
++            if (referenceReady(project, reference)) continue
++            if (publishStatus) update(project, "references", "running", "正在准备${name}的参考图", 0, 1)
++            try {
++                generateCharacterSheet(project, imagePrompt, running, name)
++            } catch (error: CancellationException) {
++                throw error
++            } catch (_: Exception) {
++                // This character stays unmatched. Other ready references are still attached.
+             }
+         }
+         if (publishStatus) {
+@@ -478,7 +491,7 @@ class GenerationService : Service() {
+         try {
+             val saved = requestShotImage(
+                 project, shot, imagePrompt, shotPrompt, replacement,
+-                "第 ${project.shotNumber(shotId)} 镜重生图片", shot.usesProtagonistReference, running
++                "第 ${project.shotNumber(shotId)} 镜重生图片", running
+             )
+             Files.move(replacement.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+             shot.imageUrl = saved.remoteUrl
+@@ -510,47 +523,68 @@ class GenerationService : Service() {
+         shotPrompt: String,
+         out: File,
+         label: String,
+-        useReference: Boolean,
+         isActive: () -> Boolean
+     ): SavedImage {
+         val provider = settings.provider("image")
+-        val prompt = buildShotImagePrompt(globalPrompt, project.storyboardStylePreset, shotPrompt, useReference)
++        val prepared = prepareShotReferences(shot, project.characters, project.characterReferences) { reference ->
++            referenceReady(project, reference)
++        }
++        val prompt = buildShotImagePrompt(
++            globalPrompt,
++            project.storyboardStylePreset,
++            shotPrompt,
++            prepared.references.isNotEmpty(),
++            prepared.references.map { displayReferenceName(it) }
++        )
+         val costEntry = CostEntry.image(label, settings.imageUnitPrice, shotId = shot.id, prompt = prompt)
+         val onGenerated = { ProjectCosts(store).add(project.id, costEntry) }
+-        val saved = if (!useReference) {
++        val saved = if (prepared.references.isEmpty()) {
+             api.image(provider, prompt, out, onGenerated, isActive)
+         } else if (isCangyuanImageHost(provider.baseUrl)) {
+-            val url = project.characterReferences.firstOrNull()?.remoteUrl.orEmpty()
+-            if (!isPublicHttpsImageUrl(url)) error(referenceBlockedMessage(true))
+-            api.editImage(provider, prompt, out, listOf(url), emptyList(), onGenerated, isActive)
++            val urls = prepared.references.map { it.remoteUrl }
++            api.editImage(provider, prompt, out, urls, emptyList(), onGenerated, isActive)
+         } else {
+-            val file = store.characterReferenceImage(project)
+-            if (!file.isFile || file.length() <= 1000) error(referenceBlockedMessage(false))
+-            api.editImage(provider, prompt, out, emptyList(), listOf(file), onGenerated, isActive)
++            val files = prepared.references.map { store.characterReferenceImage(project, it) }
++            api.editImage(provider, prompt, out, emptyList(), files, onGenerated, isActive)
+         }
+         ProjectCosts(store).attachMedia(project.id, costEntry.id, out)
+         return saved
+     }
+ 
+-    private suspend fun generateCharacterSheet(project: VideoProject, globalPrompt: String, isActive: () -> Boolean) {
++    private suspend fun generateCharacterSheet(
++        project: VideoProject,
++        globalPrompt: String,
++        isActive: () -> Boolean,
++        characterName: String = ""
++    ) {
+         val provider = settings.provider("image")
+         val requiresUrl = isCangyuanImageHost(provider.baseUrl)
+-        val appearance = sheetAppearance(
+-            project.characters,
+-            project.shots.filter { it.usesProtagonistReference }.map { it.imagePrompt }
+-        )
+-        val computed = buildCharacterSheetPrompt(globalPrompt, project.storyboardStylePreset, appearance)
+-        val prompt = characterSheetRequestPrompt(project.characterReferences.firstOrNull()?.prompt.orEmpty(), computed)
+-        val file = store.characterReferenceImage(project)
++        applyIdentifiedCast(project)
++        val reference = if (characterName.isBlank()) {
++            project.characterReferences.firstOrNull() ?: CharacterReference().also { project.characterReferences += it }
++        } else {
++            project.characterReferences.firstOrNull { it.name == characterName }
++                ?: error("找不到角色$characterName")
++        }
++        val appearance = reference.appearance.ifBlank {
++            sheetAppearance(
++                project.characters.filter { it.name == reference.name },
++                emptyList()
++            )
++        }
++        val computed = buildNamedCharacterPrompt(reference.name, appearance)
++        val savedPrompt = if (looksLikeStructuredPrompt(reference.prompt)) "" else reference.prompt
++        val prompt = characterSheetRequestPrompt(savedPrompt, computed)
++        val file = store.characterReferenceImage(project, reference)
+         file.parentFile?.mkdirs()
+         val replacement = File(file.parentFile, file.name + ".new")
+-        update(project, "images", "running", "正在生成人物参考图", 0, 1)
++        update(project, "references", "running", "正在生成${reference.name}的参考图", 0, 1)
+         var saved: SavedImage? = null
+         var last: Exception? = null
+         for (attempt in 0..2) {
+             if (!isActive()) throw CancellationException("已暂停")
+             replacement.delete()
+-            val costEntry = CostEntry.image("人物参考图", settings.imageUnitPrice, prompt = prompt)
++            val costEntry = CostEntry.image("${reference.name}的参考图", settings.imageUnitPrice, prompt = prompt)
+             try {
+                 saved = api.image(provider, prompt, replacement, onGenerated = {
+                     ProjectCosts(store).add(project.id, costEntry)
+@@ -573,15 +607,12 @@ class GenerationService : Service() {
+             error("人物参考图没有返回可公开访问的 HTTPS 地址")
+         }
+         Files.move(replacement.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+-        val reference = project.characterReferences.firstOrNull() ?: CharacterReference().also {
+-            project.characterReferences += it
+-        }
+-        reference.name = "主角"
++        if (reference.name.isBlank()) reference.name = "主角"
+         reference.remoteUrl = image.remoteUrl
+         reference.status = "done"
+         reference.appearance = appearance
+         reference.prompt = prompt
+-        update(project, "images", "running", "人物参考图已生成", 1, 1)
++        update(project, "references", "running", "${reference.name}的参考图已生成", 1, 1)
+     }
+ 
+     private suspend fun optimizeAndRegenerateImage(project: VideoProject, shotId: Int,
+@@ -781,6 +812,7 @@ class GenerationService : Service() {
+         const val EXTRA_SHOT = "shot_id"
+         const val EXTRA_PROMPT = "prompt_override"
+         const val EXTRA_SHOT_IMAGE_PROMPT = "shot_image_prompt"
++        const val EXTRA_CHARACTER = "character_name"
+         const val SCRIPT = "script"
+         const val SHOTS = "shots"
+         const val FINISH = "finish"
+diff --git a/app/src/main/java/com/historyvideo/app/MainActivity.kt b/app/src/main/java/com/historyvideo/app/MainActivity.kt
+index 7a67d5c..1530b65 100644
+--- a/app/src/main/java/com/historyvideo/app/MainActivity.kt
++++ b/app/src/main/java/com/historyvideo/app/MainActivity.kt
+@@ -269,12 +269,13 @@ class MainActivity : ComponentActivity() {
+         }
+     }
+ 
+-    private fun start(project: VideoProject, action: String, shotId: Int = 0, prompt: String = "") {
++    private fun start(project: VideoProject, action: String, shotId: Int = 0, prompt: String = "", characterName: String = "") {
+         requestNotificationPermissionIfNeeded()
+         val intent = Intent(this, GenerationService::class.java).setAction(action)
+             .putExtra(GenerationService.EXTRA_PROJECT, project.id)
+             .putExtra(GenerationService.EXTRA_SHOT, shotId)
+             .putExtra(GenerationService.EXTRA_PROMPT, prompt)
++            .putExtra(GenerationService.EXTRA_CHARACTER, characterName)
+         if (action == GenerationService.IMAGE || action == GenerationService.IMAGE_OPTIMIZE) {
+             val shot = project.shots.firstOrNull { it.id == shotId } ?: error("镜头不存在")
+             intent.putExtra(GenerationService.EXTRA_SHOT_IMAGE_PROMPT, shot.imagePrompt)
+@@ -392,7 +393,7 @@ class MainActivity : ComponentActivity() {
+             else -> route
+         }
+         val pageKey = when (screen) {
+-            "project", "script", "shots", "effects", "result", "costs" -> "$screen:$selectedId"
++            "project", "script", "references", "shots", "effects", "result", "costs" -> "$screen:$selectedId"
+             "shot" -> "$screen:$selectedId:$selectedShotId"
+             "prompt_editor" -> "$screen:$selectedPromptType"
+             else -> screen
+@@ -485,7 +486,7 @@ class MainActivity : ComponentActivity() {
+             projects = store.all()
+         }
+ 
+-        fun launchProjectTask(project: VideoProject, action: String, shotId: Int = 0) {
++        fun launchProjectTask(project: VideoProject, action: String, shotId: Int = 0, characterName: String = "") {
+             val promptName = when (action) {
+                 GenerationService.SCRIPT -> "script"
+                 GenerationService.SHOTS -> "shots"
+@@ -495,7 +496,7 @@ class MainActivity : ComponentActivity() {
+             }
+             val prompt = promptName?.let { settings.prompt(it) }.orEmpty()
+             runCatching {
+-                start(project, action, shotId, prompt)
++                start(project, action, shotId, prompt, characterName)
+                 store.markCurrentProject(project.id)
+                 preferredCurrentId = project.id
+                 projects = store.all()
+@@ -504,6 +505,10 @@ class MainActivity : ComponentActivity() {
+             }
+         }
+ 
++        fun runCharacterReference(project: VideoProject, characterName: String = "") {
++            launchProjectTask(project, GenerationService.CHARACTER_REFERENCE, 0, characterName)
++        }
++
+         fun runProject(project: VideoProject, action: String, shotId: Int = 0) {
+             if (action == GenerationService.RENDER && (project.bgmId.isBlank() || project.bgmId == "none")) {
+                 noBgmRenderProjectId = project.id
+@@ -584,6 +589,7 @@ class MainActivity : ComponentActivity() {
+                             } else Text(when (screen) {
+                                 "project" -> "制作此卷"
+                                 "script" -> "成文"
++                                "references" -> "参考图"
+                                 "shots" -> "生图"
+                                 "shot" -> "镜头详情"
+                                 "effects" -> "画面与章法"
+@@ -713,6 +719,7 @@ class MainActivity : ComponentActivity() {
+                     "prompts" -> PromptListScreen(settings, onOpen = { selectedPromptType = it; navigate("prompt_editor") })
+                     "prompt_editor" -> PromptEditorScreen(settings, selectedPromptType) { message = it }
+                     "settings" -> SettingsScreen(onApi = { navigate("api") }, onPrompts = { navigate("prompts") },
++                        onImagePrompt = { selectedPromptType = ImagePromptSetting.type; navigate("prompt_editor") },
+                         onModels = { navigate("cutout_models") }, onAudio = { navigate("audio_library") })
+                     "audio_library" -> AudioLibrarySettingsScreen(store, projects,
+                         busy = projects.any { it.status == "running" }, onMessage = { message = it })
+@@ -721,6 +728,7 @@ class MainActivity : ComponentActivity() {
+                         selected,
+                         store = store,
+                         onOpenScript = { navigate("script") },
++                        onOpenReferences = { navigate("references") },
+                         onOpenShots = { navigate("shots") },
+                         onOpenEffects = { navigate("effects") },
+                         onRender = { runProject(selected, GenerationService.RENDER, 0) },
+@@ -742,10 +750,15 @@ class MainActivity : ComponentActivity() {
+                         onSave = ::saveProject,
+                         onRun = ::runProject
+                     )
++                    "references" -> if (selected != null) ReferencesScreen(
++                        selected,
++                        store,
++                        onSave = ::saveProject,
++                        onGenerate = ::runCharacterReference
++                    )
+                     "shots" -> if (selected != null) ShotsScreen(
+                         selected,
+                         store,
+-                        imagePrompt = settings.prompt("image"),
+                         onSave = ::saveProject,
+                         onRun = ::runProject,
+                         onPlay = ::playShot,
+@@ -1077,7 +1090,8 @@ private fun HomeScreen(current: VideoProject?, running: VideoProject?, now: Long
+ }
+ 
+ @Composable
+-private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onModels: () -> Unit, onAudio: () -> Unit) {
++private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onImagePrompt: () -> Unit,
++                            onModels: () -> Unit, onAudio: () -> Unit) {
+     Text("工作台设置", style = MaterialTheme.typography.headlineSmall)
+     Card(onClick = onApi, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+@@ -1093,6 +1107,13 @@ private fun SettingsScreen(onApi: () -> Unit, onPrompts: () -> Unit, onModels: (
+             Text("按文案、分镜和生图提示词分别编辑", color = HistoryColors.muted)
+         }
+     }
++    Card(onClick = onImagePrompt, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
++        colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
++        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
++            Text(ImagePromptSetting.title, style = MaterialTheme.typography.titleLarge)
++            Text("镜头通用生图提示词。与参考图明文提示词分开保存。", color = HistoryColors.muted)
++        }
++    }
+     Card(onClick = onModels, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
+         colors = CardDefaults.cardColors(containerColor = HistoryColors.card)) {
+         Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+@@ -1317,6 +1338,7 @@ private fun stageLabel(stage: String) = when (stage) {
+     "tts" -> "配音"
+     "render" -> "渲染"
+     "script" -> "文案"
++    "references" -> "参考图"
+     "shots" -> "分镜"
+     "topic" -> "成文"
+     else -> "任务"
+@@ -1688,9 +1710,12 @@ private fun ShotDetailScreen(project: VideoProject, shot: Shot, store: ProjectSt
+             }, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleLarge)
+             StatusPill(imageSizeLabel(project.imageSize), if (shot.imageStatus == "failed") HistoryColors.cinnabar else HistoryColors.green)
+         }
+-        Text(if (shot.usesProtagonistReference) "本镜标明主角出镜，生成时会使用人物参考图。"
+-            else "本镜不垫主角参考图，仍按文字生图。",
+-            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
++        val shotCharacters = charactersForShot(shot, project.characters)
++        Text(when {
++            shotCharacters.isEmpty() -> "本镜没有需要对齐的角色参考图，仍按文字生图。"
++            shotCharacters.size == 1 -> "本镜会使用${shotCharacters[0].name}的参考图。这张参考图是${shotCharacters[0].name}。"
++            else -> referenceIdentityLine(shotCharacters.map { it.name })
++        }, style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+         if (shot.imageStatus == "failed" && shot.error.isNotBlank()) {
+             Text("失败原因：${shot.error}", color = HistoryColors.cinnabar, style = MaterialTheme.typography.bodySmall)
+         }
+@@ -2036,11 +2061,12 @@ private fun ProjectProgress(project: VideoProject) {
+ 
+ @Composable
+ private fun FlowStepBar(project: VideoProject) {
+-    val steps = listOf("成文", "生图", "章法", "成片")
++    val steps = listOf("成文", "参考图", "生图", "章法", "成片")
+     val current = when {
+-        project.status == "done" || project.stage == "render" -> 3
+-        project.stage == "effects" -> 2
+-        project.stage in setOf("shots", "images", "tts") -> 1
++        project.status == "done" || project.stage == "render" -> 4
++        project.stage == "effects" -> 3
++        project.stage in setOf("shots", "images", "tts") -> 2
++        project.stage == "references" -> 1
+         else -> 0
+     }
+     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+@@ -2304,6 +2330,7 @@ private fun ProjectCostDetailsScreen(project: VideoProject, store: ProjectStore,
+ private fun ProjectOverviewScreen(project: VideoProject,
+                                   store: ProjectStore,
+                                   onOpenScript: () -> Unit,
++                                  onOpenReferences: () -> Unit,
+                                   onOpenShots: () -> Unit,
+                                   onOpenEffects: () -> Unit,
+                                   onRender: () -> Unit,
+@@ -2357,9 +2384,19 @@ private fun ProjectOverviewScreen(project: VideoProject,
+     ProjectCostSummary(project, store, onOpenDetails = onOpenCosts,
+         selectedCategory = "", onSelectCategory = onFilterCosts)
+     Text("本卷内容", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 4.dp))
++    val referenceCount = project.characterReferences.size
++    val readyReferences = project.characterReferences.count { reference ->
++        val file = store.characterReferenceImage(project, reference)
++        file.isFile && file.length() > 1000
++    }
+     val items = listOf(
+         ProjectContentItem("成文", if (project.script.isBlank()) "题目、文案和封面文案" else "正文已保存 · ${PronunciationMarkup.display(project.script).length} 字", onOpenScript,
+             project.script.isNotBlank()),
++        ProjectContentItem("参考图", when {
++            project.shots.isEmpty() -> "拆分镜头后识别全部角色"
++            referenceCount == 0 -> "等待识别角色"
++            else -> "$referenceCount 个角色 · 已有参考图 $readyReferences 张"
++        }, onOpenReferences, referenceCount > 0 && readyReferences == referenceCount),
+         ProjectContentItem("生图", "${project.shots.size} 个镜头 · 图片与配音", onOpenShots, project.shots.isNotEmpty()),
+         ProjectContentItem("画面与章法", "字幕、转场、封面与开头节奏", onOpenEffects, project.shots.isNotEmpty())
+     )
+@@ -2893,7 +2930,6 @@ private fun ScriptScreen(project: VideoProject,
+ 
+ @Composable
+ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
+-                        imagePrompt: String,
+                         onSave: (VideoProject) -> Unit,
+                         onRun: (VideoProject, String, Int) -> Unit,
+                         onPlay: (VideoProject, Shot) -> Unit,
+@@ -2904,39 +2940,18 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
+     val busy = project.status == "running"
+     var missingImagesOnly by rememberSaveable(project.id) { mutableStateOf(false) }
+     var confirmBatchOptimize by rememberSaveable(project.id) { mutableStateOf(false) }
+-    var confirmReference by rememberSaveable(project.id) { mutableStateOf(false) }
+     val failedImageIds = project.shots.filter { it.imageStatus == "failed" }.map { it.id }
+     val missingImageIds = project.shots.filter { shot ->
+         val image = store.image(project, shot)
+         shot.imageStatus != "done" || !image.isFile || image.length() <= 1000
+     }.map { it.id }.toSet()
+     val visibleShots = if (missingImagesOnly) project.shots.filter { it.id in missingImageIds } else project.shots
+-    val referenceAppearance = sheetAppearance(
+-        project.characters,
+-        project.shots.filter { it.usesProtagonistReference }.map { it.imagePrompt }
+-    )
+-    val computedReferencePrompt = buildCharacterSheetPrompt(
+-        imagePrompt, project.storyboardStylePreset, referenceAppearance
+-    )
+-    val storedReferencePrompt = project.characterReferences.firstOrNull()?.prompt?.trim().orEmpty()
+-    var referenceDraft by remember(project.id) {
+-        mutableStateOf(storedReferencePrompt.ifBlank { computedReferencePrompt })
+-    }
+-    var referenceNote by remember(project.id) { mutableStateOf("") }
+-    fun commitReferencePrompt() {
+-        val reference = project.characterReferences.firstOrNull() ?: CharacterReference().also {
+-            project.characterReferences += it
+-        }
+-        val text = referenceDraft.trim().ifBlank { computedReferencePrompt }
+-        storeReferencePrompt(reference, text)
+-        if (referenceDraft.isBlank()) referenceDraft = text
+-        onSave(project)
++    LaunchedEffect(project.id, project.script, project.shots.size, project.status) {
++        if (project.status != "running" && applyIdentifiedCast(project)) onSave(project)
+     }
+-    val referenceFile = store.characterReferenceImage(project)
+-    val referenceReady = referenceFile.isFile && referenceFile.length() > 1000
+     ProjectProgress(project)
+     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+-        StepCaption(2, "图片按镜头逐张生成，配音按正文批量生成", Modifier.weight(1f))
++        StepCaption(3, "图片按镜头生成，并自动垫上该镜角色的参考图", Modifier.weight(1f))
+         Text("${project.shots.size} 镜", style = MaterialTheme.typography.titleMedium, color = HistoryColors.muted)
+     }
+     if (project.shots.isEmpty()) {
+@@ -2959,38 +2974,8 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
+                     }
+                 }
+         }
+-        val protagonistShots = project.shots.count { it.usesProtagonistReference }
+-        FormCard {
+-            Text("人物参考图", style = MaterialTheme.typography.titleLarge)
+-            ShotThumbnail(referenceFile, Modifier.size(96.dp).clip(RoundedCornerShape(16.dp)),
+-                contentScale = ContentScale.Crop)
+-            Text(if (referenceReady) "已保存主角参考图。只用于标明主角出镜的镜头，保持参考图里已有的脸、发式、服装和年龄。"
+-                else "还没有主角参考图。生成标明主角出镜的镜头前会先创建一张。",
+-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+-            Text("空镜、道具镜和未标注的旧镜头仍按文字生图，不会把配角改成主角。当前标明主角出镜 $protagonistShots 镜。",
+-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+-            Text("参考图生图提示词", style = MaterialTheme.typography.titleMedium)
+-            Text(if (storedReferencePrompt.isBlank())
+-                "还没有单独保存过。下面按当前主角外观整理，可先改再保存。已有参考图不会因此被删除。"
+-                else "下次生成人物参考图会原样使用这份已保存的文字。",
+-                style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
+-            CompactInput(referenceDraft, { referenceDraft = it; referenceNote = "" }, enabled = !busy, minLines = 6)
+-            if (referenceNote.isNotBlank()) {
+-                Text(referenceNote, style = MaterialTheme.typography.bodySmall, color = HistoryColors.teal)
+-            }
+-            OutlinedButton(onClick = {
+-                commitReferencePrompt()
+-                referenceNote = "提示词已保存。重新生成后才会按这份文字重画参考图，已有镜头图片不会清除。"
+-            }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
+-                Text("保存提示词")
+-            }
+-            OutlinedButton(onClick = { confirmReference = true }, enabled = !busy,
+-                modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
+-                Text(if (referenceReady) "重新生成参考图" else "生成参考图")
+-            }
+-        }
+         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+-            Button(onClick = { commitReferencePrompt(); onRun(project, GenerationService.IMAGE_ALL, 0) },
++            Button(onClick = { onRun(project, GenerationService.IMAGE_ALL, 0) },
+                 enabled = !busy, modifier = Modifier.weight(1f).height(54.dp), shape = RoundedCornerShape(28.dp),
+                 colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) { Text("生成图片") }
+             OutlinedButton(onClick = { onRun(project, GenerationService.VOICE_ALL, 0) },
+@@ -3013,7 +2998,9 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
+         }
+         visibleShots.forEach { shot ->
+             key(project.id, shot.id) {
++                val referenceNames = charactersForShot(shot, project.characters).map { it.name }
+                 ShotListItem(shot, project.shotNumber(shot.id), store.image(project, shot), busy, audioLibrary,
++                    referenceNames = referenceNames,
+                     onClick = { onOpenShot(shot.id) }, onPlay = { onPlay(project, shot) })
+             }
+         }
+@@ -3039,26 +3026,138 @@ private fun ShotsScreen(project: VideoProject, store: ProjectStore,
+             }
+         )
+     }
+-    if (confirmReference) {
++}
++
++@Composable
++private fun ReferencesScreen(project: VideoProject, store: ProjectStore,
++                             onSave: (VideoProject) -> Unit,
++                             onGenerate: (VideoProject, String) -> Unit) {
++    val busy = project.status == "running"
++    LaunchedEffect(project.id, project.script, project.shots.size, project.status) {
++        if (project.status != "running" && applyIdentifiedCast(project)) onSave(project)
++    }
++    val roster = project.characterReferences
++    val signature = roster.joinToString("|") { "${it.name}:${it.prompt}:${it.remoteUrl}:${it.fileKey}" }
++    var drafts by remember(project.id, signature) {
++        mutableStateOf(roster.associate { reference ->
++            val computed = buildNamedCharacterPrompt(reference.name, reference.appearance)
++            reference.name to editableReferencePrompt(reference.prompt, computed)
++        })
++    }
++    var notes by remember(project.id) { mutableStateOf(mapOf<String, String>()) }
++    var confirmTarget by rememberSaveable(project.id) { mutableStateOf("") }
++    ProjectProgress(project)
++    StepCaption(2, "拆完镜头后识别每个角色，分别保存明文参考图提示词")
++    if (project.shots.isEmpty()) {
++        FormCard { Text("还没有镜头。请先在成文页拆分镜头，这里会列出识别出的全部角色。", color = HistoryColors.muted) }
++    } else if (roster.isEmpty()) {
++        FormCard { Text("这版正文里没有识别到需要单独画参考图的角色。空镜仍按文字生图。", color = HistoryColors.muted) }
++    } else {
++        Text("每个角色一张参考图。提示词是可修改的明文，不会显示 JSON。通用生图提示词在设置的「${ImagePromptSetting.title}」。",
++            style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
++        Button(onClick = { confirmTarget = "*" }, enabled = !busy,
++            modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(28.dp),
++            colors = ButtonDefaults.buttonColors(containerColor = HistoryColors.cinnabar)) {
++            Text("生成全部参考图")
++        }
++        roster.forEach { reference ->
++            key(project.id, reference.fileKey, reference.name) {
++                val file = store.characterReferenceImage(project, reference)
++                val ready = file.isFile && file.length() > 1000
++                val draft = drafts[reference.name].orEmpty()
++                val computed = buildNamedCharacterPrompt(reference.name, reference.appearance)
++                FormCard {
++                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp),
++                        verticalAlignment = Alignment.CenterVertically) {
++                        ShotThumbnail(file, Modifier.size(96.dp).clip(RoundedCornerShape(16.dp)),
++                            contentScale = ContentScale.Crop)
++                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
++                            Text(reference.name, style = MaterialTheme.typography.titleLarge)
++                            Text(characterSexCaption(reference.sex), style = MaterialTheme.typography.bodySmall,
++                                color = HistoryColors.muted)
++                            StatusPill(if (ready) "已有参考图" else "未生成",
++                                if (ready) HistoryColors.green else HistoryColors.muted)
++                        }
++                    }
++                    Text("参考图生图提示词", style = MaterialTheme.typography.titleMedium)
++                    Text(if (reference.promptCustom) "下次生成会原样使用这份已保存的明文。"
++                        else "下面是按这个角色的性别和外观写成的明文，可先改再保存。",
++                        style = MaterialTheme.typography.bodySmall, color = HistoryColors.muted)
++                    CompactInput(draft, { value ->
++                        drafts = drafts + (reference.name to value)
++                        notes = notes - reference.name
++                    }, enabled = !busy, minLines = 6)
++                    val note = notes[reference.name].orEmpty()
++                    if (note.isNotBlank()) Text(note, style = MaterialTheme.typography.bodySmall, color = HistoryColors.teal)
++                    OutlinedButton(onClick = {
++                        val text = draft.trim().ifBlank { computed }
++                        if (looksLikeStructuredPrompt(text)) {
++                            notes = notes + (reference.name to "请保存明文提示词，不要粘贴 JSON。")
++                        } else {
++                            storeReferencePrompt(reference, text)
++                            drafts = drafts + (reference.name to text)
++                            onSave(project)
++                            notes = notes + (reference.name to "提示词已保存。重新生成后才会按这份文字重画参考图，已有镜头图片不会清除。")
++                        }
++                    }, enabled = !busy, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
++                        Text("保存提示词")
++                    }
++                    OutlinedButton(onClick = { confirmTarget = reference.name }, enabled = !busy,
++                        modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(24.dp)) {
++                        Text(if (ready) "重新生成参考图" else "生成参考图")
++                    }
++                }
++            }
++        }
++    }
++    if (confirmTarget.isNotBlank()) {
++        val everyone = confirmTarget == "*"
+         AlertDialog(
+-            onDismissRequest = { confirmReference = false },
+-            title = { Text("重新生成参考图") },
+-            text = { Text("按上面这份提示词重新生成主角参考图，并换成新的图片地址。已有镜头图片不会清除，也不会自动重画。之后再生成标明主角出镜的镜头时，会垫这张新参考图。此操作按一张图片计费。") },
++            onDismissRequest = { confirmTarget = "" },
++            title = { Text(if (everyone) "生成全部参考图" else "重新生成参考图") },
++            text = {
++                Text(if (everyone) "按每个角色已保存的明文提示词生成参考图。还没单独保存过的，用当前明文。已有镜头图片不会清除，也不会自动重画。每个角色按一张图片计费。"
++                else "按${confirmTarget}这份明文提示词重新生成参考图。已有镜头图片不会清除，也不会自动重画。此操作按一张图片计费。")
++            },
+             confirmButton = {
+                 Button(onClick = {
+-                    confirmReference = false
+-                    commitReferencePrompt()
+-                    onRun(project, GenerationService.CHARACTER_REFERENCE, 0)
+-                }) { Text(if (referenceReady) "重新生成参考图" else "生成参考图") }
++                    val target = confirmTarget
++                    confirmTarget = ""
++                    if (everyone) {
++                        project.characterReferences.forEach { reference ->
++                            val text = drafts[reference.name].orEmpty().trim().ifBlank {
++                                buildNamedCharacterPrompt(reference.name, reference.appearance)
++                            }
++                            if (!looksLikeStructuredPrompt(text)) storeReferencePrompt(reference, text)
++                        }
++                        onSave(project)
++                        onGenerate(project, "")
++                    } else {
++                        val reference = project.characterReferences.firstOrNull { it.name == target }
++                        if (reference != null) {
++                            val text = drafts[target].orEmpty().trim().ifBlank {
++                                buildNamedCharacterPrompt(reference.name, reference.appearance)
++                            }
++                            if (looksLikeStructuredPrompt(text)) {
++                                notes = notes + (target to "请保存明文提示词，不要粘贴 JSON。")
++                            } else {
++                                storeReferencePrompt(reference, text)
++                                onSave(project)
++                                onGenerate(project, target)
++                            }
++                        }
++                    }
++                }) { Text(if (everyone) "生成全部参考图" else "生成参考图") }
+             },
+-            dismissButton = { TextButton(onClick = { confirmReference = false }) { Text("取消") } }
++            dismissButton = { TextButton(onClick = { confirmTarget = "" }) { Text("取消") } }
+         )
+     }
+ }
+ 
+ @Composable
+ private fun ShotListItem(shot: Shot, displayNumber: Int, imageFile: File, busy: Boolean,
+-                         audioLibrary: AudioLibrary, onClick: () -> Unit, onPlay: () -> Unit) {
++                         audioLibrary: AudioLibrary, referenceNames: List<String> = emptyList(),
++                         onClick: () -> Unit, onPlay: () -> Unit) {
+     val imageReady = shot.imageStatus == "done" && imageFile.isFile && imageFile.length() > 1000
+     val soundLabel = shot.soundEffects.mapNotNull { audioLibrary.asset(it.assetId)?.name }.joinToString("、").ifBlank { "无人声效" }
+     Card(
+@@ -3088,6 +3187,10 @@ private fun ShotListItem(shot: Shot, displayNumber: Int, imageFile: File, busy:
+                 }
+                 Text(PronunciationMarkup.display(shot.text), maxLines = 2, overflow = TextOverflow.Ellipsis,
+                     style = MaterialTheme.typography.bodyMedium)
++                if (referenceNames.isNotEmpty()) {
++                    Text("参考图：${referenceNames.joinToString("、")}", style = MaterialTheme.typography.bodySmall,
++                        color = HistoryColors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
++                }
+                 Text("${"%.1f".format(shot.duration)} 秒 · $soundLabel", style = MaterialTheme.typography.bodySmall,
+                     color = HistoryColors.muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+@@ -3116,7 +3219,7 @@ private fun EffectsScreen(project: VideoProject, onSave: (VideoProject) -> Unit)
+     val transitionChoices = listOf("random" to "逐镜随机", "none" to "无", "fade" to "柔和叠化",
+         "dissolve" to "颗粒溶解", "smoothleft" to "平滑左推", "zoomin" to "推近切换", "fadeblack" to "黑场淡化")
+     val busy = project.status == "running"
+-    StepCaption(3, "字幕、转场、封面与开头节奏")
++    StepCaption(4, "字幕、转场、封面与开头节奏")
+     FormCard {
+         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+diff --git a/app/src/main/java/com/historyvideo/app/MultiCharacterReference.kt b/app/src/main/java/com/historyvideo/app/MultiCharacterReference.kt
+new file mode 100644
+index 0000000..c935e4e
+--- /dev/null
++++ b/app/src/main/java/com/historyvideo/app/MultiCharacterReference.kt
+@@ -0,0 +1,458 @@
++package com.historyvideo.app
++
++internal object ImagePromptSetting {
++    const val type = "image"
++    const val title = "生图提示词"
++
++    /** Settings keeps the shared image prompt. Blank stored text stays blank; a missing value uses the default. */
++    fun read(stored: String?, defaultValue: String): String = stored ?: defaultValue
++
++    fun write(stored: MutableMap<String, String>, value: String) {
++        stored[type] = value
++    }
++}
++
++internal fun characterReferenceFileName(fileKey: String): String {
++    val key = fileKey.trim().ifBlank { "01" }
++    require(key.matches(Regex("[0-9]{2}"))) { "参考图编号无效" }
++    return "character_ref_$key.jpg"
++}
++
++internal fun genericCharacterName(name: String): Boolean {
++    val text = name.trim()
++    return text.isEmpty() || text in GENERIC_CHARACTER_NAMES
++}
++
++internal fun looksLikeStructuredPrompt(value: String): Boolean {
++    val text = value.trim()
++    if (text.isEmpty()) return false
++    if (text.startsWith("{") || text.startsWith("[")) return true
++    val compact = text.replace(" ", "")
++    if (compact.contains("\"name\"") && (compact.contains("\"appearance\"") || compact.contains("\"role\""))) return true
++    if (compact.contains("\"image_prompt\"") || compact.contains("\"characters\"")) return true
++    return false
++}
++
++internal fun editableReferencePrompt(saved: String, computed: String): String {
++    val text = saved.trim()
++    if (text.isEmpty() || looksLikeStructuredPrompt(text)) return computed.trim()
++    return text
++}
++
++internal fun parseSexLabel(value: String): ProtagonistSex = when (value.trim().lowercase()) {
++    "female", "女", "女性", "f" -> ProtagonistSex.FEMALE
++    "male", "男", "男性", "m" -> ProtagonistSex.MALE
++    else -> ProtagonistSex.UNSPECIFIED
++}
++
++internal fun sexStorageLabel(sex: ProtagonistSex): String = when (sex) {
++    ProtagonistSex.FEMALE -> "female"
++    ProtagonistSex.MALE -> "male"
++    ProtagonistSex.UNSPECIFIED -> ""
++}
++
++internal fun characterSexCaption(sex: String): String = when (parseSexLabel(sex)) {
++    ProtagonistSex.FEMALE -> "女性"
++    ProtagonistSex.MALE -> "男性"
++    ProtagonistSex.UNSPECIFIED -> "性别未说明"
++}
++
++private val referenceOrdinals = listOf("第一张", "第二张", "第三张", "第四张", "第五张", "第六张", "第七张", "第八张", "第九张")
++
++internal fun referenceIdentityLine(names: List<String>): String {
++    val clean = names.map { it.trim() }.filter { it.isNotBlank() }.take(9)
++    if (clean.isEmpty()) return ""
++    if (clean.size == 1) return "这张参考图是${clean[0]}，画面里的这个人就是${clean[0]}。"
++    return clean.mapIndexed { index, name ->
++        val ordinal = referenceOrdinals.getOrElse(index) { "第${index + 1}张" }
++        "${ordinal}参考图是$name"
++    }.joinToString("，") + "。"
++}
++
++/** Plain-text character sheet. The shared JSON/template image prompt stays in Settings. */
++internal fun buildNamedCharacterPrompt(name: String, appearance: String): String {
++    val who = name.trim().ifBlank { "这个人物" }
++    val sex = protagonistSex(appearance)
++    val described = appearanceForSheet(appearance, sex).ifBlank {
++        "只使用文中已经写明的年龄、脸型、发式和服装"
++    }
++    val gender = when (sex) {
++        ProtagonistSex.FEMALE -> "${who}是女性，按女性的脸、发式、体态和服装来画。"
++        ProtagonistSex.MALE -> "${who}是男性，按男性的脸、发式、体态和服装来画。"
++        ProtagonistSex.UNSPECIFIED -> "这段描述没有写明${who}的性别。只画已经写明的特征，不要默认画成男性，不要自行添加胡须。"
++    }
++    return "为${who}生成一张人物参考图。$gender 光线清楚，正面或三分之四侧面，中景或全身，服装统一。外观：$described。" +
++        "写实中国古代影视剧照，不要Q版、漫画或图集拼贴。画面不要文字、字幕、Logo或水印。背景简洁，不要复杂剧情场景。"
++}
++
++internal data class PreparedShotReferences(
++    val references: List<CharacterReference>,
++    val identityLine: String
++)
++
++internal fun findCharacterReference(character: StoryCharacter, references: List<CharacterReference>): CharacterReference? {
++    references.firstOrNull { it.name == character.name }?.let { return it }
++    if (character.role.equals("protagonist", true) || character.name == "主角") {
++        references.firstOrNull { it.name == "主角" }?.let { return it }
++        references.firstOrNull { it.role.equals("protagonist", true) }?.let { return it }
++    }
++    return null
++}
++
++internal fun charactersForShot(shot: Shot, cast: List<StoryCharacter>): List<StoryCharacter> {
++    val blob = shotCharacterBlob(shot)
++    val mentioned = cast.filter { !genericCharacterName(it.name) && it.name.isNotBlank() && blob.contains(it.name) }
++        .sortedBy { blob.indexOf(it.name) }
++    if (mentioned.isNotEmpty()) {
++        if (shot.usesProtagonistReference) {
++            val protagonist = cast.firstOrNull { it.role.equals("protagonist", true) && !genericCharacterName(it.name) }
++            if (protagonist != null && mentioned.none { it.name == protagonist.name }) {
++                return (listOf(protagonist) + mentioned).distinctBy { it.name }.take(9)
++            }
++        }
++        return mentioned.distinctBy { it.name }.take(9)
++    }
++    if (shot.usesProtagonistReference) {
++        val protagonist = cast.firstOrNull { it.role.equals("protagonist", true) || it.name == "主角" }
++        if (protagonist != null) return listOf(protagonist)
++    }
++    return emptyList()
++}
++
++internal fun prepareShotReferences(
++    shot: Shot,
++    cast: List<StoryCharacter>,
++    references: List<CharacterReference>,
++    usable: (CharacterReference) -> Boolean
++): PreparedShotReferences {
++    val attached = charactersForShot(shot, cast).mapNotNull { character ->
++        val reference = findCharacterReference(character, references) ?: return@mapNotNull null
++        if (usable(reference)) reference else null
++    }.distinctBy { it.fileKey.ifBlank { it.name } }.take(9)
++    return PreparedShotReferences(attached, referenceIdentityLine(attached.map { displayReferenceName(it) }))
++}
++
++internal fun displayReferenceName(reference: CharacterReference): String =
++    reference.name.trim().ifBlank { "主角" }
++
++internal fun identifyStoryCharacters(
++    script: String,
++    shots: List<Shot>,
++    parsed: List<StoryCharacter> = emptyList()
++): List<StoryCharacter> {
++    val corpus = buildString {
++        append(script)
++        shots.forEach { shot ->
++            append('\n')
++            append(shotCharacterBlob(shot))
++        }
++    }
++    val hits = collectNameHits(corpus)
++    val parsedNames = parsed.map { it.name.trim() }.filter { it.isNotBlank() && !genericCharacterName(it) }
++    val discovered = linkedSetOf<String>()
++    discovered += parsedNames
++    hits.forEach { (name, hit) ->
++        if (acceptScannedName(name, hit)) discovered += name
++    }
++    val ordered = discovered.sortedBy { name ->
++        val at = corpus.indexOf(name)
++        if (at >= 0) at else Int.MAX_VALUE - parsedNames.indexOf(name).coerceAtLeast(0)
++    }
++    val flagged = shots.filter { it.usesProtagonistReference }.joinToString("\n") { shotCharacterBlob(it) }
++    val explicitProtagonist = parsed.firstOrNull {
++        it.role.equals("protagonist", true) && !genericCharacterName(it.name)
++    }?.name
++    val protagonistName = explicitProtagonist
++        ?: ordered.filter { flagged.contains(it) }.maxByOrNull { countOf(flagged, it) }
++        ?: ordered.maxByOrNull { countOf(corpus, it) }
++    val protagonistAppearance = parsed.firstOrNull { it.name == "主角" && it.appearance.isNotBlank() }?.appearance.orEmpty()
++        .ifBlank { protagonistAppearance(parsed) }
++    val cast = ordered.take(12).map { name ->
++        val fromParsed = parsed.firstOrNull { it.name == name }
++        val parsedAppearance = fromParsed?.appearance?.trim().orEmpty()
++        val appearance = when {
++            parsedAppearance.isNotBlank() && !looksLikeStructuredPrompt(parsedAppearance) -> parsedAppearance
++            name == protagonistName && protagonistAppearance.isNotBlank() && fromParsed == null -> protagonistAppearance
++            else -> appearanceClause(name, corpus, discovered)
++        }
++        val sex = resolveCharacterSex(fromParsed?.sex.orEmpty(), appearance, appearanceClause(name, corpus, discovered))
++        val role = when {
++            fromParsed?.role?.equals("protagonist", true) == true -> "protagonist"
++            name == protagonistName -> "protagonist"
++            fromParsed?.role?.isNotBlank() == true -> fromParsed.role
++            else -> "supporting"
++        }
++        StoryCharacter(name, appearance, role, sexStorageLabel(sex))
++    }.toMutableList()
++    if (cast.isEmpty() && (parsed.any { it.name == "主角" && it.appearance.isNotBlank() } || shots.any { it.usesProtagonistReference })) {
++        val appearance = protagonistAppearance.ifBlank {
++            shots.filter { it.usesProtagonistReference }.map { it.imagePrompt.trim() }.filter { it.isNotBlank() }.take(2)
++                .joinToString("\n")
++        }
++        val sex = resolveCharacterSex(parsed.firstOrNull { it.name == "主角" }?.sex.orEmpty(), appearance, appearance)
++        cast += StoryCharacter("主角", appearance, "protagonist", sexStorageLabel(sex))
++    }
++    return cast
++}
++
++internal fun syncCharacterReferences(
++    cast: List<StoryCharacter>,
++    existing: List<CharacterReference>
++): List<CharacterReference> {
++    val pool = existing.map { it.copy() }.toMutableList()
++    val legacy = pool.filter { it.name == "主角" || genericCharacterName(it.name) }
++    val protagonist = cast.firstOrNull { it.role.equals("protagonist", true) && !genericCharacterName(it.name) }
++        ?: cast.singleOrNull()?.takeIf { !genericCharacterName(it.name) }
++    if (legacy.size == 1 && protagonist != null && pool.none { it.name == protagonist.name }) {
++        val donor = legacy[0]
++        donor.name = protagonist.name
++        if (donor.role.isBlank()) donor.role = protagonist.role
++        if (donor.sex.isBlank()) donor.sex = protagonist.sex
++        if (donor.appearance.isBlank()) donor.appearance = protagonist.appearance
++        if (donor.fileKey.isBlank()) donor.fileKey = "01"
++    }
++    val used = pool.mapNotNull { it.fileKey.takeIf { key -> key.matches(Regex("[0-9]{2}")) } }.toMutableSet()
++    pool.filter { it.fileKey.isBlank() }.forEach { reference ->
++        val key = if ("01" !in used) "01" else allocateReferenceFileKey(used)
++        reference.fileKey = key
++        used += key
++    }
++    return cast.map { character ->
++        val current = pool.firstOrNull { it.name == character.name } ?: CharacterReference(name = character.name).also {
++            it.fileKey = allocateReferenceFileKey(used)
++            used += it.fileKey
++            pool += it
++        }
++        current.name = character.name
++        current.role = character.role
++        current.sex = character.sex
++        val appearance = character.appearance.ifBlank { current.appearance }
++        if (!current.promptCustom || current.appearance.isBlank()) current.appearance = appearance
++        val computed = buildNamedCharacterPrompt(current.name, current.appearance.ifBlank { appearance })
++        val keepSaved = current.promptCustom && current.prompt.isNotBlank() && !looksLikeStructuredPrompt(current.prompt)
++        if (!keepSaved) {
++            current.prompt = computed
++            current.promptCustom = false
++        }
++        if (current.status.isBlank()) current.status = "pending"
++        if (current.fileKey.isBlank()) {
++            current.fileKey = allocateReferenceFileKey(used)
++            used += current.fileKey
++        }
++        current
++    }
++}
++
++internal fun applyIdentifiedCast(project: VideoProject): Boolean {
++    val identified = identifyStoryCharacters(project.script, project.shots, project.characters)
++    val synced = syncCharacterReferences(identified, project.characterReferences)
++    if (sameCharacters(project.characters, identified) && sameReferences(project.characterReferences, synced)) return false
++    project.characters = identified.toMutableList()
++    project.characterReferences = synced.toMutableList()
++    return true
++}
++
++internal fun referenceReadyFor(
++    bytes: Long,
++    remoteUrl: String,
++    requiresPublicUrl: Boolean
++): Boolean = referenceAssetUsable(bytes, remoteUrl, requiresPublicUrl)
++
++private fun sameCharacters(left: List<StoryCharacter>, right: List<StoryCharacter>): Boolean {
++    if (left.size != right.size) return false
++    return left.zip(right).all { (a, b) ->
++        a.name == b.name && a.appearance == b.appearance && a.role == b.role && a.sex == b.sex
++    }
++}
++
++private fun sameReferences(left: List<CharacterReference>, right: List<CharacterReference>): Boolean {
++    if (left.size != right.size) return false
++    return left.zip(right).all { (a, b) ->
++        a.name == b.name && a.remoteUrl == b.remoteUrl && a.status == b.status &&
++            a.appearance == b.appearance && a.prompt == b.prompt && a.role == b.role &&
++            a.sex == b.sex && a.fileKey == b.fileKey && a.promptCustom == b.promptCustom
++    }
++}
++
++private fun allocateReferenceFileKey(used: Set<String>): String {
++    var number = 1
++    while (number <= 99) {
++        val key = "%02d".format(number)
++        if (key !in used) return key
++        number++
++    }
++    error("人物参考图数量超出范围")
++}
++
++private fun shotCharacterBlob(shot: Shot): String =
++    listOf(shot.text, shot.visual, shot.imagePrompt).filter { it.isNotBlank() }.joinToString("\n")
++
++private fun resolveCharacterSex(label: String, appearance: String, context: String): ProtagonistSex {
++    val fromAppearance = protagonistSex(appearance)
++    if (appearance.isNotBlank() && fromAppearance != ProtagonistSex.UNSPECIFIED) return fromAppearance
++    val fromLabel = parseSexLabel(label)
++    if (fromLabel != ProtagonistSex.UNSPECIFIED) return fromLabel
++    val fromContext = protagonistSex(context)
++    return fromContext
++}
++
++private fun appearanceClause(name: String, corpus: String, names: Set<String>): String {
++    val hints = listOf("岁", "脸", "眉", "眼", "发", "袍", "衫", "裙", "甲", "须", "冠", "髻", "女", "男", "胡", "衣")
++    var best = ""
++    var bestScore = 0
++    var index = corpus.indexOf(name)
++    while (index >= 0) {
++        val start = corpus.lastIndexOfAny(charArrayOf('。', '！', '？', '\n', '；'), index)
++            .let { if (it < 0) (index - 8).coerceAtLeast(0) else it + 1 }
++        val endPunct = corpus.indexOfAny(charArrayOf('。', '！', '？', '\n', '；'), index + name.length)
++        val end = if (endPunct < 0) minOf(corpus.length, index + name.length + 48) else endPunct
++        var clause = corpus.substring(start, end).trim()
++        names.filter { it != name && it.isNotBlank() }.forEach { other ->
++            val at = clause.indexOf(other)
++            if (at >= 0) clause = clause.substring(0, at).trim('，', ',', '、', ' ', '。')
++        }
++        val score = hints.count { clause.contains(it) }
++        if (score > bestScore) {
++            best = clause
++            bestScore = score
++        }
++        index = corpus.indexOf(name, index + name.length)
++    }
++    if (bestScore == 0) return ""
++    return best.take(80)
++}
++
++private data class NameHit(var count: Int = 0, var anchored: Boolean = false, var cued: Boolean = false)
++
++private fun collectNameHits(text: String): Map<String, NameHit> {
++    val hits = linkedMapOf<String, NameHit>()
++    var index = 0
++    while (index < text.length) {
++        val name = longestPersonalName(text, index)
++        if (name == null) {
++            index++
++            continue
++        }
++        val hit = hits.getOrPut(name) { NameHit() }
++        hit.count++
++        val cued = identityCue(text, index, name)
++        if (cued) hit.cued = true
++        if (cued || boundaryBefore(text, index)) hit.anchored = true
++        index += name.length
++    }
++    return hits
++}
++
++private fun acceptScannedName(name: String, hit: NameHit): Boolean {
++    if (name in BLOCKED_NAMES || genericCharacterName(name)) return false
++    if (!hit.anchored && !hit.cued) return false
++    if (hit.cued) return true
++    if (name.length >= 3 && hit.anchored) return true
++    return hit.count >= 2 && hit.anchored
++}
++
++private fun identityCue(text: String, index: Int, name: String): Boolean {
++    val before = text.substring(maxOf(0, index - 4), index)
++    if (before.endsWith("名叫") || before.endsWith("叫做") || before.endsWith("名为") || before.endsWith("唤作")) return true
++    val after = text.substring(index + name.length, minOf(text.length, index + name.length + 20))
++    if (protagonistSex(after) != ProtagonistSex.UNSPECIFIED) return true
++    return after.startsWith("说道") || after.startsWith("笑道") || after.startsWith("冷声") || after.startsWith("喝道")
++}
++
++private fun boundaryBefore(text: String, index: Int): Boolean {
++    if (index <= 0) return true
++    val previous = text[index - 1]
++    if (!previous.isHan()) return true
++    return previous in NAME_SEPARATORS
++}
++
++private fun longestPersonalName(text: String, index: Int): String? {
++    if (index >= text.length || !text[index].isHan()) return null
++    val rest = text.substring(index)
++    val compound = COMPOUND_SURNAMES.firstOrNull { rest.startsWith(it) }
++    if (compound != null) personalName(rest, compound.length)?.let { return it }
++    if (rest[0] in SINGLE_SURNAMES) return personalName(rest, 1)
++    return null
++}
++
++private fun personalName(rest: String, surnameLength: Int): String? {
++    val longer = nameCandidate(rest, surnameLength, 2)
++    if (longer != null) return longer
++    val shorter = nameCandidate(rest, surnameLength, 1) ?: return null
++    val next = surnameLength + 1
++    if (next < rest.length && rest[next] in APPEARANCE_CHARS) return null
++    return shorter
++}
++
++private fun nameCandidate(rest: String, surnameLength: Int, given: Int): String? {
++    val end = surnameLength + given
++    if (rest.length < end) return null
++    val givenChars = rest.substring(surnameLength, end)
++    if (givenChars.any { !it.isHan() || it in REJECTED_GIVEN }) return null
++    val name = rest.substring(0, end)
++    if (name in BLOCKED_NAMES || name.startsWith("空镜")) return null
++    return name
++}
++
++private fun countOf(text: String, name: String): Int {
++    if (name.isEmpty()) return 0
++    var count = 0
++    var index = text.indexOf(name)
++    while (index >= 0) {
++        count++
++        index = text.indexOf(name, index + name.length)
++    }
++    return count
++}
++
++private fun Char.isHan(): Boolean = this in '\u4e00'..'\u9fff'
++
++private val GENERIC_CHARACTER_NAMES = setOf(
++    "主角", "配角", "路人", "人物", "众人", "群众", "百姓", "士兵", "侍卫", "别人", "某人", "那人", "此人"
++)
++
++private val NAME_SEPARATORS = setOf(
++    '的', '是', '与', '和', '跟', '同', '对', '把', '被', '让', '向', '到', '在', '从', '为', '给',
++    '将', '叫', '作', '名', '曰', '而', '但', '便', '就', '又', '也', '都', '还', '说', '问', '看', '有'
++)
++
++private val REJECTED_GIVEN = setOf(
++    '的', '了', '是', '在', '和', '与', '或', '被', '把', '将', '从', '对', '向', '到', '让', '给',
++    '又', '也', '就', '都', '还', '很', '最', '不', '没', '无', '这', '那', '你', '我', '他', '她',
++    '它', '着', '过', '吧', '呢', '啊', '呀', '吗', '么', '而', '及', '但', '却', '于', '其', '之',
++    '上', '下', '中', '内', '外', '前', '后', '里', '来', '去', '个', '位', '说', '道', '们', '等',
++    '为', '以', '则', '并', '且', '已', '经', '正', '太', '更', '走', '进', '出', '站', '坐', '拿',
++    '持', '拔', '回', '喝', '笑', '问', '答', '听', '想', '跑', '跳', '推', '拉', '打', '杀', '看',
++    '开', '拎', '砍', '刺', '挥', '指', '怒', '叹', '点', '摇', '低', '抬', '转', '身', '冷', '哼',
++    '眉', '须', '袍', '裙', '脸', '甲', '髻', '眼', '鼻', '嘴', '发', '衣', '冠', '胡', '衫', '袖'
++)
++
++private val APPEARANCE_CHARS = setOf('眉', '须', '袍', '裙', '脸', '甲', '髻', '眼', '鼻', '嘴', '发', '衣', '冠', '胡', '衫', '袖')
++
++private val BLOCKED_NAMES = setOf(
++    "长安", "后来", "马上", "于是", "因此", "以及", "其中", "其实", "甚至", "原来", "当时", "今天",
++    "这里", "那里", "这样", "那样", "怎么", "什么", "自己", "我们", "他们", "她们", "人们", "时候",
++    "地方", "东西", "事情", "知道", "应该", "需要", "开始", "最后", "其他", "大家", "一起", "一直",
++    "一定", "一般", "一样", "不会", "不能", "不要", "不用", "不过", "关中", "关内", "关外", "江南",
++    "江北", "山东", "山西", "河南", "河北", "北京", "南京", "西安", "洛阳", "东方", "西方", "南方",
++    "北方", "天下", "天子", "王后", "王子", "公主", "皇帝", "皇上", "朝廷", "国家", "将军", "丞相",
++    "大人", "先生", "夫人", "小姐", "公子", "书生", "和尚", "太监", "宫女", "丫鬟", "掌柜", "安城"
++)
++
++private val COMPOUND_SURNAMES = listOf(
++    "欧阳", "太史", "端木", "上官", "司马", "东方", "独孤", "南宫", "万俟", "闻人", "夏侯", "诸葛",
++    "尉迟", "公羊", "赫连", "澹台", "皇甫", "宗政", "濮阳", "公冶", "太叔", "申屠", "公孙", "慕容",
++    "仲孙", "钟离", "长孙", "宇文", "司徒", "鲜于", "司空", "闾丘", "子车", "司寇", "巫马", "公西",
++    "颛孙", "壤驷", "公良", "漆雕", "乐正", "宰父", "谷梁", "拓跋", "夹谷", "轩辕", "令狐", "段干",
++    "百里", "呼延", "东郭", "南门", "羊舌", "微生", "梁丘", "左丘", "西门", "第五", "南荣", "东宫",
++    "仲长", "子书", "子桑", "即墨", "达奚", "褚师"
++).sortedByDescending { it.length }
++
++private val SINGLE_SURNAMES: Set<Char> =
++    "赵钱孙李周吴郑王冯陈褚卫蒋沈韩杨朱秦尤许何吕施张孔曹严华金魏陶姜戚谢邹喻柏水窦章云苏潘葛奚范彭郎鲁韦昌马苗凤花方俞任袁柳鲍史唐费廉岑薛雷贺倪汤滕殷罗毕郝邬安常乐于时傅皮卞齐康伍余元卜顾孟平黄和穆萧尹姚邵汪祁毛禹狄米贝明臧计伏成戴谈宋茅庞熊纪舒屈项祝董梁杜阮蓝闵席季贾路娄危江童颜郭梅盛林刁钟徐邱骆高夏蔡田樊胡凌霍虞万柯管卢莫经房裘缪干解应宗丁宣邓郁单杭洪包诸左石崔吉龚程嵇邢裴陆荣翁荀羊惠甄曲家封芮羿储靳汲邴糜松井段富巫乌焦巴弓牧山谷车侯宓蓬全郗班仰秋仲伊宫宁仇栾暴甘厉戎祖武符刘景詹束龙叶幸司韶郜黎蓟薄印宿白怀蒲邰从鄂索咸籍赖卓蔺屠蒙池乔阴胥能苍双闻莘党翟谭贡劳逄姬申扶堵冉宰郦雍郤璩桑桂濮牛寿通边扈燕冀浦尚农温别庄晏柴瞿阎充慕连茹习宦艾鱼容向古易慎戈廖庾终暨居衡步都耿满弘匡国文寇广禄阙东欧殳沃利蔚越夔隆师巩聂晁勾敖融冷訾辛阚那简饶空曾沙养鞠须丰巢关蒯相查后荆红游竺权逯盖益".toSet()
++
++/** Keeps the JSON shape used by older tests from being mistaken for a character prompt. */
++internal fun characterReferencePromptIsPlainText(prompt: String): Boolean {
++    val text = prompt.trim()
++    return text.isNotEmpty() && !looksLikeStructuredPrompt(text) && !text.contains("{") && !text.contains("}")
++}
+diff --git a/app/src/main/java/com/historyvideo/app/ProjectStore.kt b/app/src/main/java/com/historyvideo/app/ProjectStore.kt
+index 5bc26e7..c1562c9 100644
+--- a/app/src/main/java/com/historyvideo/app/ProjectStore.kt
++++ b/app/src/main/java/com/historyvideo/app/ProjectStore.kt
+@@ -391,6 +391,9 @@ class ProjectStore(context: Context) {
+         "images/%03d%s.jpg".format(shot.id, revisionSuffix(shot.imageRevision)))
+     fun characterReferenceImage(project: VideoProject) =
+         File(directory(project.id), "images/character_ref_01.jpg")
++
++    fun characterReferenceImage(project: VideoProject, reference: CharacterReference) =
++        File(directory(project.id), "images/${characterReferenceFileName(reference.fileKey)}")
+     fun audio(project: VideoProject, shot: Shot) = File(directory(project.id),
+         "audio/%03d%s.mp3".format(shot.id, revisionSuffix(shot.audioRevision)))
+     fun output(project: VideoProject) = File(directory(project.id),
+diff --git a/app/src/test/java/com/historyvideo/app/MultiCharacterReferenceTest.kt b/app/src/test/java/com/historyvideo/app/MultiCharacterReferenceTest.kt
+new file mode 100644
+index 0000000..ab84964
+--- /dev/null
++++ b/app/src/test/java/com/historyvideo/app/MultiCharacterReferenceTest.kt
+@@ -0,0 +1,239 @@
++package com.historyvideo.app
++
++import java.util.UUID
++import org.json.JSONArray
++import org.json.JSONObject
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertFalse
++import org.junit.Assert.assertNotEquals
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class MultiCharacterReferenceTest {
++    private val script = "盛长风是个三十岁的男子，方脸短须，青袍。叶青城是十八岁的女子，柳叶眉，罗裙。关武是络腮胡大汉，玄铁甲。"
++
++    private fun storyShots() = listOf(
++        Shot(id = 1, text = "盛长风推门。", imagePrompt = "盛长风，三十岁男子，方脸短须，青袍，推开木门。",
++            visual = "盛长风推门", usesProtagonistReference = true),
++        Shot(id = 2, text = "叶青城抬眼。", imagePrompt = "叶青城，十八岁女子，柳叶眉，罗裙，抬眼。",
++            visual = "叶青城抬眼"),
++        Shot(id = 3, text = "关武拔刀。", imagePrompt = "关武，络腮胡大汉，玄铁甲，拔刀。", visual = "关武拔刀"),
++        Shot(id = 4, text = "盛长风与叶青城对坐。", imagePrompt = "盛长风与叶青城对坐饮茶。", visual = "两人对坐"),
++        Shot(id = 5, text = "屋檐空镜。", imagePrompt = "空镜屋檐，没有人物。", visual = "屋檐")
++    )
++
++    @Test
++    fun storyboardIdentifiesEveryNamedCharacterAndKeepsGender() {
++        val parsed = parseStoryCharacters(JSONObject()
++            .put("characters", JSONArray()
++                .put(JSONObject().put("name", "盛长风").put("role", "protagonist").put("sex", "male")
++                    .put("appearance", "三十岁男子，方脸短须，青袍"))
++                .put(JSONObject().put("name", "叶青城").put("role", "supporting").put("sex", "male")
++                    .put("appearance", "十八岁女子，柳叶眉，罗裙"))
++                .put(JSONObject().put("name", "关武").put("role", "supporting").put("sex", "male")
++                    .put("appearance", "络腮胡大汉，玄铁甲"))))
++        val cast = identifyStoryCharacters(script, storyShots(), parsed)
++        assertEquals(listOf("盛长风", "叶青城", "关武"), cast.map { it.name })
++        assertEquals("protagonist", cast[0].role)
++        assertEquals("supporting", cast[1].role)
++        assertEquals("male", cast.first { it.name == "盛长风" }.sex)
++        assertEquals("female", cast.first { it.name == "叶青城" }.sex)
++        assertEquals("male", cast.first { it.name == "关武" }.sex)
++        val woman = buildNamedCharacterPrompt("叶青城", cast.first { it.name == "叶青城" }.appearance)
++        val man = buildNamedCharacterPrompt("盛长风", cast.first { it.name == "盛长风" }.appearance)
++        assertTrue(woman.contains("叶青城是女性"))
++        assertTrue(woman.contains("柳叶眉"))
++        assertFalse(woman.contains("男性"))
++        assertFalse(woman.contains("短须"))
++        assertTrue(man.contains("盛长风是男性"))
++        assertTrue(man.contains("短须"))
++        assertFalse(cast.map { it.name }.contains("主角"))
++    }
++
++    @Test
++    fun namesAreFoundFromShotsWhenTheStoryboardOnlyHasAProtagonist() {
++        val cast = identifyStoryCharacters(script, storyShots(), listOf(
++            StoryCharacter("主角", "三十岁男子，方脸短须，青袍", "protagonist")
++        ))
++        assertEquals(listOf("盛长风", "叶青城", "关武"), cast.map { it.name })
++        assertEquals("female", cast.first { it.name == "叶青城" }.sex)
++        assertEquals("male", cast.first { it.name == "关武" }.sex)
++        assertFalse(cast.any { it.name == "柳叶眉" || it.name == "青袍" || it.name == "罗裙" })
++    }
++
++    @Test
++    fun unspecifiedGenderIsNotForcedMale() {
++        val script = "沈清禾站在廊下，青布袍。沈清禾又回到廊下。"
++        val shots = listOf(Shot(id = 1, text = "沈清禾站在廊下。", imagePrompt = "沈清禾，青布袍，站在廊下。", visual = "廊下"))
++        val cast = identifyStoryCharacters(script, shots)
++        val found = cast.first { it.name == "沈清禾" }
++        assertEquals("", found.sex)
++        val prompt = buildNamedCharacterPrompt(found.name, found.appearance)
++        assertTrue(prompt.contains("没有写明沈清禾的性别"))
++        assertTrue(prompt.contains("不要默认画成男性"))
++        assertFalse(prompt.contains("沈清禾是男性"))
++        assertFalse(prompt.contains("沈清禾是女性"))
++    }
++
++    @Test
++    fun characterReferencePromptIsPlainTextAndJsonIsNotShown() {
++        val computed = buildNamedCharacterPrompt("叶青城", "十八岁女子，柳叶眉，罗裙")
++        val json = """{"name":"叶青城","appearance":"十八岁女子","role":"supporting"}"""
++        assertEquals(computed, editableReferencePrompt(json, computed))
++        assertEquals(computed, editableReferencePrompt("  ", computed))
++        assertTrue(characterReferencePromptIsPlainText(computed))
++        assertFalse(computed.contains("{"))
++        assertFalse(computed.contains("}"))
++        assertFalse(computed.contains("\"appearance\""))
++        assertFalse(computed.contains("\"image_prompt\""))
++        assertFalse(looksLikeStructuredPrompt(computed))
++        assertTrue(looksLikeStructuredPrompt(json))
++        val reference = CharacterReference(name = "叶青城", appearance = "十八岁女子，柳叶眉，罗裙")
++        val edited = "叶青城，十八岁女子，柳叶眉，月白罗裙，正面站立。"
++        storeReferencePrompt(reference, edited)
++        assertEquals(edited, reference.prompt)
++        assertTrue(reference.promptCustom)
++        val reloaded = CharacterReference.from(JSONObject(reference.json().toString()))
++        assertEquals(edited, reloaded.prompt)
++        assertTrue(reloaded.promptCustom)
++        assertEquals("https://cdn.example.com/ye.png", CharacterReference.from(
++            JSONObject(reloaded.json().put("remote_url", "https://cdn.example.com/ye.png").toString())
++        ).remoteUrl)
++        assertEquals(edited, editableReferencePrompt(reloaded.prompt, computed))
++    }
++
++    @Test
++    fun imagePromptSettingIsSeparateFromCharacterPrompts() {
++        assertEquals("image", ImagePromptSetting.type)
++        assertEquals("生图提示词", ImagePromptSetting.title)
++        assertTrue(AppSettings.types.contains(ImagePromptSetting.type))
++        val memory = mutableMapOf<String, String>()
++        assertEquals("默认生图提示词", ImagePromptSetting.read(memory[ImagePromptSetting.type], "默认生图提示词"))
++        ImagePromptSetting.write(memory, "{\"template\":\"通用 JSON 生图提示词\"}")
++        assertEquals("{\"template\":\"通用 JSON 生图提示词\"}", ImagePromptSetting.read(memory[ImagePromptSetting.type], "默认生图提示词"))
++        val characterPrompt = buildNamedCharacterPrompt("关武", "络腮胡大汉，玄铁甲")
++        assertNotEquals(memory.getValue(ImagePromptSetting.type), characterPrompt)
++        assertFalse(characterPrompt.contains("{"))
++        assertEquals("", ImagePromptSetting.read(null, ""))
++    }
++
++    @Test
++    fun shotsAttachOnlyTheCharactersWhoAppearAndKeepOrder() {
++        val cast = identifyStoryCharacters(script, storyShots())
++        val references = syncCharacterReferences(cast, emptyList())
++        references.forEach { it.remoteUrl = "https://cdn.example.com/${it.fileKey}.png"; it.status = "done" }
++        val usable = { reference: CharacterReference -> isPublicHttpsImageUrl(reference.remoteUrl) }
++        val pair = prepareShotReferences(storyShots()[3], cast, references, usable)
++        assertEquals(listOf("盛长风", "叶青城"), pair.references.map { it.name })
++        assertEquals("第一张参考图是盛长风，第二张参考图是叶青城。", pair.identityLine)
++        val woman = prepareShotReferences(storyShots()[1], cast, references, usable)
++        assertEquals(listOf("叶青城"), woman.references.map { it.name })
++        assertTrue(woman.identityLine.contains("这张参考图是叶青城"))
++        assertTrue(woman.identityLine.contains("叶青城"))
++        val empty = prepareShotReferences(storyShots()[4], cast, references, usable)
++        assertTrue(empty.references.isEmpty())
++        assertEquals("", empty.identityLine)
++        val legacyShot = Shot(id = 8, text = "甲。", imagePrompt = "街市", usesProtagonistReference = true)
++        val legacyCast = listOf(StoryCharacter("主角", "方脸青袍", "protagonist", "male"))
++        val legacyReference = CharacterReference("主角", "https://cdn.example.com/ref.png", "done", "方脸青袍", fileKey = "01")
++        val legacy = prepareShotReferences(legacyShot, legacyCast, listOf(legacyReference), usable)
++        assertEquals("主角", legacy.references.single().name)
++        assertTrue(legacy.identityLine.contains("这张参考图是主角"))
++        val scenery = Shot(id = 9, text = "屋檐。", imagePrompt = "空镜屋檐")
++        assertTrue(prepareShotReferences(scenery, legacyCast, listOf(legacyReference), usable).references.isEmpty())
++    }
++
++    @Test
++    fun missingReferenceIsSkippedWithoutReorderingTheRest() {
++        val cast = identifyStoryCharacters(script, storyShots())
++        val references = syncCharacterReferences(cast, emptyList())
++        references.first { it.name == "盛长风" }.remoteUrl = "https://cdn.example.com/sheng.png"
++        references.first { it.name == "关武" }.remoteUrl = "https://cdn.example.com/guan.png"
++        val shot = Shot(id = 6, text = "盛长风、叶青城和关武同框。", imagePrompt = "盛长风、叶青城、关武同框。")
++        val prepared = prepareShotReferences(shot, cast, references) { isPublicHttpsImageUrl(it.remoteUrl) }
++        assertEquals(listOf("盛长风", "关武"), prepared.references.map { it.name })
++        assertEquals("第一张参考图是盛长风，第二张参考图是关武。", prepared.identityLine)
++        val prompt = buildShotImagePrompt("全局画风", "统一画风", "三人同框。", true, prepared.references.map { it.name })
++        assertTrue(prompt.contains("第一张参考图是盛长风，第二张参考图是关武。"))
++        assertTrue(prompt.indexOf("全局画风") < prompt.indexOf("第一张参考图是盛长风"))
++        assertTrue(prompt.endsWith("三人同框。"))
++        val plain = buildShotImagePrompt("全局画风", "统一画风", "空镜屋檐。", false, listOf("盛长风"))
++        assertFalse(plain.contains("参考图是"))
++    }
++
++    @Test
++    fun editPayloadKeepsReferenceOrderUpToNine() {
++        val urls = (1..10).map { "https://cdn.example.com/$it.png" }
++        val body = cangyuanEditRequestBody("gpt-image-2", "镜头", "1024x1024", urls)
++        val images = body.getJSONArray("images")
++        assertEquals(9, images.length())
++        assertEquals("https://cdn.example.com/1.png", images.getString(0))
++        assertEquals("https://cdn.example.com/2.png", images.getString(1))
++        assertEquals("https://cdn.example.com/9.png", images.getString(8))
++        assertEquals("image[]", multipartEditSpec("user-model", "镜头", "1024x1792", 3).fileField)
++        assertEquals("image", referenceFormField(1))
++    }
++
++    @Test
++    fun oldProtagonistReferenceMigratesAndCustomPlainPromptSurvives() {
++        val legacy = CharacterReference.from(JSONObject()
++            .put("name", "主角")
++            .put("remote_url", "https://cdn.example.com/ref.png")
++            .put("status", "done")
++            .put("appearance", "三十岁方脸短须，青袍")
++            .put("prompt", "已保存的盛长风参考图提示词"))
++        val project = VideoProject(UUID.randomUUID().toString(), "旧项目")
++        project.script = script
++        project.shots = storyShots().toMutableList()
++        project.characterReferences += legacy
++        assertTrue(applyIdentifiedCast(project))
++        val lead = project.characterReferences.first { it.name == "盛长风" }
++        assertEquals("https://cdn.example.com/ref.png", lead.remoteUrl)
++        assertEquals("已保存的盛长风参考图提示词", lead.prompt)
++        assertEquals("01", lead.fileKey)
++        assertTrue(lead.promptCustom)
++        assertEquals("done", lead.status)
++        val woman = project.characterReferences.first { it.name == "叶青城" }
++        assertEquals("", woman.remoteUrl)
++        assertEquals("02", woman.fileKey)
++        assertTrue(characterReferencePromptIsPlainText(woman.prompt))
++        assertTrue(woman.prompt.contains("叶青城是女性"))
++        assertFalse(woman.prompt.contains("{"))
++        val restored = VideoProject.from(JSONObject(project.json().toString()))
++        assertEquals("已保存的盛长风参考图提示词", restored.characterReferences.first { it.name == "盛长风" }.prompt)
++        assertEquals("https://cdn.example.com/ref.png", restored.characterReferences.first { it.name == "盛长风" }.remoteUrl)
++        assertEquals(woman.prompt, restored.characterReferences.first { it.name == "叶青城" }.prompt)
++        assertFalse(restored.shots.first { it.id == 5 }.usesProtagonistReference)
++        assertTrue(restored.shots.first { it.id == 1 }.usesProtagonistReference)
++        assertFalse(applyIdentifiedCast(restored))
++        val untouched = VideoProject.from(JSONObject().put("id", UUID.randomUUID().toString()).put("title", "更旧")
++            .put("shots", JSONArray().put(JSONObject().put("shot_id", 1).put("text", "甲。").put("image_prompt", "街市"))))
++        assertTrue(untouched.characterReferences.isEmpty())
++        assertTrue(untouched.characters.isEmpty())
++        assertFalse(untouched.shots.single().usesProtagonistReference)
++    }
++
++    @Test
++    fun referenceScreenReplacesTheShotCardAndSettingsHasImagePrompt() {
++        val root = generateSequence(java.io.File(System.getProperty("user.dir"))) { it.parentFile }
++            .first { java.io.File(it, "app/src/main/java/com/historyvideo/app/MainActivity.kt").isFile }
++        val activity = java.io.File(root, "app/src/main/java/com/historyvideo/app/MainActivity.kt").readText()
++        val shots = activity.substringAfter("private fun ShotsScreen").substringBefore("private fun ReferencesScreen")
++        val references = activity.substringAfter("private fun ReferencesScreen").substringBefore("private fun ShotListItem")
++        val settings = activity.substringAfter("private fun SettingsScreen").substringBefore("private fun AudioLibrarySettingsScreen")
++        assertFalse(shots.contains("人物参考图"))
++        assertFalse(shots.contains("参考图生图提示词"))
++        assertTrue(references.contains("参考图生图提示词"))
++        assertTrue(references.contains("保存提示词"))
++        assertTrue(references.contains("生成全部参考图"))
++        assertTrue(references.contains("不要粘贴 JSON"))
++        assertTrue(settings.contains("生图提示词"))
++        assertTrue(settings.contains("与参考图明文提示词分开保存"))
++        assertTrue(activity.contains("第一张") || activity.contains("referenceIdentityLine"))
++        val service = java.io.File(root, "app/src/main/java/com/historyvideo/app/GenerationService.kt").readText()
++        val request = service.substringAfter("private fun requestShotImage").substringBefore("private suspend fun generateCharacterSheet")
++        assertTrue(request.contains("prepareShotReferences"))
++        assertTrue(request.contains("editImage"))
++        assertFalse(request.contains("characterReferences.firstOrNull()?.remoteUrl"))
++    }
++}
